@@ -1,5 +1,5 @@
 #requires -Version 5.1
-# Version 1.3 (2026-11-19) - edited copy. What changed: Edited scripts\V1.3\CHANGES.md
+# Version 1.4 (2026-11-19) - edited copy. What changed: Edited scripts\V1.4\CHANGES.md
 <#
     WinSuperTool.ps1  -  all-in-one Windows tech toolkit (one file, no extra libraries)
     Runs on Windows 10 / 11 and in WinPE (built for Hiren's BootCD PE 11).
@@ -1230,7 +1230,29 @@ function Get-PartLetter($disk, $part) {
     if ($detail -match '(?m)^\s*\*?\s*Volume\s+\d+\s+([A-Z])\s') { return $Matches[1] }
     return ''
 }
+# The Storage cmdlets cache disk/partition data per process and do not see letters that diskpart (or another
+# program) changed meanwhile. Refresh before trusting Get-Partition.
+function Sync-StorageCache { if (Get-Command Update-HostStorageCache -ErrorAction SilentlyContinue) { try { Update-HostStorageCache -ErrorAction Stop } catch {} } }
+# $true for the Microsoft Reserved partition (GPT type e3c9e316-...): it has no file system, and a drive letter on it
+# makes Explorer offer to FORMAT it.
+function Test-IsMsr($disk, $part) {
+    $msr = 'e3c9e316-0b5c-4db8-817d-f92df00215ae'
+    if (Get-Command Get-Partition -ErrorAction SilentlyContinue) {
+        try { Sync-StorageCache; return ([string](Get-Partition -DiskNumber $disk -PartitionNumber $part -ErrorAction Stop).GptType -match $msr) } catch {}
+    }
+    return ((Invoke-Diskpart @("select disk $disk", "select partition $part", 'detail partition')) -match $msr)
+}
+# Partition behind a drive letter. Get-Partition does NOT report letters that diskpart assigned (seen on the EFI
+# partition, even in a new process), so go letter -> volume GUID (mountvol, language-independent) -> partition AccessPaths.
+function Get-LetterPartition($L) {
+    $vol = (& mountvol.exe ('{0}:' -f $L) /L 2>$null | Out-String).Trim()
+    if ($vol -notmatch '^\\\\\?\\Volume\{[0-9a-fA-F-]+\}\\$') { return $null }
+    if (-not (Get-Command Get-Partition -ErrorAction SilentlyContinue)) { return $null }
+    Sync-StorageCache
+    return (Get-Partition -ErrorAction SilentlyContinue | Where-Object { @($_.AccessPaths) -contains $vol } | Select-Object -First 1)
+}
 function Mount-Part($disk, $part, $L) {
+    if (Test-IsMsr $disk $part) { throw "Partition $part on disk $disk is the Microsoft Reserved (MSR) partition. It has no file system and must not get a drive letter." }
     if ($rbStor.Checked) {
         Log "Add-PartitionAccessPath -DiskNumber $disk -PartitionNumber $part -AccessPath ${L}:"
         Add-PartitionAccessPath -DiskNumber $disk -PartitionNumber $part -AccessPath ('{0}:' -f $L) -ErrorAction Stop
@@ -1242,9 +1264,14 @@ function Mount-Part($disk, $part, $L) {
 }
 function Unmount-Letter($L) {
     if ($rbStor.Checked) {
-        $p = Get-Partition -DriveLetter $L -ErrorAction Stop
-        Log "Remove-PartitionAccessPath ${L}:"
-        Remove-PartitionAccessPath -DiskNumber $p.DiskNumber -PartitionNumber $p.PartitionNumber -AccessPath ('{0}:' -f $L) -ErrorAction Stop
+        $p = Get-LetterPartition $L
+        $done = $false
+        if ($p) {
+            Log "Remove-PartitionAccessPath ${L}:"
+            try { Remove-PartitionAccessPath -DiskNumber $p.DiskNumber -PartitionNumber $p.PartitionNumber -AccessPath ('{0}:' -f $L) -ErrorAction Stop; $done = $true } catch { Log "Remove-PartitionAccessPath failed ($($_.Exception.Message)) - using mountvol." }
+        }
+        # letters assigned by diskpart are invisible to the Storage cmdlets: remove the mount point directly
+        if (-not $done) { Log "mountvol ${L}: /D"; $o = (& mountvol.exe ('{0}:' -f $L) /D 2>&1 | Out-String).Trim(); if ($LASTEXITCODE -ne 0) { throw "mountvol ${L}: /D failed: $o" } }
     } else {
         [void](Invoke-Diskpart @("select volume $L", "remove letter=$L"))
     }
@@ -1259,6 +1286,7 @@ function Load-Mounts {
             if ($j -and $j.Trim()) {
                 # PS 5.1 returns a JSON array as ONE object: foreach (not @(...)) enumerates it correctly.
                 $parsed = ConvertFrom-Json $j
+                Sync-StorageCache
                 foreach ($m in $parsed) {
                     if (-not $m -or -not $m.Letter) { continue }
                     if (Test-MountStillOurs $m) { [void]$script:Mounts.Add($m) }
@@ -1273,8 +1301,8 @@ function Load-Mounts {
 function Test-MountStillOurs($m) {
     $L = ([string]$m.Letter).ToUpper()
     if (-not (Test-LetterUsed $L)) { return $false }
-    if (-not (Get-Command Get-Partition -ErrorAction SilentlyContinue)) { return $false }   # cannot verify -> do not trust
-    try { $p = Get-Partition -DriveLetter $L -ErrorAction Stop } catch { return $false }
+    $p = Get-LetterPartition $L                                                           # $null = cannot verify -> do not trust
+    if (-not $p) { return $false }
     return ([int]$p.DiskNumber -eq [int]$m.Disk -and [int]$p.PartitionNumber -eq [int]$m.Partition)
 }
 function Update-MountList {
@@ -1300,6 +1328,7 @@ function Update-Parts {
 }
 function Dismount-One($m) {
     $L = ([string]$m.Letter).ToUpper()
+    if ($L -notmatch '^[A-Z]$') { Log "Refusing to unmount: '$L' is not a drive letter."; return $false }
     if ($L -eq $env:SystemDrive.Substring(0, 1).ToUpper()) { Log "Refusing to unmount the system drive ${L}:"; return $false }
     try { if (Test-LetterUsed $L) { Unmount-Letter $L; Start-Sleep -Milliseconds 600 } } catch { Log "Unmount error: $($_.Exception.Message)" }
     if (Test-LetterUsed $L) { Log "Could not unmount ${L}: (in use?)"; return $false }
@@ -1354,9 +1383,13 @@ function Backup-Bcd($t) {
     try {
         [void][IO.Directory]::CreateDirectory($BcdBackupDir)
         $f = Join-Path $BcdBackupDir ('BCD_{0}.bak' -f (Get-Date -Format yyyyMMdd_HHmmss))
-        $a = @(); if ($t.Store) { $a += '/store'; $a += $t.Store }; $a += '/export'; $a += $f
-        $o = (& bcdedit.exe @a 2>&1) | Out-String
-        if ($LASTEXITCODE -eq 0 -and [IO.File]::Exists($f)) {
+        if ($t.Store) {
+            # offline store (WinPE / another drive): "bcdedit /store X /export Y" is not supported, so copy the file
+            [IO.File]::Copy($t.Store, $f, $true); [IO.File]::SetAttributes($f, 'Normal'); $o = ''; $ok = [IO.File]::Exists($f)
+        } else {
+            $o = (& bcdedit.exe /export $f 2>&1) | Out-String; $ok = ($LASTEXITCODE -eq 0 -and [IO.File]::Exists($f))
+        }
+        if ($ok) {
             Log "BCD backup saved: $f"
             if ($DataOnRam) { Log 'NOTE: that is the WinPE RAM disk - copy the backup somewhere permanent.' }
             return $true
@@ -1367,6 +1400,13 @@ function Backup-Bcd($t) {
 }
 # every BCD-changing command is preceded by an automatic backup - and is NOT run if that backup fails
 function Invoke-Bcd($t, [string[]]$BcdArgs) {
+    # A failed "bcdedit /import" can leave the running system's BCD store CLOSED (HKLM\BCD00000000 unloaded) until a
+    # restart - seen on VirtualBox UEFI. Every later bcdedit call then fails, so stop and say so instead.
+    if ($null -eq $script:BcdLoadedAtStart) { $script:BcdLoadedAtStart = Test-Path 'HKLM:\BCD00000000' }
+    if ($script:BcdStoreLost -and -not $t.Store) {
+        Log ('NOT RUN (BCD store closed - restart needed): bcdedit ' + ($BcdArgs -join ' '))
+        return [pscustomobject]@{ Rc = 1; Out = 'The boot store of this Windows is CLOSED after a failed bcdedit /import. Restart Windows before using any BCD tool.' }
+    }
     # back up before EVERYTHING except the known read-only verbs (so a future button using /default, /displayorder ... is covered too)
     if ($BcdArgs[0] -notin '/enum', '/v', '/export', '/?') {
         if (-not (Backup-Bcd $t)) {
@@ -1379,7 +1419,35 @@ function Invoke-Bcd($t, [string[]]$BcdArgs) {
     $o = (& bcdedit.exe @a 2>&1) | Out-String
     $rc = $LASTEXITCODE
     Log $o.Trim()
+    if ($rc -ne 0 -and -not $t.Store -and $script:BcdLoadedAtStart -and -not (Test-Path 'HKLM:\BCD00000000')) {
+        $script:BcdStoreLost = $true
+        $warn = "The boot configuration store of this Windows is now CLOSED (bcdedit can no longer open it).${NL}${NL}- Restart Windows before using any Safe Mode, boot menu or BCD tool - they are blocked until then.${NL}- In testing, the BCD on disk was NOT changed by the failed command and Windows started normally.${NL}- To restore a BCD backup reliably, run this tool from WinPE (it then restores by verified file copy)."
+        Log "WARNING: BCD store closed after a failed bcdedit $($BcdArgs[0]) - restart needed."
+        Msg $warn 'Restart required' 'Warning'
+        $o += $NL + $warn
+    }
     return [pscustomobject]@{ Rc = $rc; Out = $o }
+}
+# Restore a BCD backup.
+#  - Offline store (WinPE, or the BCD of another drive): verified FILE COPY - no firmware sync involved.
+#  - Store of the RUNNING Windows: bcdedit /import (cannot copy over a loaded store). This fails on some UEFI firmware;
+#    Invoke-Bcd then detects the closed store and blocks further BCD actions until a restart.
+function Restore-BcdBackup($t, [string]$File) {
+    if (-not [IO.File]::Exists($File)) { return [pscustomobject]@{ Rc = 1; Out = "Backup file not found: $File" } }
+    if ($t.Store) {
+        if (-not (Backup-Bcd $t)) { return [pscustomobject]@{ Rc = 1; Out = 'The BCD backup failed, so the restore was NOT done.' } }
+        try {
+            $attr = [IO.File]::GetAttributes($t.Store)
+            [IO.File]::SetAttributes($t.Store, 'Normal')
+            Copy-Item -LiteralPath $File -Destination $t.Store -Force -ErrorAction Stop
+            [IO.File]::SetAttributes($t.Store, $attr)
+            $same = (Get-FileHash -LiteralPath $File).Hash -eq (Get-FileHash -LiteralPath $t.Store).Hash
+            Log "BCD restored by file copy: $File -> $($t.Store) (verified identical: $same)"
+            if ($same) { return [pscustomobject]@{ Rc = 0; Out = 'Restored by file copy (verified identical to the backup).' } }
+            return [pscustomobject]@{ Rc = 1; Out = 'The file was copied, but the result does not match the backup.' }
+        } catch { return [pscustomobject]@{ Rc = 1; Out = "File copy failed: $($_.Exception.Message)" } }
+    }
+    return (Invoke-Bcd $t @('/import', $File))
 }
 function Update-SafeLabels {
     if ($rbClone.Checked) { $btnSafeOn.Text = 'Create Safe Mode clone'; $btnSafeOff.Text = 'Delete Safe Mode clone(s)' }
@@ -1440,14 +1508,22 @@ function Get-Preflight([string]$Mode) {
             if (@($ans).Count) { & $add 'WARN' ('Existing answer file(s) found; they can conflict with the one you pass: ' + (@($ans) -join '; ')) }
             else { & $add 'OK' 'No leftover answer files found.' }
 
+            # Provisioned (all-users) app list: Get-AppxProvisionedPackage, or - when that is denied (seen on Windows 11
+            # build 26300 even as admin) - the AppxAllUserStore registry list, which does not depend on the display language.
+            $prov = $null
+            try { $prov = @(Get-AppxProvisionedPackage -Online -ErrorAction Stop | ForEach-Object { $_.DisplayName }) } catch {}
+            if ($null -eq $prov) {
+                $ak = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Appx\AppxAllUserStore\Applications'
+                if (Test-Path $ak) { $prov = @(Get-ChildItem $ak | ForEach-Object { ($_.PSChildName -split '_')[0] } | Sort-Object -Unique) }
+            }
             try {
-                $prov = @(Get-AppxProvisionedPackage -Online -ErrorAction Stop | ForEach-Object { $_.DisplayName })
+                if ($null -eq $prov) { throw 'the provisioned-app list could not be read' }
                 $bad = @(Get-AppxPackage -AllUsers -ErrorAction Stop | Where-Object { -not $_.IsFramework -and -not $_.IsResourcePackage -and $_.SignatureKind -ne 'System' -and $prov -notcontains $_.Name } | ForEach-Object { $_.Name } | Sort-Object -Unique)
                 if ($bad.Count) {
                     $shown = ($bad | Select-Object -First 15) -join ', '
                     & $add 'WARN' "Possible Store apps installed for a user but not provisioned for all users (the classic generalize failure): $shown. Remove them with Remove-AppxPackage -AllUsers if sysprep fails."
                 } else { & $add 'OK' 'No per-user-only Store apps found.' }
-            } catch { & $add 'INFO' 'Store app check skipped (Appx cmdlets unavailable).' }
+            } catch { & $add 'WARN' ("Could not check for Store apps installed for one user only ($($_.Exception.Message)) - the most common reason generalize fails. If it fails, look for 'was installed for a user, but not provisioned for all users' in %windir%\System32\Sysprep\Panther\setupact.log.") }
         }
 
         $err = "$env:windir\System32\Sysprep\Panther\setuperr.log"
@@ -1622,15 +1698,17 @@ $Tools = @(
             if (-not $t) { Msg 'No boot entry found for that install. Mount the EFI partition first.' 'Recovery' 'Warning'; return $null }
             return @{ Summary = 'bcdedit /export <timestamped file>'; Run = { param($a) if (-not (Backup-Bcd $a)) { Msg 'The BCD backup failed. See the activity log.' 'Error' 'Error' } }; RunArg = $t } } },
     [pscustomobject]@{ Name = 'BCD: restore from backup (import)'; Needs = 'install'
-        Help = "Replaces the boot configuration store with a backup file made earlier (bcdedit /import).${NL}${NL}Use cases:${NL}- Undo a failed repair or rebuild.${NL}- Recover after a bad BCD edit.${NL}${NL}A fresh backup of the current store is taken first. This replaces the WHOLE store."
+        Help = "Replaces the boot configuration store with a backup file made earlier.${NL}${NL}Use cases:${NL}- Undo a failed repair or rebuild.${NL}- Recover after a bad BCD edit.${NL}${NL}A fresh backup of the current store is taken first. This replaces the WHOLE store.${NL}${NL}In WinPE / for another drive's BCD: restored by a verified file copy (reliable).${NL}For the RUNNING Windows: bcdedit /import - this fails on some UEFI PCs and VMs (seen on VirtualBox) and then closes the boot store until Windows restarts. Prefer running the restore from WinPE."
         Build = { param($c, $tool)
             $t = Resolve-BcdTarget $c.Win
             if (-not $t) { Msg 'No boot entry found for that install. Mount the EFI partition first.' 'Recovery' 'Warning'; return $null }
+            if (-not $t.Store -and -not (Ask "This restores into the boot store of the RUNNING Windows with bcdedit /import.${NL}${NL}On some UEFI PCs and virtual machines (seen on VirtualBox) bcdedit /import FAILS and then closes the boot store until Windows restarts. In testing the BCD on disk stayed as it was and Windows started normally.${NL}${NL}The reliable way: run this tool from WinPE (Hiren's) - the restore is then a verified file copy.${NL}${NL}Try bcdedit /import now?" 'Restore BCD into the running Windows' 'Warning' 'Button2')) { return $null }
             $dlg = New-Object Windows.Forms.OpenFileDialog; $dlg.Title = 'Select a BCD backup file'
             if (Test-Path $BcdBackupDir) { $dlg.InitialDirectory = $BcdBackupDir }
             if ($dlg.ShowDialog() -ne 'OK') { return $null }
-            return @{ Summary = "bcdedit /import `"$($dlg.FileName)`""; RunArg = @{ T = $t; F = $dlg.FileName }
-                Run = { param($a) $r = Invoke-Bcd $a.T @('/import', $a.F); if ($r.Rc -ne 0) { Msg 'Import failed. See the log.' 'Error' 'Error' } } } } },
+            $how = if ($t.Store) { "copy `"$($dlg.FileName)`" over $($t.Store) (verified)" } else { "bcdedit /import `"$($dlg.FileName)`"" }
+            return @{ Summary = $how; RunArg = @{ T = $t; F = $dlg.FileName }
+                Run = { param($a) $r = Restore-BcdBackup $a.T $a.F; if ($r.Rc -ne 0) { Msg ("Restore failed:${NL}${NL}" + $r.Out.Trim()) 'Error' 'Error' } else { Msg $r.Out.Trim() } } } } },
     [pscustomobject]@{ Name = 'Rebuild boot files (bcdboot)'; Needs = 'both'; Exe = 'bcdboot.exe'; Window = $false
         Help = "bcdboot <Windows>\Windows /s <boot partition> /f UEFI|BIOS${NL}${NL}Copies fresh boot files from the Target Windows onto the chosen boot partition and creates a new BCD entry. Firmware type (/f) comes from how THIS PC boots (UEFI or BIOS); you are warned if the chosen partition does not match.${NL}${NL}Use cases:${NL}- 'BOOTMGR is missing' or 'winload.efi not found'.${NL}- Empty or recreated EFI partition.${NL}- Boot files damaged or wiped."
         Argv = { param($c)
