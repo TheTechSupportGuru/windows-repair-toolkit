@@ -1,5 +1,5 @@
 #requires -Version 5.1
-# Version 1.4 (2026-11-19) - edited copy. What changed: Edited scripts\V1.4\CHANGES.md
+# Version 1.7 (2026-11-19) - edited copy. What changed: Edited scripts\V1.7\CHANGES.md
 <#
     WinSuperTool.ps1  -  all-in-one Windows tech toolkit (one file, no extra libraries)
     Runs on Windows 10 / 11 and in WinPE (built for Hiren's BootCD PE 11).
@@ -10,7 +10,7 @@
     Tabs
       1  Collect Logs   Windows Update, DISM/CBS, Event Viewer, crashes, setup/upgrade, system info.
                         Works on the running Windows OR an offline install (WinPE / second drive).
-      2  Live Monitor   one window per log (Get-Content <log> -Tail 20 -Wait), live Event Viewer
+      2  Live Monitor   one window per log (Get-Content <log> -Tail <N> -Wait), live Event Viewer
                         channels, folder watchers, paste-any-path section.
       3  AI Analyze     logs + screenshots to Claude or Gemini. Phone QR login (key encrypted with a
                         one-time pad, memory only), 1-hour session.
@@ -55,6 +55,8 @@ Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 [Windows.Forms.Application]::EnableVisualStyles()
 try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12 } catch {}
 $PsExePath = Join-Path $PSHOME 'powershell.exe'
+$script:Consoles = New-Object Collections.ArrayList     # repair console windows started from the Recovery tab
+$script:Busy = $null                                    # set while a long job (log collection) runs
 
 # minimize the console window behind the GUI (errors stay readable there)
 try {
@@ -265,22 +267,23 @@ function Say([string]$m) {
 function Copy-One([string]$s, [string]$d) {
     try { [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($d)) } catch {}
     try {
-        Copy-Item -LiteralPath $s -Destination $d -Force -ErrorAction Stop
+        [IO.File]::Copy($s, $d, $true)          # much faster than Copy-Item for thousands of small files
         $script:ColCount++
     } catch {
         # fallback for files Windows holds open (shared read)
-        $in = $null; $out = $null
+        $in = $null; $out = $null; $ok = $false
         try {
             $in  = [IO.File]::Open($s, 'Open', 'Read', 'ReadWrite,Delete')
             $out = [IO.File]::Create($d)
             $in.CopyTo($out)
-            $script:ColCount++
+            $script:ColCount++; $ok = $true
         } catch {
             $script:ColFail++
             Say "   FAILED: $s"
         } finally {
             if ($out) { $out.Dispose() }
             if ($in)  { $in.Dispose() }
+            if (-not $ok -and $out) { try { [IO.File]::Delete($d) } catch {} }   # no half-written file in the output
         }
     }
 }
@@ -291,9 +294,11 @@ function Copy-Safe([string]$src, [string]$dest) {
         $files = @(Get-ChildItem -LiteralPath $root -Recurse -File -Force -ErrorAction SilentlyContinue)
         if (-not $files.Count) { Say "   (empty) $src"; return }
         $leaf = Split-Path $root -Leaf
+        $i = 0
         foreach ($f in $files) {
             $rel = $f.FullName.Substring($root.Length).TrimStart('\')
             Copy-One $f.FullName (Join-Path (Join-Path $dest $leaf) $rel)
+            if ((++$i % 25) -eq 0) { Say "   ... $i / $($files.Count) files from $leaf" }   # progress (Say also keeps the window responsive)
         }
     } else {
         $files = @(Get-ChildItem -Path $src -File -Force -ErrorAction SilentlyContinue)
@@ -319,8 +324,12 @@ function Export-Evt([string]$name, [string]$dest, [string]$W, [bool]$Live) {
     [void][IO.Directory]::CreateDirectory($dest)
     $fileName = ($name -replace '[\\/]', '%4') + '.evtx'
     if ($Live) {
-        & wevtutil.exe epl $name (Join-Path $dest $fileName) /ow:true 2>&1 | Out-Null
-        if ($LASTEXITCODE -eq 0) { $script:ColCount++ } else { Say "   skipped (channel missing/empty): $name" }
+        $o = (& wevtutil.exe epl $name (Join-Path $dest $fileName) /ow:true 2>&1 | ForEach-Object { if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.Exception.Message } else { [string]$_ } }) -join ' '
+        # 15007 = ERROR_EVT_CHANNEL_NOT_FOUND (language-independent). Anything else is a real failure (path, access, disk full),
+        # not "channel missing" - it used to be reported as skipped and never counted.
+        if ($LASTEXITCODE -eq 0) { $script:ColCount++ }
+        elseif ($LASTEXITCODE -eq 15007) { Say "   skipped (channel does not exist on this Windows): $name" }
+        else { $script:ColFail++; Say "   FAILED (wevtutil exit code $LASTEXITCODE): $name - $($o.Trim())" }
     } else {
         $src = Join-Path $W ('Windows\System32\winevt\Logs\' + $fileName)
         if ([IO.File]::Exists($src)) { Copy-One $src (Join-Path $dest $fileName) } else { Say "   (not found) $src" }
@@ -411,12 +420,22 @@ $Collectors = [ordered]@{
                 Format-List TimeCreated, Id, ProviderName, Message |
                 Out-File (Join-Path $d 'Crash_Shutdown_Events.txt') -Width 250
             $script:ColCount++
-        } catch { Say '   No crash/shutdown events found' }
+        } catch {
+            if ($_.FullyQualifiedErrorId -like 'NoMatchingEventsFound*') { Say '   No crash/shutdown events found' }
+            else { $script:ColFail++; Say "   Crash/shutdown events FAILED: $($_.Exception.Message)" }
+        }
     } }
 
     'BIG' = @{ Default = $false; Label = 'LARGE dumps (MEMORY.DMP + LiveKernelReports) - can be several GB'; Run = {
         param($W, $Live, $Root, $Prof)
         $d = Join-Path $Root '4b_LargeDumps'
+        # only existing paths, -LiteralPath: "Get-ChildItem <missing file> -Recurse" would search ALL of C:\Windows for that name
+        $need = 0
+        foreach ($bp in "$W\Windows\MEMORY.DMP", "$W\Windows\LiveKernelReports") {
+            if (Test-Path -LiteralPath $bp) { $need += [long](Get-ChildItem -LiteralPath $bp -Recurse -File -Force -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum }
+        }
+        $free = try { (New-Object IO.DriveInfo ([IO.Path]::GetPathRoot($Root))).AvailableFreeSpace } catch { [long]::MaxValue }
+        if ($need -and $need -gt ($free - 512MB)) { $script:ColFail++; Say ('   SKIPPED: the dumps need {0}, only {1} free on the output drive.' -f (Fmt-Size $need), (Fmt-Size $free)); return }
         Copy-Safe "$W\Windows\MEMORY.DMP"        $d
         Copy-Safe "$W\Windows\LiveKernelReports" $d
     } }
@@ -439,18 +458,21 @@ $Collectors = [ordered]@{
         $d = Join-Path $Root '6_SystemInfo'
         [void][IO.Directory]::CreateDirectory($d)
         if ($Live) {
-            & systeminfo.exe | Out-File (Join-Path $d 'systeminfo.txt'); $script:ColCount++
-            try { Get-HotFix | Sort-Object InstalledOn -Descending | Format-Table -AutoSize | Out-File (Join-Path $d 'hotfixes.txt') -Width 250; $script:ColCount++ } catch {}
+            # count only what really worked
+            & systeminfo.exe 2>&1 | Out-File (Join-Path $d 'systeminfo.txt')
+            if ($LASTEXITCODE -eq 0) { $script:ColCount++ } else { $script:ColFail++; Say "   systeminfo failed (exit code $LASTEXITCODE)" }
+            try { Get-HotFix -ErrorAction Stop | Sort-Object InstalledOn -Descending | Format-Table -AutoSize | Out-File (Join-Path $d 'hotfixes.txt') -Width 250; $script:ColCount++ } catch { $script:ColFail++; Say "   hotfix list failed: $($_.Exception.Message)" }
             try {
                 Get-WindowsPackage -Online -ErrorAction Stop | Format-Table PackageName, PackageState, InstallTime -AutoSize |
                     Out-File (Join-Path $d 'dism_packages.txt') -Width 300
                 $script:ColCount++
-            } catch {}
+            } catch { $script:ColFail++; Say "   package list failed: $($_.Exception.Message)" }
         } else {
             Say '   Offline target: using DISM /image (systeminfo and the hotfix list need the running Windows).'
-            & dism.exe "/image:$W\" /get-packages /format:table 2>&1 | Out-File (Join-Path $d 'dism_packages.txt') -Width 300
-            & dism.exe "/image:$W\" /get-drivers /format:table 2>&1 | Out-File (Join-Path $d 'dism_drivers.txt') -Width 300
-            $script:ColCount += 2
+            foreach ($q in @(@('/get-packages', 'dism_packages.txt'), @('/get-drivers', 'dism_drivers.txt'))) {
+                & dism.exe "/image:$W\" $q[0] /format:table 2>&1 | Out-File (Join-Path $d $q[1]) -Width 300
+                if ($LASTEXITCODE -eq 0) { $script:ColCount++ } else { $script:ColFail++; Say "   dism $($q[0]) failed (exit code $LASTEXITCODE) - see $($q[1])" }
+            }
         }
         $v = ''
         try { $v = (Get-Item -LiteralPath "$W\Windows\System32\ntoskrnl.exe").VersionInfo.ProductVersion } catch {}
@@ -603,7 +625,8 @@ $AiSessionMin    = 60        # session length in minutes
 $AiPairingMin    = 5         # how long each QR code stays valid
 $AiMaxFileChars  = 150000    # newest part of each log that is sent
 $AiMaxTotalChars = 450000    # all logs together (keeps requests fast and inside model limits)
-$AiMaxImageBytes = 4.5MB
+$AiMaxImageBytes = 3.5MB      # per image (raw); base64 is 4/3 bigger, so this stays under a 5 MB per-image limit either way
+$AiMaxTotalImageB64 = 15MB    # all images together, as base64 (keeps the whole request well under the API request-size limits)
 $AiImageMaxEdge  = 2000      # bigger screenshots are scaled down before upload (saves bandwidth)
 $AiImageTypes    = @{ '.png' = 'image/png'; '.jpg' = 'image/jpeg'; '.jpeg' = 'image/jpeg'; '.gif' = 'image/gif'; '.webp' = 'image/webp' }
 $AiConvertTypes  = @('.bmp', '.tif', '.tiff')
@@ -882,7 +905,10 @@ function Invoke-PairClient($client) {
     $stream = $client.GetStream()
     $script:PairConns++                     # every connection counts toward the junk limit (see the timer)
     $buf = New-Object byte[] 8192; $total = 0; $hEnd = -1; $txt = ''
+    # overall deadline: the 700 ms timeout is per Read, so a client sending one byte at a time could hold the GUI thread
+    $deadline = [DateTime]::UtcNow.AddMilliseconds(1500)
     while ($total -lt $buf.Length) {
+        if ([DateTime]::UtcNow -gt $deadline) { return }
         $r = $stream.Read($buf, $total, $buf.Length - $total)
         if ($r -le 0) { break }
         $total += $r
@@ -921,7 +947,8 @@ function Invoke-PairClient($client) {
             }
         } catch {}
         if ($ok) { Send-Resp $stream 200 'text/plain' 'OK' }
-        else { $script:Attempts++; Send-Resp $stream 400 'text/plain' 'Invalid' }
+        # one rejected key ends this QR code: a second attempt with the same one-time pad would leak key XOR key
+        else { $script:Attempts = 5; Send-Resp $stream 400 'text/plain' 'Invalid' }
     }
     else { Send-Resp $stream 404 'text/plain' 'Not found' }
 }
@@ -950,7 +977,8 @@ function Read-LogForAi([string]$path, [int]$cap) {
     if ([IO.Path]::GetExtension($path).ToLower() -eq '.evtx') {
         $ev = @(Get-WinEvent -FilterHashtable @{ Path = $path; Level = 1, 2, 3 } -MaxEvents 400 -ErrorAction SilentlyContinue)
         $hdr = 'Critical / Error / Warning events only, newest first:'
-        if (-not $ev.Count) { $ev = @(Get-WinEvent -Path $path -MaxEvents 400 -ErrorAction Stop); $hdr = 'Newest events (no errors or warnings found):' }
+        if (-not $ev.Count) { $ev = @(Get-WinEvent -Path $path -MaxEvents 400 -ErrorAction SilentlyContinue); $hdr = 'Newest events (no errors or warnings found):' }
+        if (-not $ev.Count) { return @{ Text = '(this event log contains no events)'; Truncated = $false; Binary = $false } }   # wevtutil writes empty logs for empty channels
         $lines = foreach ($e in $ev) {
             $m = $e.Message
             if (-not $m) { $m = '(no message text) ' + ((@($e.Properties) | ForEach-Object { $_.Value }) -join '; ') }
@@ -958,12 +986,19 @@ function Read-LogForAi([string]$path, [int]$cap) {
         }
         $text = $hdr + "`n" + (@($lines) -join "`n")
     } else {
+        # known binary formats (ETL traces, dumps, hives, archives) are never sent as text
+        if ([IO.Path]::GetExtension($path).ToLower() -in '.etl', '.dmp', '.hiv', '.dat', '.zip', '.cab', '.exe', '.dll', '.sys', '.bin', '.db', '.edb', '.mdmp', '.hdmp') { return @{ Binary = $true } }
         $t = Read-TextTail $path $cap
         $text = $t.Text; $trunc = $t.Truncated
-        if ($text.Length -gt 200 -and ([regex]::Matches($text, '[\x00-\x08\x0E-\x1A]')).Count -gt ($text.Length / 20)) { return @{ Binary = $true } }
+        # binary data decoded as UTF-8 mostly turns into U+FFFD replacement characters, so count those as well
+        if ($text.Length -gt 200 -and ([regex]::Matches($text, '[\x00-\x08\x0E-\x1A\uFFFD]')).Count -gt ($text.Length / 20)) { return @{ Binary = $true } }
         $text = $text.Replace([string][char]0, '')
     }
-    if ($text.Length -gt $cap) { $text = $text.Substring($text.Length - $cap); $trunc = $true }
+    if ($text.Length -gt $cap) {
+        # event logs are listed NEWEST FIRST, so keep the start; text logs grow at the end, so keep the end
+        if ([IO.Path]::GetExtension($path) -ieq '.evtx') { $text = $text.Substring(0, $cap) } else { $text = $text.Substring($text.Length - $cap) }
+        $trunc = $true
+    }
     return @{ Text = $text; Truncated = $trunc; Binary = $false }
 }
 # returns @{ Mime; Data(base64); Note } - converts BMP/TIFF and shrinks oversized screenshots to JPEG
@@ -972,13 +1007,12 @@ function Get-ImagePart([string]$path) {
     $len  = (Get-Item -LiteralPath $path).Length
     $mime = $AiImageTypes[$ext]
     $convert = (-not $mime) -or ($len -gt $AiMaxImageBytes)
-    $img = $null
+    $img = $null; $bmp = $null; $g = $null; $ms = $null
     try {
         if (-not $convert -and $ext -ne '.webp' -and $ext -ne '.gif') {
-            try {
-                $img = [Drawing.Image]::FromFile($path)
-                if ([Math]::Max($img.Width, $img.Height) -gt $AiImageMaxEdge) { $convert = $true }
-            } catch { $img = $null }
+            # a file that GDI+ cannot decode is not a usable picture: sending it would make the API reject the WHOLE request
+            try { $img = [Drawing.Image]::FromFile($path) } catch { throw 'not a valid image file' }
+            if ([Math]::Max($img.Width, $img.Height) -gt $AiImageMaxEdge) { $convert = $true }
         }
         if (-not $convert) { return @{ Mime = $mime; Data = [Convert]::ToBase64String([IO.File]::ReadAllBytes($path)); Note = '' } }
         if (-not $img) { $img = [Drawing.Image]::FromFile($path) }
@@ -989,17 +1023,18 @@ function Get-ImagePart([string]$path) {
         $g.InterpolationMode = [Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
         $g.Clear([Drawing.Color]::White)
         $g.DrawImage($img, 0, 0, $nw, $nh)
-        $g.Dispose()
         $codec = [Drawing.Imaging.ImageCodecInfo]::GetImageEncoders() | Where-Object { $_.MimeType -eq 'image/jpeg' } | Select-Object -First 1
         $ep = New-Object Drawing.Imaging.EncoderParameters 1
         $ep.Param[0] = New-Object Drawing.Imaging.EncoderParameter ([Drawing.Imaging.Encoder]::Quality, [long]85)
         $ms = New-Object IO.MemoryStream
         $bmp.Save($ms, $codec, $ep)
-        $bmp.Dispose()
         return @{ Mime = 'image/jpeg'; Data = [Convert]::ToBase64String($ms.ToArray()); Note = " (converted to ${nw}x${nh} JPEG for upload)" }
     } catch {
         throw "Image '$([IO.Path]::GetFileName($path))' could not be prepared: $($_.Exception.Message)"
-    } finally { if ($img) { $img.Dispose() } }
+    } finally {
+        # dispose on every path (GDI+ handles leak otherwise)
+        foreach ($o in $g, $bmp, $ms, $img) { if ($o) { try { $o.Dispose() } catch {} } }
+    }
 }
 function ConvertTo-JsonText([string]$s) {
     if ($null -eq $s) { return 'null' }
@@ -1016,17 +1051,22 @@ function New-AiRequest([bool]$gemini) {
         if ($gemini) { $parts.Add('{"text":' + (ConvertTo-JsonText $t) + '}') }
         else { $parts.Add('{"type":"text","text":' + (ConvertTo-JsonText $t) + '}') }
     }
+    $imgBytes = 0
     foreach ($f in @($aiFiles)) {
         $name = [IO.Path]::GetFileName($f)
         $ext  = [IO.Path]::GetExtension($f).ToLower()
+        $lblAiStatus.Text = "Preparing $name ..."; [Windows.Forms.Application]::DoEvents()   # keep the window responsive
         if ($AiImageTypes.ContainsKey($ext) -or $AiConvertTypes -contains $ext) {
-            $img = Get-ImagePart $f
+            # one unreadable file must not cancel the whole request: skip it and say so in the prompt
+            try { $img = Get-ImagePart $f } catch { $notes.Add("not sent ($($_.Exception.Message)): $name"); continue }
+            if ($imgBytes + $img.Data.Length -gt $AiMaxTotalImageB64) { $notes.Add("not sent (image size budget used up): $name"); continue }
+            $imgBytes += $img.Data.Length
             & $addText ("Image file: $name" + $img.Note)
             if ($gemini) { $parts.Add('{"inline_data":{"mime_type":"' + $img.Mime + '","data":"' + $img.Data + '"}}') }
             else { $parts.Add('{"type":"image","source":{"type":"base64","media_type":"' + $img.Mime + '","data":"' + $img.Data + '"}}') }
         } else {
             if ($budget -lt 2000) { $notes.Add("not sent (size budget used up): $name"); continue }
-            $r = Read-LogForAi $f ([Math]::Min($AiMaxFileChars, $budget))
+            try { $r = Read-LogForAi $f ([Math]::Min($AiMaxFileChars, $budget)) } catch { $notes.Add("not sent (could not read: $($_.Exception.Message)): $name"); continue }
             if ($r.Binary) { $notes.Add("not sent (binary file): $name"); continue }
             $budget -= $r.Text.Length
             $label = "Log file: $name"
@@ -1045,9 +1085,12 @@ function New-AiRequest([bool]$gemini) {
         $uri = "https://generativelanguage.googleapis.com/v1beta/models/$($AiModelGemini):generateContent"
         $headers = @{ 'x-goog-api-key' = $script:ApiKey }
     } else {
-        $json = '{"model":' + (ConvertTo-JsonText $AiModelClaude) + ',"max_tokens":4096,"system":' + (ConvertTo-JsonText $AiSystemPrompt) + ',"messages":[{"role":"user","content":[' + $joined + ']}]}'
+        # max_tokens 16000: on Sonnet 5.5 adaptive thinking is on by default and its tokens count toward max_tokens, so 4096
+        # could leave little or no room for the answer (16000 is the recommended ceiling for a non-streaming request).
+        # "fallbacks":"default" (beta) lets the API retry a refused request on a fallback model instead of returning nothing.
+        $json = '{"model":' + (ConvertTo-JsonText $AiModelClaude) + ',"max_tokens":16000,"fallbacks":"default","system":' + (ConvertTo-JsonText $AiSystemPrompt) + ',"messages":[{"role":"user","content":[' + $joined + ']}]}'
         $uri = 'https://api.anthropic.com/v1/messages'
-        $headers = @{ 'x-api-key' = $script:ApiKey; 'anthropic-version' = '2023-06-01' }
+        $headers = @{ 'x-api-key' = $script:ApiKey; 'anthropic-version' = '2023-06-01'; 'anthropic-beta' = 'server-side-fallback-2026-07-01' }
     }
     return @{ Uri = $uri; Headers = $headers; Body = [Text.Encoding]::UTF8.GetBytes($json); Notes = $notes }
 }
@@ -1059,7 +1102,7 @@ function Start-AiRequest($req, [bool]$gemini) {
         try {
             [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
             # Invoke-WebRequest + explicit UTF-8 decode: PS 5.1 would read a charset-less JSON reply as ISO-8859-1
-            $w = Invoke-WebRequest -Uri $u -Method Post -Body $b -ContentType 'application/json; charset=utf-8' -Headers $h -TimeoutSec 300 -UseBasicParsing -ErrorAction Stop
+            $w = Invoke-WebRequest -Uri $u -Method Post -Body $b -ContentType 'application/json; charset=utf-8' -Headers $h -TimeoutSec 600 -UseBasicParsing -ErrorAction Stop
             $r = [Text.Encoding]::UTF8.GetString($w.RawContentStream.ToArray()) | ConvertFrom-Json
             [pscustomobject]@{ Ok = $true; Resp = $r; Err = '' }
         } catch {
@@ -1100,10 +1143,14 @@ function Complete-AiRequest {
             if ($cand.Count) { $why = $cand[0].finishReason }
             if ($resp.promptFeedback) { $why += ' ' + $resp.promptFeedback.blockReason }
             $out = "No response text was returned (reason: $why). The content may have been blocked by Google."
-        }
+        } elseif ($cand[0].finishReason -eq 'MAX_TOKENS') { $out += "`r`n`r`n[The answer was cut off at the length limit.]" }
     } else {
         $out = (@($resp.content) | Where-Object { $_.type -eq 'text' } | ForEach-Object { $_.text }) -join "`r`n"
-        if ($resp.stop_reason -eq 'max_tokens') { $out += "`r`n`r`n[The answer was cut off at the length limit.]" }
+        if ($resp.stop_reason -eq 'refusal') {
+            $cat = ''; if ($resp.stop_details -and $resp.stop_details.category) { $cat = " (category: $($resp.stop_details.category))" }
+            $out = "Claude declined to analyze this request$cat." + $(if ($out) { "`r`n`r`nPartial text:`r`n$out" } else { '' })
+        } elseif ($resp.stop_reason -eq 'max_tokens') { $out += "`r`n`r`n[The answer was cut off at the length limit.]" }
+        if (-not $out) { $out = "No response text was returned (stop_reason: $($resp.stop_reason))." }
     }
     $txtAiOut.Text = ($out -replace "(?<!`r)`n", "`r`n")
     $secs = [int]((Get-Date) - $job.Started).TotalSeconds
@@ -1225,10 +1272,24 @@ function Get-PartLetter($disk, $part) {
         $p = Get-Partition -DiskNumber $disk -PartitionNumber $part
         if ([int][char]$p.DriveLetter -gt 0) { return [string]$p.DriveLetter } else { return '' }
     }
-    $detail = Invoke-Diskpart @("select disk $disk", "select partition $part", 'detail partition')
-    if ($detail -match 'no volume') { return 'NOVOLUME' }
-    if ($detail -match '(?m)^\s*\*?\s*Volume\s+\d+\s+([A-Z])\s') { return $Matches[1] }
-    return ''
+    return (Get-DpPartLetter $disk $part)
+}
+# diskpart "detail partition": letter of the partition's volume, read by COLUMN POSITION under the "---- ---" underline
+# (the words "Volume" / "no volume" are translated). Returns 'X', '' (volume without letter) or 'NOVOLUME'.
+function Get-DpPartLetter($disk, $part, [string]$Detail = '') {
+    if (-not $Detail) { $Detail = Invoke-Diskpart @("select disk $disk", "select partition $part", 'detail partition') }
+    $lines = @($Detail -split "`r?`n")
+    for ($i = 0; $i -lt $lines.Count - 1; $i++) {
+        if ($lines[$i] -match '^\s*-{2,}(\s+-{2,})+\s*$') {
+            $cols = [regex]::Matches($lines[$i], '-+')
+            $row = $lines[$i + 1]
+            if ($cols.Count -lt 2 -or -not $row.Trim()) { return 'NOVOLUME' }
+            $c = $cols[1]                                                   # 2nd column = drive letter
+            $l = $row.PadRight($c.Index + $c.Length).Substring($c.Index, $c.Length).Trim()
+            if ($l -cmatch '^[A-Z]$') { return $l } else { return '' }
+        }
+    }
+    return 'NOVOLUME'                                                       # no volume table at all
 }
 # The Storage cmdlets cache disk/partition data per process and do not see letters that diskpart (or another
 # program) changed meanwhile. Refresh before trusting Get-Partition.
@@ -1300,7 +1361,9 @@ function Load-Mounts {
 # Otherwise "Unmount" could remove the letter of a different drive that took that letter since.
 function Test-MountStillOurs($m) {
     $L = ([string]$m.Letter).ToUpper()
-    if (-not (Test-LetterUsed $L)) { return $false }
+    if (-not $L -or -not (Test-LetterUsed $L)) { return $false }
+    # WinPE without Storage cmdlets: ask diskpart which letter that disk/partition has now
+    if (-not (Get-Command Get-Partition -ErrorAction SilentlyContinue)) { return ((Get-DpPartLetter $m.Disk $m.Partition) -eq $L) }
     $p = Get-LetterPartition $L                                                           # $null = cannot verify -> do not trust
     if (-not $p) { return $false }
     return ([int]$p.DiskNumber -eq [int]$m.Disk -and [int]$p.PartitionNumber -eq [int]$m.Partition)
@@ -1330,6 +1393,15 @@ function Dismount-One($m) {
     $L = ([string]$m.Letter).ToUpper()
     if ($L -notmatch '^[A-Z]$') { Log "Refusing to unmount: '$L' is not a drive letter."; return $false }
     if ($L -eq $env:SystemDrive.Substring(0, 1).ToUpper()) { Log "Refusing to unmount the system drive ${L}:"; return $false }
+    # the letter may have been taken by ANOTHER volume since it was mounted here (Explorer, Disk Management, USB re-plug)
+    if (Test-LetterUsed $L) {
+        $owner = $null                                                  # $null = cannot tell -> keep the old behaviour
+        if (Get-Command Get-Partition -ErrorAction SilentlyContinue) {
+            $p = Get-LetterPartition $L
+            if ($p) { $owner = ([int]$p.DiskNumber -eq [int]$m.Disk -and [int]$p.PartitionNumber -eq [int]$m.Partition) }
+        } else { $owner = ((Get-DpPartLetter $m.Disk $m.Partition) -eq $L) }
+        if ($owner -eq $false) { Log "${L}: now belongs to another partition - forgetting it, NOT unmounting."; $script:Mounts.Remove($m); return $false }
+    }
     try { if (Test-LetterUsed $L) { Unmount-Letter $L; Start-Sleep -Milliseconds 600 } } catch { Log "Unmount error: $($_.Exception.Message)" }
     if (Test-LetterUsed $L) { Log "Could not unmount ${L}: (in use?)"; return $false }
     $script:Mounts.Remove($m); Log "Unmounted ${L}:"; return $true
@@ -1362,8 +1434,15 @@ function Resolve-BcdTarget($drive) {
         $sb = ''; if ($e) { $sb = $e.Safeboot }
         return @{ Store = $null; Id = '{current}'; Safeboot = $sb }
     }
+    # Running Windows + another install on this PC (dual boot): its entry normally lives in the LOADED system store.
+    # Use that (no /store): the same file on a mounted ESP is locked as a registry hive, so backups would fail.
+    if (-not $IsWinPE) {
+        foreach ($e in @(ConvertFrom-BcdText ((& bcdedit.exe /enum osloader 2>&1) | Out-String))) {
+            if ($e.Dev -eq $drive.ToUpper()) { return @{ Store = $null; Id = $e.Id; Safeboot = $e.Safeboot } }
+        }
+    }
     foreach ($d in [IO.DriveInfo]::GetDrives()) {
-        if (-not $d.IsReady) { continue }
+        if ($d.DriveType -notin 'Fixed', 'Removable' -or -not $d.IsReady) { continue }   # no network / optical drives
         $l = $d.Name.Substring(0, 2)
         foreach ($rel in '\EFI\Microsoft\Boot\BCD', '\Boot\BCD') {
             $store = "$l$rel"
@@ -1436,16 +1515,17 @@ function Restore-BcdBackup($t, [string]$File) {
     if (-not [IO.File]::Exists($File)) { return [pscustomobject]@{ Rc = 1; Out = "Backup file not found: $File" } }
     if ($t.Store) {
         if (-not (Backup-Bcd $t)) { return [pscustomobject]@{ Rc = 1; Out = 'The BCD backup failed, so the restore was NOT done.' } }
+        $attr = $null
         try {
             $attr = [IO.File]::GetAttributes($t.Store)
             [IO.File]::SetAttributes($t.Store, 'Normal')
             Copy-Item -LiteralPath $File -Destination $t.Store -Force -ErrorAction Stop
-            [IO.File]::SetAttributes($t.Store, $attr)
             $same = (Get-FileHash -LiteralPath $File).Hash -eq (Get-FileHash -LiteralPath $t.Store).Hash
             Log "BCD restored by file copy: $File -> $($t.Store) (verified identical: $same)"
             if ($same) { return [pscustomobject]@{ Rc = 0; Out = 'Restored by file copy (verified identical to the backup).' } }
             return [pscustomobject]@{ Rc = 1; Out = 'The file was copied, but the result does not match the backup.' }
         } catch { return [pscustomobject]@{ Rc = 1; Out = "File copy failed: $($_.Exception.Message)" } }
+        finally { if ($null -ne $attr) { try { [IO.File]::SetAttributes($t.Store, $attr) } catch {} } }   # hidden+system back on every path
     }
     return (Invoke-Bcd $t @('/import', $File))
 }
@@ -1696,7 +1776,7 @@ $Tools = @(
         Build = { param($c, $tool)
             $t = Resolve-BcdTarget $c.Win
             if (-not $t) { Msg 'No boot entry found for that install. Mount the EFI partition first.' 'Recovery' 'Warning'; return $null }
-            return @{ Summary = 'bcdedit /export <timestamped file>'; Run = { param($a) if (-not (Backup-Bcd $a)) { Msg 'The BCD backup failed. See the activity log.' 'Error' 'Error' } }; RunArg = $t } } },
+            return @{ Summary = $(if ($t.Store) { 'copy the offline BCD file to a timestamped backup' } else { 'bcdedit /export <timestamped file>' }); Run = { param($a) if (-not (Backup-Bcd $a)) { Msg 'The BCD backup failed. See the activity log.' 'Error' 'Error' } }; RunArg = $t } } },
     [pscustomobject]@{ Name = 'BCD: restore from backup (import)'; Needs = 'install'
         Help = "Replaces the boot configuration store with a backup file made earlier.${NL}${NL}Use cases:${NL}- Undo a failed repair or rebuild.${NL}- Recover after a bad BCD edit.${NL}${NL}A fresh backup of the current store is taken first. This replaces the WHOLE store.${NL}${NL}In WinPE / for another drive's BCD: restored by a verified file copy (reliable).${NL}For the RUNNING Windows: bcdedit /import - this fails on some UEFI PCs and VMs (seen on VirtualBox) and then closes the boot store until Windows restarts. Prefer running the restore from WinPE."
         Build = { param($c, $tool)
@@ -1890,7 +1970,7 @@ $txtColOut.Text = Get-DefaultLogRoot
 
 # ---------- 2. Live Monitor ----------
 [void](New-Ctl 'Label' $tpMon 10 8 880 20 'Tick the logs to watch, then press "Launch selected". Each log opens in its own window. Monitors watch the Windows this tool is running on.')
-Add-Help $tpMon 914 5 'Live monitor' ("Each monitor opens its own PowerShell window running Get-Content <log> -Tail 20 -Wait, so you can watch every log independently. If a log does not exist yet, its window waits and starts once the file appears.${NL}${NL}- Event Viewer logs (.evtx) cannot be tailed as text, so they use a live Get-WinEvent watcher (errors red, warnings yellow).${NL}- The SFC-only CBS filter starts from at least 300 lines, because most CBS lines do not match.${NL}- Folder watchers list existing files, then report new ones (minidumps, WER reports).${NL}${NL}In WinPE, X:\Windows\Logs\DISM\dism.log and CBS.log show what offline DISM / sfc runs from the Recovery tab are doing.")
+Add-Help $tpMon 914 5 'Live monitor' ("Each monitor opens its own PowerShell window running Get-Content <log> -Tail <N> -Wait (N = the number set on this tab), so you can watch every log independently. If a log does not exist yet, its window waits and starts once the file appears.${NL}${NL}- Event Viewer logs (.evtx) cannot be tailed as text, so they use a live Get-WinEvent watcher (errors red, warnings yellow).${NL}- The SFC-only CBS filter starts from at least 300 lines, because most CBS lines do not match.${NL}- Folder watchers list existing files, then report new ones (minidumps, WER reports).${NL}${NL}In WinPE, X:\Windows\Logs\DISM\dism.log and CBS.log show what offline DISM / sfc runs from the Recovery tab are doing.")
 $monPanel = New-Object Windows.Forms.Panel
 $monPanel.Location = New-Object Drawing.Point(10, 30); $monPanel.Size = New-Object Drawing.Size(932, 214)
 $monPanel.AutoScroll = $true; $monPanel.BorderStyle = 'FixedSingle'
@@ -2131,6 +2211,8 @@ $btnColGo.Add_Click({ Safe {
         if (-not (Ask "The output folder is on the WinPE RAM disk ($env:SystemDrive) and is lost at reboot.${NL}${NL}Continue anyway?" 'Collect logs' 'Warning' 'Button2')) { return }
     }
     [void][IO.Directory]::CreateDirectory($root)
+    # while copying, closing the tool (auto-unmount!) and switching tabs (Mount / Rescan) are refused - see FormClosing / Selecting
+    $script:Busy = 'Log collection'
     $btnColGo.Enabled = $false; $btnColAll.Enabled = $false; $form.Cursor = 'WaitCursor'
     $script:ColCount = 0; $script:ColFail = 0
     $txtCol.Clear()
@@ -2142,7 +2224,7 @@ $btnColGo.Add_Click({ Safe {
             Say ($NL + "[$k] " + $Collectors[$k].Label)
             try { & $Collectors[$k].Run $t.Drive ([bool]$t.Running) $root $ColUser.Profile } catch { Say "   ERROR: $($_.Exception.Message)" }
         }
-    } finally { $btnColGo.Enabled = $true; $btnColAll.Enabled = $true; $form.Cursor = 'Default' }
+    } finally { $script:Busy = $null; $btnColGo.Enabled = $true; $btnColAll.Enabled = $true; $form.Cursor = 'Default' }
     Say ($NL + "Done. Files copied/exported: $($script:ColCount)   Failed: $($script:ColFail)")
     try { [IO.File]::WriteAllText((Join-Path $root '_collection_summary.txt'), $txtCol.Text) } catch {}
     $script:LastCollect = $root
@@ -2363,7 +2445,8 @@ $btnSafeOff.Add_Click({ Safe {
         $cl = @(Get-Clones $t $w.Drive)
         if ($cl.Count -eq 0) { Msg 'No Safe Mode clone created by this tool was found for this install.'; return }
         if (-not (Ask "Delete $($cl.Count) Safe Mode clone entry(ies) for:${NL}${NL}$($w.Text)")) { return }
-        foreach ($e in $cl) { [void](Invoke-Bcd $t @('/delete', $e.Id)) }
+        $bad = @($cl | Where-Object { (Invoke-Bcd $t @('/delete', $_.Id)).Rc -ne 0 })
+        if ($bad.Count) { Msg "$($bad.Count) clone(s) could not be deleted. See the activity log." 'Error' 'Error' }
     } else {
         if (-not (Ask "Remove the Safe Mode flag for:${NL}${NL}$($w.Text)")) { return }
         $r = Invoke-Bcd $t @('/deletevalue', $t.Id, 'safeboot')
@@ -2432,7 +2515,8 @@ $btnUDeploy.Add_Click({ Safe {
     $x = Build-Unattend; if (-not $x) { return }
     $dest = "$($w.Drive)\Windows\Panther\Unattend\unattend.xml"
     if (-not (Ask "Write the answer file to:${NL}$dest${NL}${NL}for $($w.Text)${NL}${NL}An existing file is backed up first. Continue?" 'Deploy answer file')) { return }
-    if ([IO.File]::Exists($dest)) { Copy-Item -LiteralPath $dest -Destination ('{0}.bak_{1}' -f $dest, (Get-Date -Format yyyyMMdd_HHmmss)) }
+    # -ErrorAction Stop: if the existing answer file cannot be backed up, do NOT overwrite it (Safe shows the error)
+    if ([IO.File]::Exists($dest)) { Copy-Item -LiteralPath $dest -Destination ('{0}.bak_{1}' -f $dest, (Get-Date -Format yyyyMMdd_HHmmss)) -ErrorAction Stop }
     Write-Xml $dest $x
     Log "Answer file deployed: $dest"
     Msg "Deployed to $dest"
@@ -2471,9 +2555,27 @@ $btnTool.Add_Click({ Safe {
     $q = "EXPERIMENTAL - $($tool.Name)${NL}${NL}$($def.Summary)${NL}${NL}This tool is experimental and untested on your hardware. It may change boot configuration or disk contents. Continue?"
     if (-not (Ask $q 'EXPERIMENTAL - confirm' 'Warning' 'Button2')) { return }
     Log "TOOL: $($tool.Name)"
+    # bcdboot and bootrec /rebuildbcd change the BCD too: back it up first, like every bcdedit change
+    if ($w -and ($def.Exe -eq 'bcdboot.exe' -or ($def.Exe -eq 'bootrec.exe' -and @($def.Argv) -contains '/rebuildbcd'))) {
+        $bt = Resolve-BcdTarget $w.Drive
+        if (-not $bt) { Log 'No existing BCD entry found for this install - nothing to back up first.' }
+        elseif (-not (Backup-Bcd $bt) -and -not (Ask "The BCD backup failed (see the activity log).${NL}${NL}Run $($def.Exe) anyway?" 'Recovery' 'Warning' 'Button2')) { return }
+    }
     if ($def.Run) { & $def.Run $def.RunArg }
-    elseif ($def.Window) { Log $def.Line; Start-Process -FilePath cmd.exe -ArgumentList ('/c ' + $def.Line + ' & pause') }
-    else { Log $def.Line; $o = (& $def.Exe @($def.Argv) 2>&1) | Out-String; Log $o.Trim() }
+    elseif ($def.Window) {
+        # PowerShell console with every argument single-quoted: no cmd.exe parsing, so & ^ % ( ) in paths are safe
+        Log $def.Line
+        $cmd = "& '" + (Esc-Sq $def.Exe) + "' " + ((@($def.Argv) | ForEach-Object { "'" + (Esc-Sq ([string]$_)) + "'" }) -join ' ') +
+               "`r`nWrite-Host ''; Write-Host ('Exit code: ' + `$LASTEXITCODE); Read-Host 'Press Enter to close this window'"
+        $p = Start-Process -FilePath $PsExePath -PassThru -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', ([Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($cmd)))
+        [void]$script:Consoles.Add($p)
+    }
+    else {
+        Log $def.Line
+        $o = (& $def.Exe @($def.Argv) 2>&1 | ForEach-Object { if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.Exception.Message } else { [string]$_ } }) -join $NL
+        $rc = $LASTEXITCODE; Log $o.Trim()
+        if ($rc -ne 0) { Msg "$($def.Exe) failed (exit code $rc):${NL}${NL}$($o.Trim())" $tool.Name 'Error' } else { Msg ("Done:${NL}${NL}" + $o.Trim()) $tool.Name }
+    }
 } })
 
 # ---- form ----
@@ -2489,11 +2591,17 @@ $form.Add_Shown({ Safe {
     Update-Windows $true
     $timer.Start()
 } })
+$tabs.Add_Selecting({ if ($script:Busy) { $_.Cancel = $true } })    # no Mount / Rescan etc. while a collection runs
 $form.Add_FormClosing({
+    if ($script:Busy) { $_.Cancel = $true; Msg "$($script:Busy) is still running. Wait until it has finished, then close." 'Busy' 'Warning'; return }
     try { $timer.Stop() } catch {}
     Stop-AiRequest; Stop-Pairing; $script:ApiKey = $null
     if ($chkAuto.Checked -and $script:Mounts.Count -gt 0) {
-        foreach ($m in @($script:Mounts)) { [void](Dismount-One $m) }
+        # a repair console started from the Recovery tab may still be working on a mounted drive
+        $live = @($script:Consoles | Where-Object { $_ -and -not $_.HasExited })
+        $unmount = $true
+        if ($live.Count) { $unmount = Ask ("$($live.Count) repair console window(s) started by this tool are still running and may be using a mounted drive.${NL}${NL}Unmount the drives anyway?") 'Close' 'Warning' 'Button2' }
+        if ($unmount) { foreach ($m in @($script:Mounts)) { [void](Dismount-One $m) } } else { Log 'Left the mounted drives in place (repair consoles still running).' }
     }
     Save-Mounts
     Log 'Closed.'

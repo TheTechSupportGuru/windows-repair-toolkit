@@ -1,4 +1,4 @@
-# Version 1.6 (2026-11-19) - edited copy. What changed: Edited scripts\V1.6\CHANGES.md
+# Version 1.7 (2026-11-19) - edited copy. What changed: Edited scripts\V1.7\CHANGES.md
 <#
 .SYNOPSIS
   WinFixKit - Windows troubleshooting power tool (replacement for the retired .diagcab troubleshooters).
@@ -198,16 +198,38 @@ function Get-RecentEvents([hashtable]$filter, [int]$n = 10) {
     } catch { '  (no matching events, or that log is not enabled)' }
 }
 
-function Get-PowerSettings([string]$sub) {
-    $name = ''
-    powercfg /q SCHEME_CURRENT $sub | ForEach-Object {
-        if ($_ -match 'Power Setting Name:\s*(.+)$') { $name = $Matches[1].Trim() }
-        elseif ($_ -match 'Current (AC|DC) Power Setting Index:\s*0x([0-9a-fA-F]+)') {
-            $v = [Convert]::ToInt64($Matches[2], 16)
-            $note = if ($v -eq 0) { '0 (never / off / disabled)' } else { "raw $v  (= $([math]::Round($v / 60, 1)) min if this is a timeout in seconds)" }
-            '{0,-44} {1}: {2}' -f $name, $Matches[1], $note
-        }
+# powercfg /q labels are translated, so do not match words: each setting starts with a "<GUID>  (<name>)" line, and its
+# LAST two hex values (0x...) are always the current AC and DC index (min/max/increment come before them).
+function Get-PowerSettings([string]$sub, [string]$setting = '') {
+    $name = $null; $hex = @()
+    $lines = @(if ($setting) { powercfg /q SCHEME_CURRENT $sub $setting } else { powercfg /q SCHEME_CURRENT $sub }) + '00000000-0000-0000-0000-000000000000  (end)'
+    foreach ($line in $lines) {
+        if ($line -match '[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}\s+\((.+)\)\s*$') {
+            if ($name -and $hex.Count -ge 2) {
+                foreach ($pair in @(@('AC', $hex[-2]), @('DC', $hex[-1]))) {
+                    $v = $pair[1]
+                    $note = if ($v -eq 0) { '0 (never / off / disabled)' } elseif ($v -ge 60) { "raw $v  (= $([math]::Round($v / 60, 1)) min if this is a timeout in seconds)" } else { "raw $v" }
+                    '{0,-44} {1}: {2}' -f $name, $pair[0], $note
+                }
+            }
+            $name = $Matches[2].Trim(); $hex = @()
+        } elseif ($line -match ':\s*0x([0-9a-fA-F]+)\s*$') { $hex += [Convert]::ToInt64($Matches[1], 16) }
     }
+}
+
+# Firewall rule groups by their language-independent resource IDs (the display names are translated)
+$script:FwGroups = [ordered]@{ 'Network Discovery' = '@FirewallAPI.dll,-32752'; 'File and Printer Sharing' = '@FirewallAPI.dll,-28502' }
+
+# Folder of the Windows Search index (honours a moved index: HKLM\SOFTWARE\Microsoft\Windows Search\DataDirectory)
+function Get-SearchIndexDir {
+    $dd = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows Search' -ErrorAction SilentlyContinue).DataDirectory
+    if ($dd) { Join-Path ([Environment]::ExpandEnvironmentVariables($dd)) 'Applications\Windows' } else { "$env:ProgramData\Microsoft\Search\Data\Applications\Windows" }
+}
+
+# A per-user fix run elevated with ANOTHER account's credentials acts on that account's profile, not the signed-in user's
+function Get-WrongUserWarning {
+    $console = try { (Get-CimInstance Win32_ComputerSystem -ErrorAction Stop).UserName } catch { $null }
+    if ($console -and $console -ne "$env:USERDOMAIN\$env:USERNAME") { "WARNING: this tool runs as $env:USERDOMAIN\$env:USERNAME but $console is signed in - per-user fixes act on $env:USERNAME's profile, not on ${console}'s." }
 }
 
 # Escape text for a '...' PowerShell string. PowerShell also treats the typographic quotes U+2018-U+201B as
@@ -293,6 +315,9 @@ function Backup-RegKey([string]$Key, [string]$Why = '') {
     "  Registry: exported original of key $Key"
 }
 
+# netsh winhttp reset proxy overwrites this value (a company proxy would otherwise be lost for good)
+function Backup-WinHttpProxy { Backup-RegValue 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings\Connections' 'WinHttpSettings' 'winhttp proxy reset' }
+
 function Backup-NetRegKeys {
     foreach ($k in 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters', 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip6\Parameters', 'HKLM:\SYSTEM\CurrentControlSet\Services\Winsock', 'HKLM:\SYSTEM\CurrentControlSet\Services\Winsock2') {
         Backup-RegKey $k 'network reset'
@@ -370,12 +395,18 @@ function Restore-RegBackup([string]$File) {
                 'MultiString' { $val = [string[]]@($m.Data | Where-Object { $null -ne $_ }) }   # older backups stored an empty list as null
                 default       { $val = [string]$val }
             }
-            if (-not (Test-Path -LiteralPath $m.Key)) { New-Item -Path $m.Key -Force | Out-Null }
-            New-ItemProperty -LiteralPath $m.Key -Name $m.Name -Value $val -PropertyType $m.Kind -Force | Out-Null
+            # -ErrorAction Stop: a failed write must NOT be reported (and marked) as restored, or the original gets overwritten later
+            try {
+                if (-not (Test-Path -LiteralPath $m.Key)) { New-Item -Path $m.Key -Force -ErrorAction Stop | Out-Null }
+                New-ItemProperty -LiteralPath $m.Key -Name $m.Name -Value $val -PropertyType $m.Kind -Force -ErrorAction Stop | Out-Null
+            } catch { return "FAILED to restore $($m.Key) [$($m.Name)]: $($_.Exception.Message) - nothing was marked as restored." }
             "Restored $($m.Key) [$($m.Name)] to its original value."
         } else {
             if (Test-Path -LiteralPath $m.Key) {
-                Remove-ItemProperty -LiteralPath $m.Key -Name $m.Name -ErrorAction SilentlyContinue
+                if ((Get-Item -LiteralPath $m.Key).GetValueNames() -contains $m.Name) {
+                    try { Remove-ItemProperty -LiteralPath $m.Key -Name $m.Name -ErrorAction Stop }
+                    catch { return "FAILED to remove $($m.Key) [$($m.Name)]: $($_.Exception.Message) - nothing was marked as restored." }
+                }
                 "Removed $($m.Key) [$($m.Name)] (it did not exist originally)."
                 if (-not $m.KeyExisted) {
                     $k = Get-Item -LiteralPath $m.Key
@@ -392,13 +423,17 @@ function Invoke-FullRegBackup {
     $dir = Join-Path $script:RegFullDir (Get-Date -Format 'yyyyMMdd-HHmmss')
     New-Item -ItemType Directory -Path $dir -Force | Out-Null
     "Full registry backup -> $dir  (this can take a minute)"
+    $ok = $true
     foreach ($h in 'SYSTEM', 'SOFTWARE') {
         $f = Join-Path $dir "$h.hiv"
-        $out = (reg.exe save "HKLM\$h" "$f" /y 2>&1 | Out-String).Trim()
-        if (Test-Path -LiteralPath $f) { '  HKLM\{0} saved ({1:N0} MB)' -f $h, ((Get-Item -LiteralPath $f).Length / 1MB) } else { "  HKLM\$h FAILED: $out" }
+        $out = (& reg.exe save "HKLM\$h" "$f" /y 2>&1 | ConvertTo-PlainText) -join ' '
+        if ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath $f)) { '  HKLM\{0} saved ({1:N0} MB)' -f $h, ((Get-Item -LiteralPath $f).Length / 1MB) }
+        else { $ok = $false; "  HKLM\$h FAILED (reg.exe exit code $LASTEXITCODE): $out" }
     }
-    try { Checkpoint-Computer -Description 'WinFixKit - before registry changes' -RestorePointType MODIFY_SETTINGS -ErrorAction Stop; '  System restore point created.' }
-    catch { "  Restore point not created: $($_.Exception.Message)" }
+    # Checkpoint-Computer only WARNS (no error) when a restore point was made in the last 24 h - so count them instead
+    $rp0 = @(Get-ComputerRestorePoint -ErrorAction SilentlyContinue).Count; $rpw = $null
+    try { Checkpoint-Computer -Description 'WinFixKit - before registry changes' -RestorePointType MODIFY_SETTINGS -ErrorAction Stop -WarningAction SilentlyContinue -WarningVariable rpw } catch { $rpw = $_.Exception.Message }
+    if (@(Get-ComputerRestorePoint -ErrorAction SilentlyContinue).Count -gt $rp0) { '  System restore point created.' } else { "  Restore point NOT created: $(@($rpw) -join ' ')" }
     $readme = @(
         "WinFixKit full registry backup - $(Get-Date)"
         ''
@@ -409,7 +444,8 @@ function Invoke-FullRegBackup {
         'For a single value or key, use the Registry Backups tab in WinFixKit instead (one click per item).'
     )
     $readme | Set-Content -LiteralPath (Join-Path $dir 'README-RESTORE.txt') -Encoding UTF8
-    $script:FullBackupDone = $true
+    $script:FullBackupDone = $ok          # a failed hive save is retried before the next registry fix
+    if (-not $ok) { '  WARNING: the full registry backup is incomplete - it will be tried again before the next registry fix.' }
 }
 
 function Ensure-FullRegBackup {
@@ -512,7 +548,7 @@ Read-only. Shows: update-related services (wuauserv, bits, cryptsvc, msiserver, 
        @{ Label = 'Reset Windows Update components'
           Help = @'
 Reset Windows Update components
-Stops wuauserv, bits, cryptsvc, msiserver and usosvc; RENAMES C:\Windows\SoftwareDistribution and System32\catroot2 to *.bak_<timestamp> (Windows rebuilds both); renames the BITS queue files (qmgr*.dat); clears BITS jobs; restarts the services.
+Clears BITS jobs; stops usosvc, DoSvc (Delivery Optimization), wuauserv, bits, cryptsvc and msiserver; RENAMES C:\Windows\SoftwareDistribution and System32\catroot2 to *.bak_<timestamp> (Windows rebuilds both); renames the BITS queue database (qmgr.db + its edb logs on Windows 10/11, qmgr*.dat on older Windows); restarts the services.
 
 Effects: update history in the Settings page is reset and pending downloads must be re-downloaded. The renamed folders stay on disk as your undo and can be removed with "Delete old update backups".
 Needs admin. A reboot afterwards is a good idea.
@@ -520,12 +556,15 @@ Needs admin. A reboot afterwards is a good idea.
           Confirm = 'This will stop the update services, rename SoftwareDistribution and catroot2 (kept as .bak_ copies), clear BITS jobs and restart the services. Continue?'
           Run = {
               param($Arg)
-              foreach ($s in 'usosvc', 'wuauserv', 'bits', 'cryptsvc', 'msiserver') { StopSvc $s }
+              # clear BITS jobs FIRST: Get-BitsTransfer would start BITS again if it ran after the stop
+              try { Get-BitsTransfer -AllUsers -ErrorAction Stop | Remove-BitsTransfer -ErrorAction Stop; 'Cleared BITS jobs' } catch { "BITS jobs: $($_.Exception.Message)" }
+              # DoSvc keeps its cache in SoftwareDistribution\DeliveryOptimization and blocks the rename while it runs
+              foreach ($s in 'usosvc', 'DoSvc', 'wuauserv', 'bits', 'cryptsvc', 'msiserver') { StopSvc $s }
               Rename-WithStamp "$env:SystemRoot\SoftwareDistribution"
               Rename-WithStamp "$env:SystemRoot\System32\catroot2"
-              Get-ChildItem "$env:ALLUSERSPROFILE\Microsoft\Network\Downloader" -Filter 'qmgr*.dat' -ErrorAction SilentlyContinue | ForEach-Object { Rename-WithStamp $_.FullName }
-              try { Get-BitsTransfer -AllUsers -ErrorAction Stop | Remove-BitsTransfer -ErrorAction Stop; 'Cleared BITS jobs' } catch { "BITS jobs: $($_.Exception.Message)" }
-              foreach ($s in 'cryptsvc', 'bits', 'wuauserv', 'usosvc') { StartSvc $s }
+              # BITS queue: qmgr.db + edb*.log/.jrs/.chk (ESE) on Windows 10/11, qmgr*.dat on older Windows
+              Get-ChildItem "$env:ALLUSERSPROFILE\Microsoft\Network\Downloader" -File -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^(qmgr.*\.(dat|db|jfm)|edb.*\.(log|jrs|chk))$' } | ForEach-Object { Rename-WithStamp $_.FullName }
+              foreach ($s in 'cryptsvc', 'bits', 'DoSvc', 'wuauserv', 'usosvc') { StartSvc $s }
               'Done. Reboot, then check for updates.'
           } },
        @{ Label = 'Scan for updates now'
@@ -610,7 +649,15 @@ Restart Windows Explorer
 Stops explorer.exe and starts it again. Fixes a frozen taskbar/desktop and stale file-operation state. Open File Explorer windows close; no files are touched.
 '@
           Admin = $false
-          Run = { param($Arg); Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue; Start-Sleep -Seconds 2; if (-not (Get-Process explorer -ErrorAction SilentlyContinue)) { Start-Process explorer.exe }; 'Explorer restarted.' } },
+          Run = {
+              param($Arg)
+              Stop-Process -Name explorer -Force -ErrorAction SilentlyContinue
+              # Windows restarts the shell itself; wait for that. Never start Explorer from an ELEVATED tool (admin desktop).
+              for ($i = 0; $i -lt 10 -and -not (Get-Process explorer -ErrorAction SilentlyContinue); $i++) { Start-Sleep -Milliseconds 500 }
+              if (Get-Process explorer -ErrorAction SilentlyContinue) { 'Explorer restarted.' }
+              elseif (Test-Admin) { 'Explorer did not come back by itself. Press Ctrl+Shift+Esc > Run new task > type explorer (leave "administrative privileges" UNticked).' }
+              else { Start-Process explorer.exe; 'Explorer started.' }
+          } },
        @{ Label = 'Empty Recycle Bin (all drives)'
           Help = @'
 Empty Recycle Bin
@@ -629,11 +676,11 @@ Pick a folder and see its owner and full permission list (icacls). Read-only. Us
        @{ Label = 'Take ownership + reset permissions of a folder...'
           Help = @'
 Take ownership + reset permissions
-Pick a folder. The tool (1) saves its current permissions to an acl-backup file in the logs folder (restore later with: icacls <parent> /restore <file>), (2) takes ownership recursively (takeown), (3) resets permissions back to inherited defaults (icacls /reset).
+Pick a folder. The tool (1) saves its current permissions to an acl-backup file in the Reports folder (restore later with: icacls <parent> /restore <file>), (2) takes ownership recursively (takeown), (3) resets permissions back to inherited defaults (icacls /reset).
 Refuses drive roots, C:\Windows, Program Files, ProgramData, C:\Users itself, the Default and Public profiles, whole user profiles, AppData and hidden system folders (Recovery, System Volume Information, ...). Junctions and short 8.3 names are resolved first, so they cannot bypass this list. Note: the backup restores permissions but NOT the previous owner. Use only on user data folders. Needs admin.
 '@
           Prompt = 'Folder'; PromptText = 'Choose the folder to take ownership of and reset'
-          Confirm = 'This takes ownership of the chosen folder and everything inside it and resets its permissions to inherited defaults. A backup of the old permissions is saved to the logs folder. Continue?'
+          Confirm = 'This takes ownership of the chosen folder and everything inside it and resets its permissions to inherited defaults. A backup of the old permissions is saved to the Reports folder. Continue?'
           Run = {
               param($Arg)
               if (-not $Arg) { 'No folder chosen.'; return }
@@ -645,10 +692,17 @@ Refuses drive roots, C:\Windows, Program Files, ProgramData, C:\Users itself, th
               "Owner before: $((Get-Acl -LiteralPath $p).Owner)"
               "Saving current permissions to $bk"
               icacls "$p" /save "$bk" /t /c | Select-Object -Last 3
+              if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $bk)) { "ABORTED: saving the current permissions failed (icacls exit code $LASTEXITCODE) - nothing was changed."; return }
               'Taking ownership...'
               takeown /f "$p" /r /d y | Select-Object -Last 5
+              if ($LASTEXITCODE -ne 0) {
+                  # the /d answer letter is translated (J, O, ...) on non-English Windows - fall back to the language-neutral SID
+                  "takeown returned exit code $LASTEXITCODE - using icacls /setowner Administrators (*S-1-5-32-544) instead."
+                  icacls "$p" /setowner '*S-1-5-32-544' /t /c | Select-Object -Last 3
+              }
               'Resetting permissions...'
               icacls "$p" /reset /t /c | Select-Object -Last 5
+              if ($LASTEXITCODE -ne 0) { "WARNING: icacls /reset returned exit code $LASTEXITCODE - some items were not reset (see above)." }
               "Owner after: $((Get-Acl -LiteralPath $p).Owner)"
           } },
        @{ Label = 'Scan system drive for errors (read-only) - opens a window'
@@ -732,10 +786,12 @@ Windows 10 only. Stops tiledatamodelsvc, renames %LOCALAPPDATA%\TileDataLayer to
           Run = {
               param($Arg)
               if ([int](Get-CimInstance Win32_OperatingSystem).BuildNumber -ge 22000) { 'Windows 11 detected - not applicable, skipped.'; return }
-              StopSvc 'tiledatamodelsvc'
-              Rename-WithStamp "$env:LOCALAPPDATA\TileDataLayer"
+              Get-WrongUserWarning
+              $r = StopSvc 'tiledatamodelsvc'; $r
+              if ($r -notlike 'Stopped*' -and $r -notlike '*not present*') { 'Tile database NOT reset: the service could not be stopped (that needs admin). Use "Relaunch as Administrator" while signed in as this same user.'; return }
+              $o = Rename-WithStamp "$env:LOCALAPPDATA\TileDataLayer"; $o
               StartSvc 'tiledatamodelsvc'
-              'Sign out and back in to finish.'
+              if ($o -like 'Could not*') { 'Tile database NOT reset (see above).' } else { 'Sign out and back in to finish.' }
           } }
    )
 },
@@ -763,7 +819,7 @@ Read-only. Shows identity-related services, your UPN, dsregcmd join/PRT state (A
        Hdr 'Join / token state (dsregcmd)'
        Safe { dsregcmd /status | Select-String 'AzureAdJoined|DomainJoined|WorkplaceJoined|NgcSet|AzureAdPrt|WamDefaultSet|TenantName|DeviceId' | ForEach-Object { $_.Line.Trim() } }
        Hdr 'Stored credentials (targets only)'
-       Safe { cmdkey /list | Select-String 'Target:|Type:|User:' | ForEach-Object { $_.Line.Trim() } }
+       Safe { cmdkey /list | Where-Object { $_ -match '=' } | ForEach-Object { $_.Trim() } }   # target lines contain "...:target=..." in every language
        Hdr 'Clock'
        Safe { w32tm /query /status }
        Hdr 'Reachability (TCP 443)'
@@ -791,11 +847,12 @@ Renames the current user's TokenBroker folders (%LOCALAPPDATA%\Microsoft\TokenBr
           Confirm = 'Reset the sign-in token cache for the current user? They will need to sign in again to Microsoft apps.'
           Run = {
               param($Arg)
-              StopSvc 'TokenBroker' | Out-Null
-              Rename-WithStamp "$env:LOCALAPPDATA\Microsoft\TokenBroker"
-              Rename-WithStamp "$env:LOCALAPPDATA\Packages\Microsoft.AAD.BrokerPlugin_cw5n1h2txyewy\AC\TokenBroker"
+              Get-WrongUserWarning
+              $r = StopSvc 'TokenBroker'; $r
+              if ($r -notlike 'Stopped*') { 'Token cache NOT reset: TokenBroker could not be stopped (that needs admin). Close Office / Store / OneDrive and use "Relaunch as Administrator" while signed in as this same user.'; return }
+              $o = @(Rename-WithStamp "$env:LOCALAPPDATA\Microsoft\TokenBroker"; Rename-WithStamp "$env:LOCALAPPDATA\Packages\Microsoft.AAD.BrokerPlugin_cw5n1h2txyewy\AC\TokenBroker"); $o
               StartSvc 'TokenBroker'
-              'Sign out and back in to finish.'
+              if (@($o | Where-Object { $_ -like 'Could not*' }).Count) { 'Token cache only PARTLY reset (see above) - close the apps that use it and try again.' } else { 'Sign out and back in to finish.' }
           } },
        @{ Label = 'Re-register Account Broker plugin'
           Help = @'
@@ -834,12 +891,15 @@ Read-only. Shows Store-related services (ClipSVC, AppXSvc, InstallService, Licen
    Status = {
        Hdr 'Services'
        Safe { Table (Svc 'ClipSVC', 'AppXSvc', 'InstallService', 'LicenseManager', 'wlidsvc') }
+       # one (slow) query, reused below; -AllUsers needs admin, so fall back to the current user's packages
+       $appxScope = 'all users'
+       $appxAll = try { @(Get-AppxPackage -AllUsers -ErrorAction Stop) } catch { $appxScope = 'current user only (not elevated)'; @(Get-AppxPackage -ErrorAction SilentlyContinue) }
        Hdr 'Microsoft Store package'
-       Safe { Table (Get-AppxPackage -AllUsers -Name Microsoft.WindowsStore | Select-Object Name, Version, Status, InstallLocation) }
+       Safe { Table ($appxAll | Where-Object { $_.Name -eq 'Microsoft.WindowsStore' } | Select-Object Name, Version, Status, InstallLocation) }
        Hdr 'AppX package count'
-       Safe { "Installed for all users: $(@(Get-AppxPackage -AllUsers).Count)" }
+       Safe { "Installed ($appxScope): $($appxAll.Count)" }
        Hdr 'Packages not in "Ok" status'
-       Safe { Table (Get-AppxPackage -AllUsers | Where-Object { $_.Status -ne 'Ok' } | Select-Object Name, Version, Status) }
+       Safe { Table ($appxAll | Where-Object { $_.Status -ne 'Ok' } | Select-Object Name, Version, Status) }
        Hdr 'Store reachability (TCP 443)'
        Safe { Table $(foreach ($h in 'www.microsoft.com', 'storeedgefd.dsx.mp.microsoft.com') { [pscustomobject]@{ Host = $h; Reachable = (Test-TcpPort $h 443) } }) }
        Hdr 'Recent AppX deployment errors'
@@ -875,11 +935,18 @@ Runs Add-AppxPackage -Register on the Store (and Store Purchase / Desktop App In
        @{ Label = 'Re-register ALL apps - opens a window'
           Help = @'
 Re-register ALL apps
-Opens a window and re-registers every installed AppX package for all users (the classic "fix everything" command). Takes several minutes and prints many red errors for packages that cannot be re-registered; that is normal. Does not uninstall anything, but a Start layout refresh can follow. Needs admin.
+Opens a window and re-registers every installed AppX package for all users (the classic "fix everything" command). Takes several minutes. Packages that cannot be re-registered (often system or in-use packages) are listed as "FAILED" with the reason, and a total is shown at the end; some failures are normal. Does not uninstall anything, but a Start layout refresh can follow. Needs admin.
 '@
           Window = $true; AutoStatus = $false
           Confirm = 'Re-register every installed app? This is slow and noisy, but does not uninstall anything.'
-          Run = { Get-AppxPackage -AllUsers | ForEach-Object { Add-AppxPackage -DisableDevelopmentMode -Register "$($_.InstallLocation)\AppXManifest.xml" -ErrorAction SilentlyContinue; "Processed $($_.Name)" } } }
+          Run = {
+              $ok = 0; $bad = 0
+              foreach ($pkg in @(Get-AppxPackage -AllUsers)) {      # ($_ inside catch is the error, so keep the package in $pkg)
+                  try { Add-AppxPackage -DisableDevelopmentMode -Register "$($pkg.InstallLocation)\AppXManifest.xml" -ErrorAction Stop; $ok++; "Processed $($pkg.Name)" }
+                  catch { $bad++; "FAILED $($pkg.Name): $(($_.Exception.Message -split "`r?`n")[0])" }
+              }
+              "Done: $ok re-registered, $bad failed (some failures are normal for system or in-use packages)."
+          } }
    )
 },
 
@@ -1015,13 +1082,15 @@ Uninstalling a cumulative update also removes the security fixes in it. Some upd
           Confirm = 'Uninstall update KB5025221? This also removes the security fixes it contains and may need a reboot.'
           Run = {
               $h = Get-HotFix -Id 'KB5025221' -ErrorAction SilentlyContinue
-              if (-not $h) { 'Get-HotFix does not list KB5025221 as installed - trying the uninstall anyway.' }
+              if (-not $h) { 'Get-HotFix does not list KB5025221 as installed - trying the uninstall anyway (some update types are not listed).' }
               $p = Start-Process wusa.exe -ArgumentList '/uninstall', '/kb:5025221', '/quiet', '/norestart' -Wait -PassThru
               "wusa exit code: $($p.ExitCode)"
               switch ($p.ExitCode) {
                   0       { 'Uninstalled.' }
                   3010    { 'Uninstalled - a reboot is required.' }
-                  2359302 { 'Windows reports the update is not installed (0x240006).' }
+                  87      { if (-not $h) { 'wusa rejected the request (invalid parameter). KB5025221 is most likely not installed on this PC - nothing to remove.' } else { 'wusa rejected the request (invalid parameter). On Windows 11, combined cumulative updates often cannot be removed with wusa: use Settings > Windows Update > Update history > Uninstall updates.' } }
+                  2359303 { 'Windows reports the update is not installed (0x240007 WU_S_ALREADY_UNINSTALLED) - nothing to remove.' }
+                  2359302 { 'wusa reports 0x240006 (WU_S_ALREADY_INSTALLED) - unexpected for an uninstall; the update was not removed.' }
                   default { 'Not removed. Try Settings > Windows Update > Update history > Uninstall updates.' }
               }
           } },
@@ -1093,7 +1162,7 @@ Read-only. Runs: ipconfig /all, Get-NetAdapter, DNS servers per adapter, DNS cli
            "User proxy: Enabled=$($i.ProxyEnable)  Server=$($i.ProxyServer)  AutoConfigURL=$($i.AutoConfigURL)"
        }
        Hdr 'Winsock catalog'
-       Safe { "Catalog entries: $(@(netsh winsock show catalog | Select-String 'Catalog Entry').Count)" }
+       Safe { $cat = 'HKLM:\SYSTEM\CurrentControlSet\Services\WinSock2\Parameters\Protocol_Catalog9'; "Catalog entries: 64-bit $(@(Get-ChildItem "$cat\Catalog_Entries64" -ErrorAction SilentlyContinue).Count), 32-bit $(@(Get-ChildItem "$cat\Catalog_Entries" -ErrorAction SilentlyContinue).Count)" }   # registry count: works in every language
        Hdr 'TCP global parameters'
        Safe { netsh int tcp show global }
        Hdr 'Hosts file (active entries)'
@@ -1133,12 +1202,12 @@ Runs ipconfig /release then /renew on all adapters. The PC briefly loses its add
 '@
           Confirm = 'This briefly drops the network connection and will disconnect any remote session. Continue?'
           Run = { param($Arg); ipconfig /release; ipconfig /renew } },
-       @{ Label = 'Reset WinHTTP proxy'
+       @{ Label = 'Reset WinHTTP proxy'; Registry = $true
           Help = @'
 Reset WinHTTP proxy
-Runs netsh winhttp reset proxy to remove a stale system-wide proxy that breaks Windows Update/Store while browsers still work. Does not change the per-user proxy set in Settings. Needs admin.
+Runs netsh winhttp reset proxy to remove a stale system-wide proxy that breaks Windows Update/Store while browsers still work. Does not change the per-user proxy set in Settings. The old setting (WinHttpSettings) is backed up first, so a company proxy can be put back from the Registry Backups tab. Needs admin.
 '@
-          Run = { param($Arg); netsh winhttp reset proxy } },
+          Run = { param($Arg); Backup-WinHttpProxy; netsh winhttp reset proxy } },
        @{ Label = 'Reset Winsock catalog (reboot needed)'; Registry = $true
           Help = @'
 Reset Winsock catalog
@@ -1166,7 +1235,7 @@ Runs in order: flush DNS, clear ARP, reset WinHTTP proxy, reset Winsock, reset T
               Backup-NetRegKeys
               'Flushing DNS...';         Clear-DnsClientCache
               'Clearing ARP cache...';   netsh interface ip delete arpcache
-              'Resetting WinHTTP proxy...'; netsh winhttp reset proxy
+              'Resetting WinHTTP proxy...'; Backup-WinHttpProxy; netsh winhttp reset proxy
               'Resetting Winsock...';    Invoke-WinsockReset
               'Resetting TCP/IP...';     Invoke-IpReset
               'Renewing DHCP...';        ipconfig /release; ipconfig /renew
@@ -1209,7 +1278,7 @@ Read-only. Shows Audiosrv/AudioEndpointBuilder/MMCSS state, sound devices known 
            Table ($r | Sort-Object Type, State)
        }
        Hdr 'Audio drivers'
-       Safe { Table (Get-CimInstance Win32_PnPSignedDriver | Where-Object { $_.DeviceClass -eq 'MEDIA' } | Select-Object DeviceName, Manufacturer, DriverVersion, @{ n = 'DriverDate'; e = { $_.DriverDate } }) }
+       Safe { Table (Get-CimInstance Win32_PnPSignedDriver -Filter "DeviceClass='MEDIA'" | Select-Object DeviceName, Manufacturer, DriverVersion, @{ n = 'DriverDate'; e = { $_.DriverDate } }) }
        Hdr 'Audio devices in an error state'
        Safe { Table (Get-CimInstance Win32_PnPEntity | Where-Object { ($_.PNPClass -in 'MEDIA', 'AudioEndpoint') -and $_.ConfigManagerErrorCode -ne 0 } | Select-Object Name, PNPClass, ConfigManagerErrorCode) }
    }
@@ -1264,11 +1333,11 @@ Read-only. Shows devices with a non-zero Device Manager error code (with meaning
        Hdr 'USB devices not reporting OK'
        Safe { Table (Get-PnpDevice -Class USB -PresentOnly -ErrorAction SilentlyContinue | Where-Object { $_.Status -ne 'OK' } | Select-Object Status, FriendlyName, InstanceId) }
        Hdr 'Unsigned drivers'
-       Safe { Table (Get-CimInstance Win32_PnPSignedDriver | Where-Object { $_.IsSigned -eq $false } | Select-Object DeviceName, Manufacturer, DriverVersion) }
+       Safe { Table (Get-CimInstance Win32_PnPSignedDriver -Filter 'IsSigned=FALSE' | Select-Object DeviceName, Manufacturer, DriverVersion) }
        Hdr 'Present devices by class'
        Safe { Table (Get-PnpDevice -PresentOnly -ErrorAction SilentlyContinue | Group-Object Class | Sort-Object Count -Descending | Select-Object Count, Name) }
        Hdr 'USB selective suspend (active power plan)'
-       Safe { powercfg /q SCHEME_CURRENT 2a737441-1930-4402-8d77-b2bebba308a3 48e6b7a6-50f5-4782-a5d4-53bb8f07e226 | Select-String 'Power Setting Index' | ForEach-Object { $_.Line.Trim() } }
+       Safe { Get-PowerSettings 2a737441-1930-4402-8d77-b2bebba308a3 48e6b7a6-50f5-4782-a5d4-53bb8f07e226 }   # 1 = enabled, 0 = disabled
    }
    Actions = @(
        @{ Label = 'Rescan for hardware changes'
@@ -1289,10 +1358,10 @@ Finds devices with error code 22 (Disabled) and enables each with Enable-PnpDevi
               if ($bad.Count -eq 0) { 'No disabled devices found.'; return }
               foreach ($d in $bad) { try { Enable-PnpDevice -InstanceId $d.PNPDeviceID -Confirm:$false -ErrorAction Stop; "Enabled: $($d.Name)" } catch { "Failed: $($d.Name) - $($_.Exception.Message)" } }
           } },
-       @{ Label = 'Export installed driver list to the logs folder'
+       @{ Label = 'Export installed driver list to the Reports folder'
           Help = @'
 Export installed driver list
-Runs pnputil /enum-drivers and saves the output to a text file in the logs folder, useful to attach to a ticket or compare against a working machine. Read-only.
+Runs pnputil /enum-drivers and saves the output to a text file in the Reports folder, useful to attach to a ticket or compare against a working machine. Read-only.
 '@
           Admin = $false; AutoStatus = $false
           Run = { param($Arg); $f = Join-Path $script:ReportDir ("drivers-{0}-{1}.txt" -f $env:COMPUTERNAME, (Get-Date -Format 'yyyyMMdd-HHmmss')); pnputil /enum-drivers | Out-File $f -Encoding UTF8; "Saved: $f" } }
@@ -1338,26 +1407,33 @@ Runs powercfg /restoredefaultschemes. Resets Balanced / Power saver / High perfo
 '@
           Confirm = 'Restore the default power plans? Custom plans will be removed.'
           Run = { param($Arg); Backup-RegKey 'HKLM:\SYSTEM\CurrentControlSet\Control\Power\User\PowerSchemes' 'power plans'; powercfg /restoredefaultschemes; powercfg /getactivescheme } },
-       @{ Label = 'Set Balanced as the active plan'; Registry = $true
+       @{ Label = 'Set Balanced as the active plan'
           Help = @'
 Set Balanced as the active plan
 Runs powercfg /setactive SCHEME_BALANCED. Switches the active plan without editing any plan's settings.
 '@
-          Run = { param($Arg); Backup-RegKey 'HKLM:\SYSTEM\CurrentControlSet\Control\Power\User\PowerSchemes' 'power plans'; powercfg /setactive SCHEME_BALANCED; powercfg /getactivescheme } },
+          Run = { param($Arg); Backup-RegValue 'HKLM:\SYSTEM\CurrentControlSet\Control\Power\User\PowerSchemes' 'ActivePowerScheme' 'power plan'; powercfg /setactive SCHEME_BALANCED; powercfg /getactivescheme } },
        @{ Label = 'Generate battery report'
           Help = @'
 Generate battery report
-Runs powercfg /batteryreport and saves an HTML report (design vs full-charge capacity, usage history) to the logs folder. Read-only. Laptops only.
+Runs powercfg /batteryreport and saves an HTML report (design vs full-charge capacity, usage history) to the Reports folder. Read-only. Laptops only.
 '@
           AutoStatus = $false
-          Run = { param($Arg); $f = Join-Path $script:ReportDir ("battery-report-{0}.html" -f (Get-Date -Format 'yyyyMMdd-HHmmss')); powercfg /batteryreport /output "$f"; "Saved: $f" } },
+          Run = { param($Arg); $f = Join-Path $script:ReportDir ("battery-report-{0}.html" -f (Get-Date -Format 'yyyyMMdd-HHmmss')); powercfg /batteryreport /output "$f"; if (Test-Path -LiteralPath $f) { "Saved: $f" } else { "No report was written (powercfg exit code $LASTEXITCODE) - this PC may have no battery." } } },
        @{ Label = 'Energy efficiency report (60 s) - opens a window'
           Help = @'
 Energy efficiency report
-Opens a window and runs powercfg /energy for 60 seconds, then saves an HTML report of power-config problems (blockers, USB suspend, timer issues) to the logs folder. Leave the PC idle while it runs. Read-only. Needs admin.
+Opens a window and runs powercfg /energy for 60 seconds, then saves an HTML report of power-config problems (blockers, USB suspend, timer issues) to the Reports folder. Leave the PC idle while it runs. Read-only. Needs admin.
 '@
           Window = $true; AutoStatus = $false
-          Run = { powercfg /energy /duration 60 /output "$ReportDir\energy-report.html" } }
+          Run = {
+              $f = "$ReportDir\energy-report.html"
+              $sw = [Diagnostics.Stopwatch]::StartNew()
+              powercfg /energy /duration 60 /output "$f"
+              # seen on Windows 11 build 26300: powercfg returns after < 1 s with exit code 0 and writes NO report - say so
+              if (Test-Path -LiteralPath $f) { "Report saved: $f" }
+              else { "No report was written (powercfg exit code $LASTEXITCODE after $([int]$sw.Elapsed.TotalSeconds) s). powercfg /energy does not work on every Windows build; try again later or after a Windows update." }
+          } }
    )
 },
 
@@ -1370,7 +1446,7 @@ For search that finds nothing, is slow, or uses lots of CPU/disk. Check whether 
 '@
    StatusLabel = 'Check status: Windows Search and index'
    StatusHelp = @'
-Read-only. Shows the WSearch service, indexer/search processes and memory, the Windows.edb index database size and date, the Windows Search registry state (SetupCompletedSuccessfully) and recent search/indexer events.
+Read-only. Shows the WSearch service, indexer/search processes and memory, the index database files (Windows.edb on Windows 10, Windows.db / -gather / -usn on Windows 11) with size and date, the Windows Search registry state (SetupCompletedSuccessfully) and recent search/indexer events.
 '@
    Status = {
        Hdr 'Windows Search service'
@@ -1379,8 +1455,9 @@ Read-only. Shows the WSearch service, indexer/search processes and memory, the W
        Safe { Table (Get-Process SearchIndexer, SearchHost, SearchApp -ErrorAction SilentlyContinue | Select-Object Name, Id, @{ n = 'CPUsec'; e = { [math]::Round($_.CPU, 1) } }, @{ n = 'MemMB'; e = { [math]::Round($_.WS / 1MB, 1) } }) }
        Hdr 'Index database'
        Safe {
-           $e = "$env:ProgramData\Microsoft\Search\Data\Applications\Windows\Windows.edb"
-           if (Test-Path $e) { $f = Get-Item $e -Force; "Windows.edb : {0:N1} MB, last written {1}" -f ($f.Length / 1MB), $f.LastWriteTime } else { 'Windows.edb not found' }
+           $dir = Get-SearchIndexDir
+           $f = @(Get-ChildItem -LiteralPath $dir -File -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^Windows(-\w+)?\.(edb|db)$' })
+           if ($f.Count) { $f | ForEach-Object { '{0} : {1:N1} MB, last written {2}' -f $_.Name, ($_.Length / 1MB), $_.LastWriteTime } } else { "No index database found in $dir (or no access - run as admin)" }
        }
        Hdr 'Registry state'
        Safe { $r = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows Search'; "SetupCompletedSuccessfully = $($r.SetupCompletedSuccessfully)   DataDirectory = $($r.DataDirectory)" }
@@ -1405,8 +1482,8 @@ Stops WSearch, sets SetupCompletedSuccessfully to 0, DELETES the index database 
               StopSvc 'WSearch'
               Set-RegValueSafe 'HKLM:\SOFTWARE\Microsoft\Windows Search' 'SetupCompletedSuccessfully' 0 'DWord' 'rebuild search index'
               # Windows 10 and older: Windows.edb (ESE). Windows 11 22H2+: Windows.db / Windows-gather.db / Windows-usn.db (SQLite, + -wal/-shm)
-              $dir = "$env:ProgramData\Microsoft\Search\Data\Applications\Windows"
-              $files = @(Get-ChildItem -LiteralPath $dir -File -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^Windows(-\w+)?\.(edb|db)(-wal|-shm)?$' })
+              $dir = Get-SearchIndexDir
+              $files =@(Get-ChildItem -LiteralPath $dir -File -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^Windows(-\w+)?\.(edb|db)(-wal|-shm)?$' })
               if ($files.Count -eq 0) { "No index database found in $dir (nothing to delete - the registry reset above still forces a rebuild)" }
               foreach ($f in $files) { try { Remove-Item -LiteralPath $f.FullName -Force -ErrorAction Stop; "Deleted $($f.Name)" } catch { "Could not delete $($f.Name): $($_.Exception.Message)" } }
               StartSvc 'WSearch'
@@ -1452,9 +1529,9 @@ Read-only. Shows OS build and whether legacy HomeGroup services exist, network p
        Safe { Table (Get-SmbShare | Select-Object Name, Path, Description) }
        Hdr 'Firewall rule groups (Enabled count)'
        Safe {
-           foreach ($g in 'Network Discovery', 'File and Printer Sharing') {
+           foreach ($g in $script:FwGroups.Keys) {
                "$g :"
-               Table (Get-NetFirewallRule -DisplayGroup $g -ErrorAction SilentlyContinue | Group-Object Enabled | Select-Object @{ n = 'Enabled'; e = { $_.Name } }, Count)
+               Table (Get-NetFirewallRule -Group $script:FwGroups[$g] -ErrorAction SilentlyContinue | Group-Object Enabled, Profile | Select-Object @{ n = 'Enabled, Profile'; e = { $_.Name } }, Count)
            }
        }
        Hdr 'IPv6 bindings'
@@ -1475,14 +1552,20 @@ Sets FDResPub, fdPHost, SSDPSRV, upnphost and LanmanServer to start Automaticall
        @{ Label = 'Enable Network Discovery + File/Printer Sharing rules'; Registry = $true
           Help = @'
 Enable Network Discovery + File/Printer Sharing rules
-Enables the built-in firewall rule groups "Network Discovery" and "File and Printer Sharing" for the Private and Domain profiles only (Public stays blocked). Needs admin. This opens SMB/discovery ports on trusted networks, so do not use on a PC that stays on public Wi-Fi.
+Enables the rules of the built-in firewall groups "Network Discovery" and "File and Printer Sharing" that apply ONLY to Private and/or Domain networks (rules that also cover Public stay as they are, and no rule's profile is changed). The groups are found by their language-independent resource IDs. Needs admin. This opens SMB/discovery ports on trusted networks, so do not use on a PC that stays on public Wi-Fi.
 '@
           Confirm = 'Enable the Network Discovery and File and Printer Sharing firewall rules for Private and Domain networks?'
           Run = {
               param($Arg)
               Backup-RegKey 'HKLM:\SYSTEM\CurrentControlSet\Services\SharedAccess\Parameters\FirewallPolicy' 'firewall rules'
-              foreach ($g in 'Network Discovery', 'File and Printer Sharing') {
-                  try { Set-NetFirewallRule -DisplayGroup $g -Enabled True -Profile 'Private,Domain' -ErrorAction Stop; "Enabled rule group: $g (Private, Domain)" } catch { "Failed ${g}: $($_.Exception.Message)" }
+              # NOT Set-NetFirewallRule -Profile: that REWRITES each rule's profile. Enable only rules that never apply to Public.
+              # Profile flags: Any = 0, Domain = 1, Private = 2, Public = 4.
+              foreach ($g in $script:FwGroups.Keys) {
+                  try {
+                      $r = @(Get-NetFirewallRule -Group $script:FwGroups[$g] -ErrorAction Stop | Where-Object { $pf = [int]$_.Profile; $pf -ne 0 -and -not ($pf -band 4) })
+                      if ($r.Count) { $r | Enable-NetFirewallRule -ErrorAction Stop }
+                      "Enabled $($r.Count) rule(s) of group $g (Private / Domain only; Public rules untouched)"
+                  } catch { "Failed ${g}: $($_.Exception.Message)" }
               }
           } },
        @{ Label = 'Set Public networks to Private'; Registry = $true
@@ -1491,7 +1574,7 @@ Set Public networks to Private
 Changes every connection currently categorised Public to Private so discovery and sharing rules apply. Only do this on a trusted home/office network. Needs admin.
 '@
           Confirm = 'Change all Public network connections to Private? Only do this on a trusted network.'
-          Run = { param($Arg); Backup-RegKey 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\NetworkList' 'network profiles'; Get-NetConnectionProfile | Where-Object { $_.NetworkCategory -eq 'Public' } | ForEach-Object { Set-NetConnectionProfile -InterfaceIndex $_.InterfaceIndex -NetworkCategory Private; "Set $($_.Name) to Private" } } }
+          Run = { param($Arg); Backup-RegKey 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\NetworkList' 'network profiles'; Get-NetConnectionProfile | Where-Object { $_.NetworkCategory -eq 'Public' } | ForEach-Object { try { Set-NetConnectionProfile -InterfaceIndex $_.InterfaceIndex -NetworkCategory Private -ErrorAction Stop; "Set $($_.Name) to Private" } catch { "Could not change $($_.Name): $($_.Exception.Message)" } } } }
    )
 },
 
@@ -1546,7 +1629,7 @@ Asks for a computer name or IP address, then checks DNS (for a name), whether TC
           Admin = $false; AutoStatus = $false; Prompt = 'Text'; PromptText = 'Computer name or IP address of the PC / NAS with the shares (for example PC1 or 192.168.1.25):'
           Run = {
               param($Arg)
-              $h = ([string]$Arg).Trim().TrimStart('\')
+              $h = (([string]$Arg).Trim().TrimStart('\') -split '[\\/]')[0]   # "\\nas\public" -> "nas"
               "Target: $h"
               $ip = $null
               if ([Net.IPAddress]::TryParse($h, [ref]$ip)) {
@@ -1583,10 +1666,12 @@ Run it on the 24H2 PC AND on the PC/NAS-host that has the shares. Reboot afterwa
               $sv = 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters'
               foreach ($n in 'RequireSecuritySignature', 'EnableSecuritySignature', 'AllowInsecureGuestAuth') { Backup-RegValue $ws $n 'SMB 24H2 fix' }
               foreach ($n in 'requiresecuritysignature', 'enablesecuritysignature') { Backup-RegValue $sv $n 'SMB 24H2 fix' }
-              Set-SmbClientConfiguration -EnableInsecureGuestLogons $true -Force
-              Set-SmbClientConfiguration -RequireSecuritySignature $false -Force
-              Set-SmbServerConfiguration -RequireSecuritySignature $false -Force
-              'Applied. Reboot (or restart the Workstation/Server services) and test again.'
+              try {
+                  Set-SmbClientConfiguration -EnableInsecureGuestLogons $true -Force -ErrorAction Stop
+                  Set-SmbClientConfiguration -RequireSecuritySignature $false -Force -ErrorAction Stop
+                  Set-SmbServerConfiguration -RequireSecuritySignature $false -Force -ErrorAction Stop
+                  'Applied. Reboot (or restart the Workstation/Server services) and test again.'
+              } catch { "FAILED: $($_.Exception.Message) - not everything was applied; use the Registry Backups tab to undo what was." }
           } },
        @{ Label = 'Method 2 (registry): the three reg add values'; Registry = $true
           Help = @'
@@ -2017,7 +2102,8 @@ function Update-RegBackupList {
         if ($bad.Count) {
             # do not hide them: these changes have NO one-click restore. The matching .reg export (same name) can still be imported by hand.
             $p.Controls.Add((New-Ctl Label @{ Text = ("   WARNING: {0} backup file(s) are unreadable and cannot be restored from here: {1}`r`n   Open the backup folder and import the .reg file with the same name by hand (double-click it, or: reg import <file>)." -f $bad.Count, ($bad -join ', ')); AutoSize = $true; ForeColor = [System.Drawing.Color]::Firebrick; MaximumSize = (New-Object System.Drawing.Size 1000, 0) }))
-            Write-Out ("Registry Backups: {0} unreadable backup file(s): {1}" -f $bad.Count, ($bad -join ', ')) 'Salmon'
+            $key = ($bad | Sort-Object) -join ','
+            if ($key -ne $script:LastBadBackups) { $script:LastBadBackups = $key; Write-Out ("Registry Backups: {0} unreadable backup file(s): {1}" -f $bad.Count, ($bad -join ', ')) 'Salmon' }   # once, not after every fix
         }
         if ($rows.Count -eq 0) {
             $p.Controls.Add((New-Ctl Label @{ Text = '   (none yet - items appear here the first time a fix edits the registry)'; AutoSize = $true }))
@@ -2106,7 +2192,7 @@ Add-BottomButton 'Save output as report' 160 {
     $f = Join-Path $script:ReportDir ("Report-{0}-{1}.txt" -f $env:COMPUTERNAME, (Get-Date -Format 'yyyyMMdd-HHmmss'))
     $script:Out.Text | Out-File -FilePath $f -Encoding UTF8
     Write-Out "Report saved: $f" 'LightGreen'
-} 'Saves what is in the output pane to a text file in the logs folder.'
+} 'Saves what is in the output pane to a text file in the Reports folder.'
 Add-BottomButton 'Copy output' 100 { if ($script:Out.TextLength -gt 0) { [System.Windows.Forms.Clipboard]::SetText($script:Out.Text) } } 'Copies the whole output pane to the clipboard (paste into a ticket).'
 Add-BottomButton 'Clear output' 100 { $script:Out.Clear() } 'Clears the pane only; the session log file keeps everything.'
 Add-BottomButton 'Open WinFixKit folder' 160 { Start-Process explorer.exe $script:RootDir } 'Opens Desktop\WinFixKit (Logs, Reports, RegistryBackups).'
