@@ -19,6 +19,7 @@ Details and test results: [docs/changes/V1.9-beta.1.md](../docs/changes/V1.9-bet
 Known limits:
 - Result messages are matched in English. On another display language, the summary uses the exit code.
 - With the summary on, the task opens in a classic console window, not Windows Terminal.
-- Not tested yet: an elevated run that actually scans or repairs, WinPE, Windows 10, non-English Windows.
+- Tested for real (as administrator): DISM check health and scan health, sfc /verifyonly, chkdsk /scan, all on a healthy Windows 11 VM.
+- Not tested yet: the repair and corruption-found results (no corruption to find on the test VM), WinPE, Windows 10, non-English Windows.
 
 Found a wrong result? Open a [bug report](https://github.com/TheTechSupportGuru/windows-repair-toolkit/issues/new?template=1-bug-report.yml) with version **1.9 beta 1**.

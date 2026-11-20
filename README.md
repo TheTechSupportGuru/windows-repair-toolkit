@@ -147,7 +147,7 @@ To run the unit tests (they read the scripts' code and run no GUI or system chan
 Invoke-Pester .\tests\Suite.Tests.ps1
 ```
 
-The beta has its own unit tests (30 / 30 pass): `Invoke-Pester .\tests\Beta.Tests.ps1`.
+The beta has its own unit tests (34 / 34 pass): `Invoke-Pester .\tests\Beta.Tests.ps1`.
 
 The other scripts in `tests/` are the admin and windowed test runs used on the VM. Some of them change system settings and expect the original project folder layout; read one before running it.
 

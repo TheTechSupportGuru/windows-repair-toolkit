@@ -167,6 +167,30 @@ Describe 'B4 chkdsk, bcdboot, bootrec, drivers' {
     }
 }
 
+Describe 'B6 real elevated output, read back by the task window on the Windows 11 test VM (2026-11-20)' {
+    $hdr = 'Deployment Image Servicing and Management tool', 'Version: 10.0.26100.9549', '', 'Image Version: 10.0.26300.9974', ''
+    It 'dism /online /cleanup-image /checkhealth' {
+        $v = Get-TaskVerdict 'dism-check' (J ($hdr + 'No component store corruption detected.', 'The operation completed successfully.')) 0
+        $v.Find | Should Be 'NO CORRUPTION DETECTED'; $v.Ok | Should Be $true
+    }
+    It 'dism /online /cleanup-image /scanhealth (progress bar on the result line)' {
+        $v = Get-TaskVerdict 'dism-check' (J ($hdr + '[==========================100.0%==========================] No component store corruption detected.', 'The operation completed successfully.')) 0
+        $v.Find | Should Be 'NO CORRUPTION DETECTED'; $v.Quote[0] | Should Be 'No component store corruption detected.'
+    }
+    It 'sfc /verifyonly' {
+        $v = Get-TaskVerdict 'sfc-verify' (J 'Beginning system scan.  This process will take some time.', '', 'Beginning verification phase of system scan.', 'Verification 100% complete.', '', 'Windows Resource Protection did not find any integrity violations.') 0
+        $v.Find | Should Be 'NO CORRUPTION DETECTED'; $v.Quote[0] | Should Be 'Windows Resource Protection did not find any integrity violations.'
+    }
+    It 'chkdsk C: /scan (stage and phase lines before, size lines after)' {
+        $o = J 'The type of the file system is NTFS.', 'Volume label is Windows.', '', 'Stage 1: Examining basic file system structure ...', '  243200 file records processed.', 'File verification completed.',
+               ' Phase duration (File record verification): 3.98 seconds.', '', 'Stage 3: Examining security descriptors ...', 'CHKDSK is verifying Usn Journal...', 'Usn Journal verification completed.', '',
+               'Windows has scanned the file system and found no problems.', 'No further action is required.', '', '  40485887 KB total disk space.', '         0 KB in bad sectors.', 'Total duration: 10.48 seconds (10487 ms).'
+        $v = Get-TaskVerdict 'chkdsk-scan' $o 0
+        $v.Find | Should Be 'NO PROBLEMS FOUND'
+        $v.Quote | Should Be @('Windows has scanned the file system and found no problems.', 'No further action is required.')
+    }
+}
+
 Describe 'B5 fallbacks and result file' {
     It 'unknown wording (other display language) -> exit code decides' {
         $v = Get-TaskVerdict 'sfc' 'Der Windows-Ressourcenschutz hat keine Integritaetsverletzungen gefunden.' 0
