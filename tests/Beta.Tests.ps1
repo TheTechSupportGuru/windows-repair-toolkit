@@ -29,7 +29,7 @@ Describe 'B1 beta script basics' {
     }
     It 'says BETA in its version line and window title' {
         $t = [IO.File]::ReadAllText($BetaPath)
-        $t | Should Match '# Version 1\.9 BETA 1'
+        $t | Should Match '# Version 1\.9 BETA \d'
         (Get-BetaAssign 'AppName') | Should Match 'BETA'
     }
     It 'every Recovery tool Kind has rules, and every Logs name is a Live Monitor item' {
@@ -203,9 +203,117 @@ Describe 'B5 fallbacks and result file' {
         $r = Read-TaskResult $f; Remove-Item $f
         $r.Rc | Should Be 0; $r.Output | Should Be "line 1`r`nline 2"; ($r.Ended - $r.Started).TotalSeconds | Should Be 330
     }
-    It 'the task window writes its result before "Press Enter", via a temp file + rename' {
+    It 'the task window writes its result before it closes (Press Enter / countdown), via a temp file + rename' {
         $tpl = Get-BetaAssign 'tplTask'
-        $tpl.IndexOf('Move-Item') | Should BeLessThan $tpl.IndexOf('Read-Host')
+        $tpl.IndexOf('Move-Item') | Should BeLessThan $tpl.IndexOf('__CLOSE__')
         $tpl | Should Match '\$LASTEXITCODE'
+        (Get-BetaFn 'Start-TaskWindow') | Should Match "Read-Host 'Press Enter"
+    }
+}
+
+Describe 'B7 Automation catalog, presets and task scripts' {
+    . ([scriptblock]::Create((Get-BetaFn 'Esc-Sq'))); . ([scriptblock]::Create((Get-BetaFn 'Get-ExeCall'))); . ([scriptblock]::Create((Get-BetaFn 'New-AutoTask')))
+    . ([scriptblock]::Create((Get-BetaFn 'New-MonItem'))); $WinDir = 'C:\Windows'; . ([scriptblock]::Create((Get-BetaAssign 'MonItems')))
+    foreach ($v in 'AutoScriptRestore', 'AutoScriptWU', 'AutoScriptWinget', 'AutoScriptDefender', 'CbsSr', 'AutoCatalog', 'AutoPresets') { . ([scriptblock]::Create((Get-BetaAssign $v))) }
+    It 'every catalog task has rules, valid log names, and code that builds a call that parses' {
+        foreach ($c in $AutoCatalog) {
+            $TaskRules.ContainsKey($c.Kind) | Should Be $true
+            foreach ($l in @($c.Logs)) { if ($l) { @($MonItems | Where-Object Name -eq $l).Count | Should Be 1 } }
+            $code = & $c.Code @{ EnableSR = $false }
+            $code.Line | Should Not BeNullOrEmpty
+            $tk2 = $null; $pe2 = $null; [void][Management.Automation.Language.Parser]::ParseInput($code.Call, [ref]$tk2, [ref]$pe2)
+            $pe2.Count | Should Be 0
+            $code.Call | Should Not Match '__[A-Z]+__'
+        }
+    }
+    It 'presets only use catalog tasks and hold at most 10' {
+        foreach ($k in $AutoPresets.Keys) { @($AutoPresets[$k]).Count | Should BeLessThan 11; foreach ($id in $AutoPresets[$k]) { @($AutoCatalog | Where-Object Id -eq $id).Count | Should Be 1 } }
+    }
+    It '"repair only if needed" chains point at real tasks and match the scan result wording' {
+        foreach ($c in @($AutoCatalog | Where-Object { $_.Then })) { @($AutoCatalog | Where-Object Id -eq $c.Then.Add).Count | Should Be 1 }
+        $s = $AutoCatalog | Where-Object Id -eq 'sfc-verify-fix'; $d = $AutoCatalog | Where-Object Id -eq 'dism-scan-fix'
+        (Get-TaskVerdict 'sfc-verify' 'Windows Resource Protection found integrity violations.' 0).Find | Should Match $s.Then.If
+        (Get-TaskVerdict 'sfc-verify' 'Windows Resource Protection did not find any integrity violations.' 0).Find | Should Not Match $s.Then.If
+        (Get-TaskVerdict 'dism-check' 'The component store is repairable.' 0).Find | Should Match $d.Then.If
+        (Get-TaskVerdict 'dism-check' 'No component store corruption detected.' 0).Find | Should Not Match $d.Then.If
+    }
+    It 'the restore-point script puts the 24-hour limit back and the System Protection option switches' {
+        $AutoScriptRestore | Should Match 'finally'
+        $AutoScriptRestore | Should Match 'SystemRestorePointCreationFrequency -Value \$old'
+        (& ($AutoCatalog | Where-Object Id -eq 'restore-point').Code @{ EnableSR = $true }).Call | Should Match 'if \(\$true\)'
+    }
+    It 'task scripts cannot overwrite the task window''s own variables (found in the elevated run: $res was overwritten)' {
+        . ([scriptblock]::Create((Get-BetaAssign 'tplTask')))      # defines $tplTask (the template text)
+        $tk3 = $null; $pe3 = $null; $tAst = [Management.Automation.Language.Parser]::ParseInput($tplTask.Replace('__CMD__', '').Replace('__CLOSE__', ''), [ref]$tk3, [ref]$pe3)
+        $top = @($tAst.EndBlock.Statements | Where-Object { $_ -is [Management.Automation.Language.AssignmentStatementAst] -and $_.Left -is [Management.Automation.Language.VariableExpressionAst] } | ForEach-Object { $_.Left.VariablePath.UserPath })
+        $top.Count | Should BeGreaterThan 3
+        foreach ($n in $top) { $n | Should Match '^Wst' }
+        foreach ($s in @($AutoScriptRestore, $AutoScriptWU, $AutoScriptWinget, $AutoScriptDefender)) {
+            $a4 = [Management.Automation.Language.Parser]::ParseInput($s, [ref]$tk3, [ref]$pe3)
+            $names = @($a4.FindAll({ param($x) $x -is [Management.Automation.Language.VariableExpressionAst] }, $true) | ForEach-Object { $_.VariablePath.UserPath })
+            @($names | Where-Object { $_ -match '^Wst' }).Count | Should Be 0
+        }
+    }
+    It 'winget list-only task does not upgrade' {
+        (& ($AutoCatalog | Where-Object Id -eq 'winget-check').Code @{}).Call | Should Not Match '--all'
+    }
+}
+
+Describe 'B8 results of the Automation task scripts (their own messages)' {
+    It 'restore point' {
+        (Get-TaskVerdict 'restorepoint' 'Restore point created: WinSuperTool 2026-11-20 12:00:00 (number 7).' 0).Find | Should Be 'RESTORE POINT CREATED'
+        (Get-TaskVerdict 'restorepoint' 'Restore point FAILED: The service cannot be started, either because it is disabled.' 1).Ok | Should Be $false
+    }
+    It 'Windows Update: up to date, installed with restart, some failed, check-only' {
+        (Get-TaskVerdict 'winupdate' 'Windows Update: no updates are available. Windows is up to date.' 0).Find | Should Match '^UP TO DATE'
+        $v = Get-TaskVerdict 'winupdate' (J 'Windows Update: 2 of 2 updates installed, 0 failed.', 'A restart is required to finish installing the updates.') 0
+        $v.Find | Should Be 'UPDATES INSTALLED - RESTART REQUIRED'; $v.Tone | Should Be 'Good'
+        (Get-TaskVerdict 'winupdate' 'Windows Update: 1 of 2 updates installed, 1 failed.' 1).Find | Should Be 'SOME UPDATES FAILED'
+        (Get-TaskVerdict 'winupdate-check' (J 'Windows Update: 3 update(s) are available:', '  - Update A', '  - Update B') 0).Find | Should Match '^UPDATES AVAILABLE'
+        (Get-TaskVerdict 'winupdate' 'Windows Update FAILED: Exception from HRESULT: 0x80070422 (0x80070422)' 1).Ok | Should Be $false
+    }
+    It 'winget: counts upgrades, failure wins, up to date, missing' {
+        (Get-TaskVerdict 'winget' (J 'Found App A [A.A] Version 2.0', 'Successfully installed', 'Found App B [B.B] Version 3.0', 'Successfully installed') 0).Find | Should Be 'APPS UPGRADED (2)'
+        (Get-TaskVerdict 'winget' (J 'Successfully installed', 'Installer failed with exit code: 1603') 1).Find | Should Be 'SOME UPGRADES FAILED (1)'
+        (Get-TaskVerdict 'winget' 'No available upgrade found.' 0).Find | Should Be 'ALL APPS ARE UP TO DATE'
+        (Get-TaskVerdict 'winget' 'winget is not available for this account.' 1).Ok | Should Be $false
+        (Get-TaskVerdict 'winget-check' (J 'Name   Id   Version   Available', 'App A  A.A  1.0  2.0', '3 upgrades available.') 0).Find | Should Match '^APP UPGRADES AVAILABLE'
+        # real layout from the elevated run: a table with no full stops, then the count -> only the count line is quoted
+        $tbl = J (@('Name                  Id                              Version    Available Source', ('-' * 81)) + @(1..6 | ForEach-Object { "App $_                 Vendor.App$_                    1.0.$_      1.0.9      winget" }) + @('6 upgrades available.'))
+        $v = Get-TaskVerdict 'winget-check' $tbl 0
+        @($v.Quote).Count | Should Be 1; $v.Quote[0] | Should Be '6 upgrades available.'
+    }
+    It 'Defender' {
+        (Get-TaskVerdict 'defender' 'Defender quick scan finished: no threats found.' 0).Find | Should Be 'NO THREATS FOUND'
+        (Get-TaskVerdict 'defender' 'Defender quick scan finished: 2 threat(s) found.' 1).Find | Should Be 'THREATS FOUND'
+        (Get-TaskVerdict 'defender' 'Defender scan FAILED: the Microsoft Defender commands are not available on this PC' 1).Ok | Should Be $false
+    }
+}
+
+Describe 'B9 System Info helpers' {
+    . ([scriptblock]::Create((Get-BetaFn 'ConvertFrom-DigitalProductId'))); . ([scriptblock]::Create((Get-BetaFn 'ConvertTo-SubnetMask'))); . ([scriptblock]::Create((Get-BetaFn 'Format-Mac')))
+    . ([scriptblock]::Create((Get-BetaFn 'InfoH'))); . ([scriptblock]::Create((Get-BetaFn 'InfoKV'))); . ([scriptblock]::Create((Get-BetaFn 'InfoT'))); . ([scriptblock]::Create((Get-BetaFn 'Get-InfoKeyWidth'))); . ([scriptblock]::Create((Get-BetaFn 'Format-InfoText')))
+    It 'decodes a product key (Microsoft''s public generic Windows Pro key, encoded the Windows 8+ way)' {
+        $chars = 'BCDFGHJKMPQRTVWXY2346789'; $k = 'VK7JGNPHTMC97JM9MPGT3V66T'; $n = $k.IndexOf('N'); $full = $chars[$n] + $k.Remove($n, 1)
+        $v = [Numerics.BigInteger]::Zero; foreach ($c in $full.ToCharArray()) { $v = $v * 24 + $chars.IndexOf($c) }
+        $raw = $v.ToByteArray(); $id = New-Object byte[] 164
+        for ($i = 0; $i -lt 15 -and $i -lt $raw.Length; $i++) { $id[52 + $i] = $raw[$i] }
+        $id[66] = $id[66] -bor 0x08
+        ConvertFrom-DigitalProductId $id | Should Be 'VK7JG-NPHTM-C97JM-9MPGT-3V66T'
+    }
+    It 'matches the licensing service''s backup key on this PC (when both are readable)' {
+        $cv = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion'
+        $bk = $null; try { $bk = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SoftwareProtectionPlatform' -ErrorAction Stop).BackupProductKeyDefault } catch {}
+        if ($cv.DigitalProductId -and $bk) { ConvertFrom-DigitalProductId ([byte[]]$cv.DigitalProductId) | Should Be $bk }
+    }
+    It 'subnet masks and MAC addresses' {
+        ConvertTo-SubnetMask 24 | Should Be '255.255.255.0'; ConvertTo-SubnetMask 20 | Should Be '255.255.240.0'; ConvertTo-SubnetMask 0 | Should Be '0.0.0.0'
+        Format-Mac '00-11-22-AB-CD-EF' | Should Be '00:11:22:AB:CD:EF'; Format-Mac 'aabbccddeeff' | Should Be 'AA:BB:CC:DD:EE:FF'
+    }
+    It 'info text lines up keys and indents multi-line values' {
+        $t = Format-InfoText @((InfoH 'Net'), (InfoKV 'IPv4 address' @('10.1.1.5 / 24', '10.1.1.6 / 24')), (InfoT 'note'))
+        $t | Should Match '(?m)^Net\r?$'
+        $t | Should Match '(?m)^  IPv4 address  10\.1\.1\.5 / 24\r?$'
+        $t | Should Match '(?m)^ {16}10\.1\.1\.6 / 24\r?$'
     }
 }

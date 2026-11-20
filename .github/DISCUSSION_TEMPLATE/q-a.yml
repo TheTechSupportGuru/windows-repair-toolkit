@@ -40,6 +40,8 @@ body:
         - "WinSuperTool: Unattend tab"
         - "WinSuperTool: Recovery tab"
         - "WinSuperTool: Recovery tab: task summary or log monitor (beta)"
+        - "WinSuperTool: System Info tab (beta)"
+        - "WinSuperTool: Automation tab (beta)"
         - "WinSuperTool: Startup, admin rights or launcher"
         - "WinFixKit: Overview"
         - "WinFixKit: Windows Update"
@@ -116,6 +118,7 @@ body:
       description: "Optional."
       options:
         - "1.8 (latest)"
+        - "1.9 beta 2 (WinSuperTool beta)"
         - "1.9 beta 1 (WinSuperTool beta)"
         - "1.7"
         - "1.6 or older"

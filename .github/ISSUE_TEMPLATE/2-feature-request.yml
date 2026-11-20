@@ -40,6 +40,8 @@ body:
         - "WinSuperTool: Unattend tab"
         - "WinSuperTool: Recovery tab"
         - "WinSuperTool: Recovery tab: task summary or log monitor (beta)"
+        - "WinSuperTool: System Info tab (beta)"
+        - "WinSuperTool: Automation tab (beta)"
         - "WinSuperTool: Startup, admin rights or launcher"
         - "WinFixKit: Overview"
         - "WinFixKit: Windows Update"

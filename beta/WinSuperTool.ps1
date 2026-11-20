@@ -1,6 +1,7 @@
 #requires -Version 5.1
-# Version 1.9 BETA 1 (2026-11-20) - BETA build, not the stable release. What changed: docs/changes/V1.9-beta.1.md
-# BETA: Recovery tab task summaries and per-task log monitors are new and only lightly tested. Stable version: tools\ (1.8).
+# Version 1.9 BETA 2 (2026-11-20) - BETA build, not the stable release. What changed: docs/changes/V1.9-beta.2.md
+# BETA: Recovery task summaries, per-task log monitors, the System Info tab and the Automation tab are new and only lightly
+# tested. Stable version: tools\ (1.8).
 <#
     WinSuperTool.ps1  -  all-in-one Windows tech toolkit (one file, no extra libraries)
     Runs on Windows 10 / 11 and in WinPE (built for Hiren's BootCD PE 11).
@@ -21,14 +22,18 @@
       6  Sysprep        A generalize (+ optional /mode:vm), B1 audit, B2 OOBE, opt-in pre-flight
                         checks, optional answer file.
       7  Unattend       build / preview / save / deploy unattend.xml with checkboxes.
-      8  Recovery       EXPERIMENTAL boot-repair tools.
+      8  Recovery       EXPERIMENTAL boot-repair tools. BETA: pass / fail summary + live logs per task.
+      9  System Info    BETA: Wi-Fi passwords, Windows version + keys, network, Bluetooth, video, audio;
+                        buttons for the built-in Windows tools.
+     10  Automation     BETA: a queue of up to 10 tasks (restore point, SFC, DISM, chkdsk, Windows Update,
+                        winget, Defender) run one after another, with a summary per task and at the end.
 
     Start it with WinSuperTool.bat (same folder). Every BCD change is backed up first.
     Mount memory, BCD backups and the activity log live in WinSuperTool-Data next to this script.
 #>
 
 $ErrorActionPreference = 'Continue'
-$AppName = 'Windows Super Tool 1.9 BETA'
+$AppName = 'Windows Super Tool 1.9 BETA 2'
 $NL      = "`r`n"
 $IsWinPE = Test-Path 'HKLM:\SYSTEM\CurrentControlSet\Control\MiniNT'
 
@@ -515,6 +520,7 @@ $MonItems = @(
     New-MonItem 'Event Viewer (live)' 'Setup'                                 'Evt'  'Setup'
     New-MonItem 'Event Viewer (live)' 'Security'                              'Evt'  'Security'
     New-MonItem 'Event Viewer (live)' 'CodeIntegrity/Operational'             'Evt'  'Microsoft-Windows-CodeIntegrity/Operational'
+    New-MonItem 'Event Viewer (live)' 'Windows Defender/Operational'          'Evt'  'Microsoft-Windows-Windows Defender/Operational'
 
     New-MonItem 'Crashes' 'System: crash/shutdown events (41,1001,1074,1076,6008)' 'Evt' 'System'      '41,1001,1074,1076,6008'
     New-MonItem 'Crashes' 'Application: crashes/hangs (1000,1001,1002)'            'Evt' 'Application' '1000,1001,1002'
@@ -522,6 +528,9 @@ $MonItems = @(
     New-MonItem 'Crashes' 'Watch folder: WER ReportQueue'                          'Dir' "$env:ProgramData\Microsoft\Windows\WER\ReportQueue"
     New-MonItem 'Crashes' 'Watch folder: LiveKernelReports'                        'Dir' "$WinDir\LiveKernelReports"
 )
+
+# event logs that exist on this Windows (some channels differ between versions, e.g. Delivery Optimization)
+$EvtLogNames = @(); try { $EvtLogNames = @([System.Diagnostics.Eventing.Reader.EventLogSession]::GlobalSession.GetLogNames()) } catch {}
 
 # ---- child-window script templates ----
 $tplFile = @'
@@ -544,7 +553,13 @@ $tplEvt = @'
 $Host.UI.RawUI.WindowTitle = '__TITLE__'
 $log = '__TARGET__'; $ids = @(__IDS__); $tail = __TAIL__
 try { Get-WinEvent -ListLog $log -ErrorAction Stop | Out-Null }
-catch { Write-Host "Cannot open event log '$log': $($_.Exception.Message)" -ForegroundColor Red; return }
+catch {
+    # a log that is simply not on this Windows (they differ between versions) gets a plain message, not an error
+    $names = @(); try { $names = @([System.Diagnostics.Eventing.Reader.EventLogSession]::GlobalSession.GetLogNames()) } catch {}
+    if ($names.Count -and $names -notcontains $log) { Write-Host "The event log '$log' does not exist on this PC. Event logs differ between Windows versions and editions, so there is nothing to monitor here." -ForegroundColor Yellow }
+    else { Write-Host "Cannot open event log '$log': $($_.Exception.Message)" -ForegroundColor Red }
+    return
+}
 function Show($e) {
     $msg = ($e.Message -split "`r?`n")[0]
     $col = switch ($e.Level) { 1 {'Red'} 2 {'Red'} 3 {'Yellow'} default {'Gray'} }
@@ -1894,7 +1909,8 @@ $Tools = @(
 #   Ok   = did the task run to the end ($false = it failed or did not run)
 #   Tone = Good (green) / Bad (red) / Warn (orange) for the result line
 # The patterns are the English messages. On another display language nothing matches and the exit code decides.
-function New-TaskRule($p, $ok, $tone, $find, $next = '') { @{ P = $p; Ok = $ok; Tone = $tone; Find = $find; Next = $next } }
+# Count = regex: append how often it occurs in the output, e.g. "APPS UPGRADED (3)". Also / AlsoText: appended when Also matches.
+function New-TaskRule($p, $ok, $tone, $find, $next = '', $count = '', $also = '', $alsoText = '') { @{ P = $p; Ok = $ok; Tone = $tone; Find = $find; Next = $next; Count = $count; Also = $also; AlsoText = $alsoText } }
 $SfcCommon = @(
     (New-TaskRule 'system repair pending which requires reboot' $false 'Warn' 'NOT CHECKED - a repair is waiting for a restart' 'Restart Windows, then run sfc again.')
     (New-TaskRule 'could not start the repair service' $false 'Bad' 'NOT CHECKED - sfc could not start the repair service' 'The Windows Modules Installer (TrustedInstaller) service must not be disabled. Try again, or try Safe Mode.')
@@ -1960,6 +1976,42 @@ $TaskRules = @{
         (New-TaskRule 'Access is denied|Element not found|cannot find|cannot be found|operation was canceled' $false 'Bad' 'FIX DID NOT WORK - bootrec reported an error' 'On UEFI PCs use "Rebuild boot files (bcdboot)" instead.')
         (New-TaskRule 'The operation completed successfully' $true 'Good' 'FIX WORKED - the operation completed successfully' 'Restart and check that Windows starts.')
     )
+    # ---- Automation tasks (the scripts below print these messages themselves) ----
+    'dism-cleanup' = @(
+        $DismError
+        (New-TaskRule 'The operation completed successfully' $true 'Good' 'COMPLETED - the component store was cleaned up' 'Nothing to do.')
+    )
+    'restorepoint' = @(
+        (New-TaskRule 'Restore point FAILED|was NOT created' $false 'Bad' 'NO RESTORE POINT - creating it failed' 'Turn on System Protection for the system drive (System Properties > System Protection > Configure), or tick "Turn on System Protection" on the Automation tab.')
+        (New-TaskRule 'Restore point created' $true 'Good' 'RESTORE POINT CREATED' 'Nothing to do. You can roll back with System Restore (rstrui).')
+    )
+    'winupdate' = @(
+        (New-TaskRule 'Windows Update FAILED' $false 'Bad' 'FAILED - Windows Update could not run' 'Check that the Windows Update service is not disabled and that the PC is online, then try again.')
+        (New-TaskRule 'updates installed, [1-9]\d* failed' $true 'Bad' 'SOME UPDATES FAILED' 'Restart and run Windows Update again. The failed update and its error code are in the output.' '' 'restart is required' ' - RESTART REQUIRED')
+        (New-TaskRule 'updates installed, 0 failed' $true 'Good' 'UPDATES INSTALLED' 'Restart if the result says a restart is required.' '' 'restart is required' ' - RESTART REQUIRED')
+        (New-TaskRule 'no updates are available' $true 'Good' 'UP TO DATE - no updates were available' 'Nothing to do.')
+    )
+    'winupdate-check' = @(
+        (New-TaskRule 'Windows Update FAILED' $false 'Bad' 'FAILED - Windows Update could not run' 'Check that the Windows Update service is not disabled and that the PC is online, then try again.')
+        (New-TaskRule 'update\(s\) are available' $true 'Warn' 'UPDATES AVAILABLE (not installed)' 'Queue "Windows Update: download and install updates" to install them.')
+        (New-TaskRule 'no updates are available' $true 'Good' 'UP TO DATE - no updates are available' 'Nothing to do.')
+    )
+    'winget' = @(
+        (New-TaskRule 'winget is not available' $false 'Bad' 'NOT RUN - winget is not available' 'Install or update "App Installer" from the Microsoft Store, then try again.')
+        (New-TaskRule 'Installer failed|failed with exit code|unexpected error|Installation failed' $true 'Bad' 'SOME UPGRADES FAILED' 'Read the output for the app that failed; close it if it is running and try again.' 'Successfully installed')
+        (New-TaskRule 'Successfully installed' $true 'Good' 'APPS UPGRADED' 'Nothing to do.' 'Successfully installed')
+        (New-TaskRule 'No available upgrade found|No newer package versions|No installed package found matching' $true 'Good' 'ALL APPS ARE UP TO DATE' 'Nothing to do.')
+    )
+    'winget-check' = @(
+        (New-TaskRule 'winget is not available' $false 'Bad' 'NOT RUN - winget is not available' 'Install or update "App Installer" from the Microsoft Store, then try again.')
+        (New-TaskRule '\d+ upgrades? available' $true 'Warn' 'APP UPGRADES AVAILABLE (not installed)' 'Queue "winget: upgrade all apps" to install them.')
+        (New-TaskRule 'No available upgrade found|No newer package versions|No installed package found matching' $true 'Good' 'ALL APPS ARE UP TO DATE' 'Nothing to do.')
+    )
+    'defender' = @(
+        (New-TaskRule 'Defender scan FAILED' $false 'Bad' 'NOT SCANNED - the Defender scan could not run' 'Another antivirus may have turned Microsoft Defender off; use that antivirus to scan instead.')
+        (New-TaskRule '[1-9]\d* threat\(s\) found' $true 'Bad' 'THREATS FOUND' 'Open Windows Security > Virus and threat protection > Protection history and act on the threats.')
+        (New-TaskRule 'no threats found' $true 'Good' 'NO THREATS FOUND' 'Nothing to do.')
+    )
 }
 
 # Pass / fail for one finished task. Returns Ok, Tone, Find (headline), Next (advice), Quote (exact lines the tool printed).
@@ -1989,11 +2041,17 @@ function Get-TaskVerdict([string]$Kind, [string]$Text, $Rc) {
         if (-not $r) { continue }
         for ($i = $sent.Count - 1; $i -ge 0; $i--) {          # newest output first: the result comes at the end
             if ($sent[$i][1] -notmatch $r.P) { continue }
-            $q = @($err) + @($sent[$i][1])
+            $hitText = $sent[$i][1]
+            # a "sentence" that is really a table run together (winget prints no full stops): quote just the matching line
+            if ($hitText.Length -gt 200) { $ln = @($lines | Where-Object { $_ -match $r.P }) | Select-Object -Last 1; if ($ln) { $hitText = $ln } }
+            $q = @($err) + @($hitText)
             # the tool's follow-up sentence ("No further action is required.", "Details are included in the CBS.Log ...")
-            if ($i + 1 -lt $sent.Count -and $sent[$i + 1][0] -eq $sent[$i][0] -and $sent[$i + 1][1].Length -le 160) { $q += $sent[$i + 1][1] }
+            if ($hitText -eq $sent[$i][1] -and $i + 1 -lt $sent.Count -and $sent[$i + 1][0] -eq $sent[$i][0] -and $sent[$i + 1][1].Length -le 160) { $q += $sent[$i + 1][1] }
             $q = @($q | Select-Object -Unique | ForEach-Object { if ($_.Length -gt 400) { $_.Substring(0, 400) + ' ...' } else { $_ } })
-            return [pscustomobject]@{ Ok = $r.Ok; Tone = $r.Tone; Find = $r.Find; Next = $r.Next; Quote = $q; Matched = $true }
+            $find = $r.Find
+            if ($r.Count) { $find += ' ({0})' -f [regex]::Matches($clean, $r.Count).Count }
+            if ($r.Also -and $clean -match $r.Also) { $find += $r.AlsoText }
+            return [pscustomobject]@{ Ok = $r.Ok; Tone = $r.Tone; Find = $find; Next = $r.Next; Quote = $q; Matched = $true }
         }
     }
     $code = if ($null -eq $Rc -or "$Rc" -eq '') { 'unknown' } else { "$Rc" }
@@ -2008,19 +2066,20 @@ function Get-TaskVerdict([string]$Kind, [string]$Text, $Rc) {
 # Console window for a task with "summary" on: runs the command exactly as before (its own progress display and
 # Y/N prompts work), then reads back what was printed from the console screen buffer and writes it to a result
 # file BEFORE "Press Enter". The main window's timer picks the file up and shows the summary.
+# The template's own variables are named $Wst* so a task script (__CMD__) cannot overwrite them by accident.
 $tplTask = @'
 $Host.UI.RawUI.WindowTitle = '__TITLE__'
-$res = '__RESULT__'; $mark = '===== WinSuperTool: task output starts here ====='
-try { $b = $Host.UI.RawUI.BufferSize; if ($b.Height -lt 9000) { $Host.UI.RawUI.BufferSize = New-Object Management.Automation.Host.Size($b.Width, 9000) } } catch {}
+$WstRes = '__RESULT__'; $WstMark = '===== WinSuperTool: task output starts here ====='
+try { $WstBuf = $Host.UI.RawUI.BufferSize; if ($WstBuf.Height -lt 9000) { $Host.UI.RawUI.BufferSize = New-Object Management.Automation.Host.Size($WstBuf.Width, 9000) } } catch {}
 Write-Host '__LINE__' -ForegroundColor Cyan
-Write-Host $mark -ForegroundColor DarkGray
-$y0 = $Host.UI.RawUI.CursorPosition.Y; $t0 = Get-Date
+Write-Host $WstMark -ForegroundColor DarkGray
+$WstY0 = $Host.UI.RawUI.CursorPosition.Y; $WstT0 = Get-Date
 __CMD__
-$rc = $LASTEXITCODE; $t1 = Get-Date
-function Read-Screen {
+$WstRc = $LASTEXITCODE; $WstT1 = Get-Date
+function Read-WstScreen {
     $raw = $Host.UI.RawUI; $w = $raw.BufferSize.Width; $h = $raw.BufferSize.Height; $end = $raw.CursorPosition.Y
     # the marker row is still there unless the buffer filled up and scrolled; then read the newest 3000 rows
-    $top = if ($end -lt ($h - 1)) { [Math]::Max(0, $y0 - 1) } else { [Math]::Max(0, $end - 3000) }
+    $top = if ($end -lt ($h - 1)) { [Math]::Max(0, $WstY0 - 1) } else { [Math]::Max(0, $end - 3000) }
     $cells = $raw.GetBufferContents((New-Object Management.Automation.Host.Rectangle(0, $top, ($w - 1), $end)))
     $sb = New-Object Text.StringBuilder; $row = New-Object char[] $w
     for ($y = 0; $y -le ($end - $top); $y++) {
@@ -2029,16 +2088,16 @@ function Read-Screen {
         [void]$sb.Append($t)
         if ($t.Length -lt $w) { [void]$sb.Append("`r`n") }     # a full row is a long line that wrapped: join it to the next
     }
-    $all = $sb.ToString(); $i = $all.LastIndexOf($mark)
-    if ($i -ge 0) { $all = $all.Substring($i + $mark.Length) }
+    $all = $sb.ToString(); $i = $all.LastIndexOf($WstMark)
+    if ($i -ge 0) { $all = $all.Substring($i + $WstMark.Length) }
     $all.Trim()
 }
-$txt = ''; try { $txt = Read-Screen } catch { $txt = "(could not read the console window: $($_.Exception.Message))" }
-$body = "Rc=$rc`r`nStarted=$($t0.ToString('s'))`r`nEnded=$($t1.ToString('s'))`r`n-----`r`n$txt"
-try { [IO.File]::WriteAllText("$res.tmp", $body, (New-Object Text.UTF8Encoding $false)); Move-Item -LiteralPath "$res.tmp" -Destination $res -Force }
+$WstTxt = ''; try { $WstTxt = Read-WstScreen } catch { $WstTxt = "(could not read the console window: $($_.Exception.Message))" }
+$WstBody = "Rc=$WstRc`r`nStarted=$($WstT0.ToString('s'))`r`nEnded=$($WstT1.ToString('s'))`r`n-----`r`n$WstTxt"
+try { [IO.File]::WriteAllText("$WstRes.tmp", $WstBody, (New-Object Text.UTF8Encoding $false)); Move-Item -LiteralPath "$WstRes.tmp" -Destination $WstRes -Force }
 catch { Write-Host "Could not save the result for the summary: $($_.Exception.Message)" -ForegroundColor Red }
-Write-Host ''; Write-Host ('Exit code: ' + $rc)
-Read-Host 'Press Enter to close this window'
+Write-Host ''; Write-Host ('Exit code: ' + $WstRc)
+__CLOSE__
 '@
 
 $TaskDir = Join-Path $DataDir 'Task-Results'
@@ -2046,7 +2105,24 @@ $script:TaskWatch = New-Object Collections.ArrayList    # console tasks waiting 
 function Get-TaskFileBase([string]$name) {
     $slug = ($name -replace '[^A-Za-z0-9]+', '-').Trim('-'); if ($slug.Length -gt 40) { $slug = $slug.Substring(0, 40) }
     [void][IO.Directory]::CreateDirectory($TaskDir)
-    Join-Path $TaskDir ('{0:yyyyMMdd_HHmmss}_{1}' -f (Get-Date), $slug)
+    Join-Path $TaskDir ('{0:yyyyMMdd_HHmmss_fff}_{1}' -f (Get-Date), $slug)
+}
+# PowerShell call of one program with every argument single-quoted (no cmd.exe parsing)
+function Get-ExeCall([string]$exe, [string[]]$argv) { "& '" + (Esc-Sq $exe) + "' " + ((@($argv) | ForEach-Object { "'" + (Esc-Sq ([string]$_)) + "'" }) -join ' ') }
+# Opens a task window (Recovery tab with "summary" on, and every Automation task) and registers it for its summary.
+#   $Call = PowerShell code that runs the task (it must leave $LASTEXITCODE set); $AutoItem = the Automation row, or $null
+function Start-TaskWindow([string]$Name, [string]$Kind, [string]$Line, [string]$Call, [bool]$AutoClose = $false, $AutoItem = $null) {
+    $resFile = (Get-TaskFileBase $Name) + '.txt'
+    $close = if ($AutoClose) { "Write-Host 'This window closes in 15 seconds.' -ForegroundColor DarkGray; Start-Sleep -Seconds 15" } else { "Read-Host 'Press Enter to close this window'" }
+    $cmd = $tplTask.Replace('__CMD__', $Call).Replace('__CLOSE__', $close).Replace('__TITLE__', (Esc-Sq ('TASK: ' + $Name))).Replace('__RESULT__', (Esc-Sq $resFile)).Replace('__LINE__', (Esc-Sq $Line))
+    $enc = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($cmd))
+    # a classic console window (not Windows Terminal) keeps the whole output in its buffer, so all of it can be read back
+    $conhost = Join-Path $env:windir 'System32\conhost.exe'
+    if ([IO.File]::Exists($conhost)) { $p = Start-Process -FilePath $conhost -PassThru -ArgumentList ('"{0}" -NoProfile -ExecutionPolicy Bypass -EncodedCommand {1}' -f $PsExePath, $enc) }
+    else { $p = Start-Process -FilePath $PsExePath -PassThru -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $enc }
+    [void]$script:Consoles.Add($p)
+    [void]$script:TaskWatch.Add([pscustomobject]@{ Name = $Name; Kind = $Kind; Line = $Line; ResultFile = $resFile; OutFile = $null; Proc = $p; AutoItem = $AutoItem })
+    return $resFile
 }
 function Read-TaskResult([string]$path) {
     $raw = [IO.File]::ReadAllText($path)
@@ -2060,7 +2136,7 @@ function Read-TaskResult([string]$path) {
     }
     $r
 }
-function Show-TaskSummary($task, $res, $v) {
+function Show-TaskSummary($task, $res, $v, [bool]$Modeless = $false) {
     $green = [Drawing.Color]::FromArgb(30, 130, 60); $red = [Drawing.Color]::FromArgb(190, 35, 35); $orange = [Drawing.Color]::FromArgb(200, 110, 0)
     $f = New-Object Windows.Forms.Form
     $f.Text = "Task summary - $($task.Name)"; $f.Size = New-Object Drawing.Size(760, 540); $f.StartPosition = 'CenterScreen'; $f.Font = $form.Font
@@ -2098,6 +2174,16 @@ function Show-TaskSummary($task, $res, $v) {
     $cl = New-Ctl 'Button' $f 632 456 100 30 'Close'
     $cl.Anchor = 'Bottom,Right'; $cl.DialogResult = 'OK'; $f.CancelButton = $cl; $f.AcceptButton = $cl
     $t.Select(0, 0)
+    if ($Modeless) {
+        # Automation: the queue goes on while this window stays open. Kept on top in the bottom-right corner (the next task's
+        # console opens top-left), staggered so several stay readable.
+        $f.TopMost = $true; $f.StartPosition = 'Manual'
+        $script:SumOffset = ([int]$script:SumOffset + 30) % 240
+        $wa = [Windows.Forms.Screen]::PrimaryScreen.WorkingArea
+        $f.Location = New-Object Drawing.Point(([Math]::Max($wa.Left, $wa.Right - $f.Width - 8 - $script:SumOffset)), ([Math]::Max($wa.Top, $wa.Bottom - $f.Height - 8 - $script:SumOffset)))
+        $f.Show($form); $f.Activate()
+        return
+    }
     [void]$f.ShowDialog($form)
     $f.Dispose()
 }
@@ -2110,6 +2196,7 @@ function Update-TaskWatch {
             $t.OutFile = $t.ResultFile
             $v = Get-TaskVerdict $t.Kind $r.Output $r.Rc
             Log ('RESULT: {0} - {1} (exit code {2}). Output: {3}' -f $t.Name, $v.Find, $r.Rc, $t.ResultFile)
+            if ($t.AutoItem) { Complete-AutoTask $t $r $v; return }
             $script:InSummary = $true
             try { Show-TaskSummary $t $r $v } finally { $script:InSummary = $false }
             return      # one summary per tick; the next one (if any) shows on a later tick
@@ -2117,6 +2204,11 @@ function Update-TaskWatch {
         if ($t.Proc -and $t.Proc.HasExited -and -not [IO.File]::Exists($t.ResultFile)) {
             $script:TaskWatch.Remove($t)
             Log "RESULT: $($t.Name) - the window was closed before the task finished; no summary."
+            if ($t.AutoItem) {
+                $v = [pscustomobject]@{ Ok = $false; Tone = 'Bad'; Find = 'NOT FINISHED - its window was closed before the task ended'; Next = 'Run the task again and leave its window open.'; Quote = @(); Matched = $false }
+                Complete-AutoTask $t ([pscustomobject]@{ Rc = $null; Started = $null; Ended = (Get-Date); Output = '' }) $v
+                return
+            }
             $script:InSummary = $true
             try { Msg "The window for '$($t.Name)' was closed before the task finished, so there is no summary." 'Task summary' 'Warning' } finally { $script:InSummary = $false }
             return
@@ -2127,10 +2219,771 @@ function Update-TaskWatch {
 function Start-TaskMonitors($tool) {
     $n = 0
     foreach ($name in @($tool.Logs)) {
+        if (-not $name) { continue }
         $item = $MonItems | Where-Object { $_.Name -eq $name } | Select-Object -First 1
+        if ($item -and $item.Type -eq 'Evt' -and $EvtLogNames.Count -and $EvtLogNames -notcontains $item.Target) { Log "Not monitored (this event log is not on this PC): $($item.Target)"; continue }
         if ($item) { Start-Monitor $item 20; $n++; Log "Monitoring for $($tool.Name): $($item.Target)" }
     }
     return $n
+}
+
+# =====================================================================
+#  BETA: easy-to-read info window (System Info tab, Automation summary)
+# =====================================================================
+# Blocks: InfoH = heading, InfoKV = "key: value" row (value may have several lines), InfoT = a line of text.
+# C (colour) = Good / Bad / Warn / '' for the value or text.
+function InfoH([string]$t) { [pscustomobject]@{ K = 'H'; Key = ''; T = $t; C = '' } }
+function InfoKV([string]$k, $v, [string]$c = '') { [pscustomobject]@{ K = 'KV'; Key = $k; T = ((@($v) | ForEach-Object { [string]$_ }) -join "`n"); C = $c } }
+function InfoT([string]$t, [string]$c = '') { [pscustomobject]@{ K = 'T'; Key = ''; T = $t; C = $c } }
+function Get-InfoKeyWidth($blocks) { $w = 8; foreach ($b in $blocks) { if ($b.K -eq 'KV' -and $b.Key.Length -gt $w) { $w = $b.Key.Length } }; [Math]::Min($w, 30) }
+function Format-InfoText($blocks, [string]$title = '', [string]$note = '') {
+    $w = Get-InfoKeyWidth $blocks; $sb = New-Object Text.StringBuilder
+    if ($title) { [void]$sb.AppendLine($title); [void]$sb.AppendLine(('{0:yyyy-MM-dd HH:mm:ss}' -f (Get-Date))) }
+    if ($note) { [void]$sb.AppendLine($note) }
+    foreach ($b in $blocks) {
+        switch ($b.K) {
+            'H'  { [void]$sb.AppendLine(''); [void]$sb.AppendLine($b.T); [void]$sb.AppendLine('-' * [Math]::Min(80, $b.T.Length)) }
+            'KV' { $ls = @($b.T -split "`n"); [void]$sb.AppendLine('  ' + $b.Key.PadRight($w) + '  ' + $ls[0]); for ($i = 1; $i -lt $ls.Count; $i++) { [void]$sb.AppendLine((' ' * ($w + 4)) + $ls[$i]) } }
+            default { [void]$sb.AppendLine('  ' + $b.T) }
+        }
+    }
+    $sb.ToString()
+}
+function Show-Info([string]$title, $blocks, [string]$note = '', [bool]$OnTop = $false) {
+    $blocks = @($blocks | Where-Object { $_ })
+    $green = [Drawing.Color]::FromArgb(30, 130, 60); $red = [Drawing.Color]::FromArgb(190, 35, 35); $orange = [Drawing.Color]::FromArgb(190, 100, 0)
+    $f = New-Object Windows.Forms.Form
+    $f.Text = $title; $f.Size = New-Object Drawing.Size(900, 660); $f.StartPosition = 'CenterParent'; $f.Font = $form.Font; $f.MinimumSize = New-Object Drawing.Size(600, 400)
+    $rt = New-Object Windows.Forms.RichTextBox
+    $rt.Location = New-Object Drawing.Point(10, 10); $rt.Size = New-Object Drawing.Size(864, 562); $rt.Anchor = 'Top,Bottom,Left,Right'
+    $rt.BackColor = [Drawing.Color]::White; $rt.DetectUrls = $false; $rt.WordWrap = $true; $rt.BorderStyle = 'FixedSingle'
+    $f.Controls.Add($rt)
+    $fH = New-Object Drawing.Font('Segoe UI', 12, [Drawing.FontStyle]::Bold); $fK = New-Object Drawing.Font('Consolas', 10)
+    $fV = New-Object Drawing.Font('Consolas', 10, [Drawing.FontStyle]::Bold); $fN = New-Object Drawing.Font('Segoe UI', 9, [Drawing.FontStyle]::Italic)
+    $cH = [Drawing.Color]::FromArgb(0, 70, 140); $cK = [Drawing.Color]::FromArgb(90, 90, 90); $cV = [Drawing.Color]::Black
+    $add = { param($text, $font, $color) $rt.SelectionStart = $rt.TextLength; $rt.SelectionLength = 0; $rt.SelectionFont = $font; $rt.SelectionColor = $color; $rt.SelectedText = $text }
+    $col = { param($c) switch ($c) { 'Good' { $green } 'Bad' { $red } 'Warn' { $orange } default { $cV } } }
+    $w = Get-InfoKeyWidth $blocks
+    if ($note) { & $add ($note + "`n") $fN ([Drawing.Color]::DimGray) }
+    $first = $true
+    foreach ($b in $blocks) {
+        switch ($b.K) {
+            'H'  { if (-not $first) { & $add "`n" $fK $cV }; & $add ($b.T + "`n") $fH $cH }
+            'KV' {
+                $ls = @($b.T -split "`n")
+                & $add ('  ' + $b.Key.PadRight($w) + '  ') $fK $cK
+                & $add ($ls[0] + "`n") $fV (& $col $b.C)
+                for ($i = 1; $i -lt $ls.Count; $i++) { & $add ((' ' * ($w + 4)) + $ls[$i] + "`n") $fV (& $col $b.C) }
+            }
+            default { & $add ('  ' + $b.T + "`n") $fK (& $col $b.C) }
+        }
+        $first = $false
+    }
+    $rt.ReadOnly = $true; $rt.SelectionStart = 0; $rt.SelectionLength = 0
+    $plain = Format-InfoText $blocks $title $note
+    $bCopy = New-Ctl 'Button' $f 10 580 120 30 'Copy all'; $bCopy.Anchor = 'Bottom,Left'; $bCopy.Tag = $plain
+    $bCopy.Add_Click({ try { [Windows.Forms.Clipboard]::SetText([string]$this.Tag) } catch { Msg "Could not copy: $($_.Exception.Message)" } })
+    $bSave = New-Ctl 'Button' $f 138 580 120 30 'Save as...'; $bSave.Anchor = 'Bottom,Left'; $bSave.Tag = @($plain, $title)
+    $bSave.Add_Click({
+        $d = New-Object Windows.Forms.SaveFileDialog; $d.Filter = 'Text file (*.txt)|*.txt'; $d.InitialDirectory = $DataDir
+        $d.FileName = (($this.Tag[1] -replace '[^A-Za-z0-9 _-]', '') -replace '\s+', '_') + ('_{0:yyyyMMdd_HHmm}.txt' -f (Get-Date))
+        if ($d.ShowDialog() -eq 'OK') { [IO.File]::WriteAllText($d.FileName, [string]$this.Tag[0]); Log "Saved: $($d.FileName)" }
+    })
+    $bClose = New-Ctl 'Button' $f 774 580 100 30 'Close'; $bClose.Anchor = 'Bottom,Right'; $bClose.DialogResult = 'OK'; $f.CancelButton = $bClose
+    if ($OnTop) { $f.TopMost = $true; $f.StartPosition = 'CenterScreen' }     # above the task windows that are still counting down
+    [void]$f.ShowDialog($form)
+    $f.Dispose()
+}
+function Invoke-Busy([string]$what, [scriptblock]$do) {
+    $old = $form.Cursor; $form.Cursor = [Windows.Forms.Cursors]::WaitCursor; $form.Refresh()
+    Log "System info: $what"
+    try { & $do } finally { $form.Cursor = $old }
+}
+
+# =====================================================================
+#  BETA: 9. SYSTEM INFO
+# =====================================================================
+function Get-SafeCim([string]$class, [string]$filter = '', [string]$ns = 'root\cimv2') {
+    try { if ($filter) { @(Get-CimInstance -Namespace $ns -ClassName $class -Filter $filter -ErrorAction Stop) } else { @(Get-CimInstance -Namespace $ns -ClassName $class -ErrorAction Stop) } } catch { @() }
+}
+function Format-Mac([string]$m) { if (-not $m) { return '' }; $h = ($m -replace '[^0-9A-Fa-f]', '').ToUpper(); if ($h.Length -ne 12) { return $m }; ($h -split '(..)' | Where-Object { $_ }) -join ':' }
+function Format-CimDate($d) { if ($d -is [datetime]) { return $d.ToString('yyyy-MM-dd') }; if ($d -match '^(\d{4})(\d{2})(\d{2})') { return "$($Matches[1])-$($Matches[2])-$($Matches[3])" }; [string]$d }
+function ConvertTo-SubnetMask([int]$len) {
+    $bits = ('1' * [Math]::Max(0, [Math]::Min(32, $len))).PadRight(32, '0')
+    (0..3 | ForEach-Object { [Convert]::ToInt32($bits.Substring($_ * 8, 8), 2) }) -join '.'
+}
+# Windows product key stored in the registry (DigitalProductId). With a digital license this is often a generic key.
+function ConvertFrom-DigitalProductId([byte[]]$id) {
+    if (-not $id -or $id.Length -lt 67) { return '' }
+    $key = [byte[]]$id[52..66]
+    $isWin8 = [int]([Math]::Floor($key[14] / 6)) -band 1       # integer division (PowerShell's / keeps the fraction)
+    $key[14] = [byte](($key[14] -band 0xF7) -bor (($isWin8 -band 2) * 4))
+    $chars = 'BCDFGHJKMPQRTVWXY2346789'; $out = ''; $last = 0
+    for ($i = 24; $i -ge 0; $i--) {
+        $cur = 0
+        for ($j = 14; $j -ge 0; $j--) { $cur = $cur * 256 + $key[$j]; $key[$j] = [byte][Math]::Floor($cur / 24); $cur = $cur % 24 }
+        $out = $chars[$cur] + $out; $last = $cur
+    }
+    if ($isWin8) { $s = $out.Substring(1); $out = $s.Substring(0, $last) + 'N' + $s.Substring($last) }
+    ($out.Substring(0, 25) -split '(.{5})' | Where-Object { $_ }) -join '-'
+}
+
+# ---- A1 Wi-Fi networks and passwords ----
+function Get-WifiInfo {
+    $b = New-Object Collections.ArrayList
+    if (-not (Get-Command netsh.exe -ErrorAction SilentlyContinue)) { [void]$b.Add((InfoT 'netsh is not available here, so Wi-Fi networks cannot be read.' 'Warn')); return $b }
+    $svc = Get-Service WlanSvc -ErrorAction SilentlyContinue
+    if (-not $svc) { [void]$b.Add((InfoT 'This PC has no Wi-Fi service (WLAN AutoConfig is not installed), so there are no Wi-Fi networks to show.' 'Warn')); return $b }
+    if ($svc.Status -ne 'Running') { [void]$b.Add((InfoT 'The WLAN AutoConfig service is not running. Saved networks are shown if Windows can still read them.' 'Warn')) }
+    $ifText = (& netsh.exe wlan show interfaces 2>$null) -join "`n"
+    $connected = @([regex]::Matches($ifText, '(?m)^\s*SSID\s*:\s*(.+?)\s*$') | ForEach-Object { $_.Groups[1].Value })
+    $tmp = Join-Path $env:windir ('Temp\wst-wifi-' + [guid]::NewGuid().ToString('N'))
+    $nets = @()
+    try {
+        [void][IO.Directory]::CreateDirectory($tmp)
+        # the export writes the passwords in plain text: it goes to an admin-only folder and is deleted right after reading
+        $null = & netsh.exe wlan export profile key=clear "folder=$tmp" 2>&1
+        foreach ($f in @(Get-ChildItem -LiteralPath $tmp -Filter *.xml -ErrorAction SilentlyContinue)) {
+            try {
+                [xml]$x = [IO.File]::ReadAllText($f.FullName)
+                $p = $x.WLANProfile; $sec = $p.MSM.security
+                $ssid = [string]$p.SSIDConfig.SSID.name; if (-not $ssid) { $ssid = [string]$p.name }
+                $auth = [string]$sec.authEncryption.authentication; $enc = [string]$sec.authEncryption.encryption
+                $pw = [string]$sec.sharedKey.keyMaterial
+                if (-not $pw) {
+                    $pw = if ($auth -eq 'open') { '(none - open network)' }
+                          elseif ([string]$sec.authEncryption.useOneX -eq 'true') { '(no shared password - signs in with a user account or certificate)' }
+                          else { '(not stored)' }
+                }
+                $nets += [pscustomobject]@{ Ssid = $ssid; Profile = [string]$p.name; Pw = $pw; Auth = $auth; Enc = $enc; Mode = [string]$p.connectionMode; Now = ($connected -contains $ssid) }
+            } catch {}
+        }
+    } finally { try { Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction Stop } catch {} }
+    $nets = @($nets | Sort-Object @{ e = { -not $_.Now } }, Ssid)
+    [void]$b.Add((InfoH ('Saved Wi-Fi networks ({0})' -f $nets.Count)))
+    if (-not $nets.Count) { [void]$b.Add((InfoT 'No saved Wi-Fi networks were found on this PC.')) }
+    foreach ($n in $nets) {
+        [void]$b.Add((InfoKV 'Network' ($n.Ssid + $(if ($n.Now) { '   <- CONNECTED NOW' } else { '' })) $(if ($n.Now) { 'Good' } else { '' })))
+        [void]$b.Add((InfoKV '  Password' $n.Pw))
+        [void]$b.Add((InfoKV '  Security' ("$($n.Auth) / $($n.Enc)")))
+        [void]$b.Add((InfoKV '  Connects' $(if ($n.Mode -eq 'auto') { 'automatically' } else { 'manually' })))
+        if ($n.Profile -and $n.Profile -ne $n.Ssid) { [void]$b.Add((InfoKV '  Profile name' $n.Profile)) }
+    }
+    [void]$b.Add((InfoH 'Wi-Fi networks in range now'))
+    $inRange = @(& netsh.exe wlan show networks 2>$null | ForEach-Object { $_.TrimEnd() } | Where-Object { $_ -match '^SSID \d+\s*:' -or $_ -match '^\s+\S' })
+    if ($inRange.Count) { foreach ($l in $inRange) { [void]$b.Add((InfoT $l.Trim())) } } else { [void]$b.Add((InfoT 'None found (no Wi-Fi adapter, Wi-Fi is off, or no networks nearby).')) }
+    return $b
+}
+
+# ---- A2 Windows version and keys ----
+function Get-WindowsInfo {
+    $b = New-Object Collections.ArrayList
+    $cv = Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -ErrorAction SilentlyContinue
+    $build = 0; [void][int]::TryParse([string]$cv.CurrentBuild, [ref]$build)
+    $name = [string]$cv.ProductName; if ($build -ge 22000) { $name = $name -replace 'Windows 10', 'Windows 11' }   # Windows 11 still says "Windows 10" here
+    $rel = if ($cv.DisplayVersion) { $cv.DisplayVersion } else { $cv.ReleaseId }
+    $maj = if ($null -ne $cv.CurrentMajorVersionNumber) { "$($cv.CurrentMajorVersionNumber).$($cv.CurrentMinorVersionNumber)" } else { $cv.CurrentVersion }
+    [void]$b.Add((InfoH 'Windows'))
+    [void]$b.Add((InfoKV 'Edition' $name))
+    [void]$b.Add((InfoKV 'Release' $rel))
+    [void]$b.Add((InfoKV 'Full version' ("$maj.$build.$($cv.UBR)")))
+    [void]$b.Add((InfoKV 'Build' ("$build.$($cv.UBR)")))
+    [void]$b.Add((InfoKV 'Edition ID' $cv.EditionID))
+    [void]$b.Add((InfoKV 'Installation type' $cv.InstallationType))
+    [void]$b.Add((InfoKV 'Architecture' $(if ([Environment]::Is64BitOperatingSystem) { '64-bit' } else { '32-bit' })))
+    if ($cv.InstallDate) { [void]$b.Add((InfoKV 'Installed on' ([DateTimeOffset]::FromUnixTimeSeconds([long]$cv.InstallDate).LocalDateTime.ToString('yyyy-MM-dd HH:mm')))) }
+    [void]$b.Add((InfoKV 'Build lab' $cv.BuildLabEx))
+    if ($IsWinPE) { [void]$b.Add((InfoT 'NOTE: this is the WinPE system you booted, not an installed Windows.' 'Warn')) }
+
+    [void]$b.Add((InfoH 'Product keys'))
+    $k = ''; try { $k = ConvertFrom-DigitalProductId ([byte[]]$cv.DigitalProductId) } catch {}
+    [void]$b.Add((InfoKV 'Installed key' $(if ($k) { $k } else { '(not readable)' })))
+    $sppKey = ''; try { $sppKey = (Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SoftwareProtectionPlatform' -ErrorAction Stop).BackupProductKeyDefault } catch {}
+    if ($sppKey) { [void]$b.Add((InfoKV 'Backup key (licensing)' $sppKey)) }
+    $sls = Get-SafeCim 'SoftwareLicensingService' | Select-Object -First 1
+    $oa3 = if ($sls) { [string]$sls.OA3xOriginalProductKey } else { '' }
+    [void]$b.Add((InfoKV 'Motherboard (firmware) key' $(if ($oa3) { $oa3 } else { 'none - the BIOS / UEFI has no Windows key built in' }) $(if ($oa3) { '' } else { 'Warn' })))
+    if ($sls -and $sls.OA3xOriginalProductKeyDescription) { [void]$b.Add((InfoKV 'Motherboard key is for' $sls.OA3xOriginalProductKeyDescription)) }
+    [void]$b.Add((InfoT 'With a digital license the installed key is often a generic key; activation is then tied to the hardware or Microsoft account.'))
+
+    [void]$b.Add((InfoH 'Activation'))
+    $lp = Get-SafeCim 'SoftwareLicensingProduct' "ApplicationID='55c92734-d682-4d71-983e-d6ec3f16059f' AND PartialProductKey IS NOT NULL" | Select-Object -First 1
+    if ($lp) {
+        $st = @('Not activated', 'ACTIVATED', 'Grace period (out of box)', 'Grace period (hardware changed)', 'Grace period (not genuine)', 'Notification mode - not activated', 'Extended grace period')[[int]$lp.LicenseStatus]
+        [void]$b.Add((InfoKV 'Status' $st $(if ([int]$lp.LicenseStatus -eq 1) { 'Good' } else { 'Bad' })))
+        $ch = if ($lp.ProductKeyChannel) { $lp.ProductKeyChannel } else { $lp.Description }
+        [void]$b.Add((InfoKV 'License channel' $ch))
+        [void]$b.Add((InfoKV 'Active key ends in' $lp.PartialProductKey))
+        [void]$b.Add((InfoKV 'License name' $lp.Name))
+    } else { [void]$b.Add((InfoT 'The activation status could not be read.' 'Warn')) }
+
+    [void]$b.Add((InfoH 'PC, motherboard and firmware'))
+    $cs = Get-SafeCim 'Win32_ComputerSystem' | Select-Object -First 1
+    $bb = Get-SafeCim 'Win32_BaseBoard' | Select-Object -First 1
+    $bios = Get-SafeCim 'Win32_BIOS' | Select-Object -First 1
+    if ($cs) { [void]$b.Add((InfoKV 'PC maker / model' ("$($cs.Manufacturer) $($cs.Model)".Trim()))) }
+    if ($bb) { [void]$b.Add((InfoKV 'Motherboard' ("$($bb.Manufacturer) $($bb.Product)".Trim()))) }
+    if ($bios) { [void]$b.Add((InfoKV 'BIOS / UEFI version' ("$($bios.SMBIOSBIOSVersion)  ($(Format-CimDate $bios.ReleaseDate))"))) }
+    $fw = Get-FirmwareType; [void]$b.Add((InfoKV 'Boot mode' $(if ($fw) { $fw } else { 'unknown' })))
+    $sb = 'unknown'; try { $sb = if (Confirm-SecureBootUEFI -ErrorAction Stop) { 'On' } else { 'Off' } } catch { if ($fw -eq 'BIOS') { $sb = 'not supported (legacy BIOS boot)' } }
+    [void]$b.Add((InfoKV 'Secure Boot' $sb))
+    return $b
+}
+
+# ---- A3 Network connections ----
+function Get-NetInfo {
+    $b = New-Object Collections.ArrayList
+    if (-not (Get-Command Get-NetAdapter -ErrorAction SilentlyContinue)) {
+        [void]$b.Add((InfoT 'The network PowerShell commands are not available here (WinPE?). This is the output of ipconfig /all:' 'Warn'))
+        foreach ($l in @(& ipconfig.exe /all)) { if ($l.Trim()) { [void]$b.Add((InfoT $l.TrimEnd())) } }
+        return $b
+    }
+    $ads = @(Get-NetAdapter -ErrorAction SilentlyContinue)
+    $cfg = @{}; foreach ($c in (Get-SafeCim 'Win32_NetworkAdapterConfiguration')) { $cfg[[int]$c.InterfaceIndex] = $c }
+    $metric = @{}
+    foreach ($r in @(Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue)) {
+        $im = 0; try { $im = (Get-NetIPInterface -InterfaceIndex $r.ifIndex -AddressFamily IPv4 -ErrorAction Stop).InterfaceMetric } catch {}
+        $m = [int]$r.RouteMetric + [int]$im
+        if (-not $metric.ContainsKey([int]$r.ifIndex) -or $m -lt $metric[[int]$r.ifIndex]) { $metric[[int]$r.ifIndex] = $m }
+    }
+    # Wi-Fi details per interface, as netsh prints them
+    $wl = @{}; $cur = $null
+    foreach ($l in @(& netsh.exe wlan show interfaces 2>$null)) {
+        if ($l -match '^\s*Name\s*:\s*(.+?)\s*$') { $cur = $Matches[1]; $wl[$cur] = New-Object Collections.ArrayList; continue }
+        if ($cur -and $l -match '^\s*([^:]+?)\s*:\s*(.+?)\s*$') { [void]$wl[$cur].Add(@($Matches[1], $Matches[2])) }
+    }
+    $sorted = @($ads | Sort-Object @{ e = { if ($_.Status -eq 'Up') { 0 } else { 1 } } }, @{ e = { if ($metric.ContainsKey([int]$_.ifIndex)) { $metric[[int]$_.ifIndex] } else { 99999 } } }, ifIndex)
+    $up = @($sorted | Where-Object { $_.Status -eq 'Up' })
+    $inet = $sorted | Where-Object { $_.Status -eq 'Up' -and $metric.ContainsKey([int]$_.ifIndex) } | Select-Object -First 1
+    [void]$b.Add((InfoH 'Summary'))
+    [void]$b.Add((InfoKV 'Adapters' ('{0} in total, {1} connected' -f $sorted.Count, $up.Count)))
+    [void]$b.Add((InfoKV 'Internet goes through' $(if ($inet) { "$($inet.Name) ($($inet.InterfaceDescription))" } else { 'no default route - this PC is not connected to a network with internet' }) $(if ($inet) { 'Good' } else { 'Warn' })))
+    $n = 0
+    foreach ($a in $sorted) {
+        $n++
+        $idx = [int]$a.ifIndex
+        $desc = [string]$a.InterfaceDescription
+        $type = if ($a.Virtual -or $desc -match 'Virtual|Hyper-V|VMware|VirtualBox Host|TAP-|VPN|WireGuard|Loopback|Tunnel') { 'Virtual / VPN adapter' }
+                elseif ($a.PhysicalMediaType -match '802\.11') { 'Wi-Fi' } elseif ($a.PhysicalMediaType -match '802\.3') { 'Ethernet (wired)' }
+                elseif ($a.PhysicalMediaType -match 'Blue') { 'Bluetooth' } elseif ($a.PhysicalMediaType -match 'WWAN|Mobile') { 'Mobile broadband' } else { [string]$a.MediaType }
+        $state = switch ([string]$a.Status) { 'Up' { 'CONNECTED' } 'Disconnected' { 'not connected (cable unplugged / not joined)' } 'Disabled' { 'DISABLED' } default { [string]$a.Status } }
+        $tag = if ($inet -and $a.ifIndex -eq $inet.ifIndex) { '   (used for internet)' } else { '' }
+        [void]$b.Add((InfoH ("{0}. {1} - {2}{3}" -f $n, $a.Name, $type, $tag)))
+        [void]$b.Add((InfoKV 'Status' $state $(if ($a.Status -eq 'Up') { 'Good' } elseif ($a.Status -eq 'Disabled') { 'Warn' } else { '' })))
+        [void]$b.Add((InfoKV 'Adapter' $desc))
+        [void]$b.Add((InfoKV 'MAC address' (Format-Mac $a.MacAddress)))
+        if ($a.Status -eq 'Up') { [void]$b.Add((InfoKV 'Link speed' $a.LinkSpeed)) }
+        $dv = if ($a.DriverVersion) { $a.DriverVersion } else { $a.DriverVersionString }
+        if ($dv) { [void]$b.Add((InfoKV 'Driver' ("$dv  ($(Format-CimDate $a.DriverDate))  $($a.DriverProvider)".Trim()))) }
+        if ($a.Status -ne 'Up') { continue }
+        $v4 = @(Get-NetIPAddress -InterfaceIndex $idx -AddressFamily IPv4 -ErrorAction SilentlyContinue)
+        [void]$b.Add((InfoKV 'IPv4 address' $(if ($v4.Count) { @($v4 | ForEach-Object { "$($_.IPAddress) / $($_.PrefixLength)  (subnet mask $(ConvertTo-SubnetMask $_.PrefixLength), $($_.PrefixOrigin))" }) } else { '(none)' })))
+        $v6 = @(Get-NetIPAddress -InterfaceIndex $idx -AddressFamily IPv6 -ErrorAction SilentlyContinue)
+        if ($v6.Count) { [void]$b.Add((InfoKV 'IPv6 address' @($v6 | ForEach-Object { "$($_.IPAddress)  ($(if ($_.IPAddress -like 'fe80*') { 'link-local' } else { [string]$_.SuffixOrigin }))" }))) }
+        $c = $cfg[$idx]
+        if ($c -and $c.DefaultIPGateway) { [void]$b.Add((InfoKV 'Default gateway' @($c.DefaultIPGateway))) }
+        $dns = @(Get-DnsClientServerAddress -InterfaceIndex $idx -ErrorAction SilentlyContinue | ForEach-Object { $_.ServerAddresses } | Where-Object { $_ })
+        if ($dns.Count) { [void]$b.Add((InfoKV 'DNS servers' $dns)) }
+        if ($c) {
+            [void]$b.Add((InfoKV 'DHCP' $(if ($c.DHCPEnabled) { "on  (server $($c.DHCPServer))" } else { 'off - fixed (static) address' })))
+            if ($c.DHCPEnabled -and $c.DHCPLeaseExpires) { [void]$b.Add((InfoKV 'DHCP lease' ("obtained $($c.DHCPLeaseObtained), expires $($c.DHCPLeaseExpires)"))) }
+            if ($c.DNSDomain) { [void]$b.Add((InfoKV 'DNS suffix' $c.DNSDomain)) }
+        }
+        $prof = Get-NetConnectionProfile -InterfaceIndex $idx -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($prof) { [void]$b.Add((InfoKV 'Network' ("$($prof.Name)  ($($prof.NetworkCategory) network, IPv4: $($prof.IPv4Connectivity))"))) }
+        if ($metric.ContainsKey($idx)) { [void]$b.Add((InfoKV 'Route metric' ("$($metric[$idx])  (lower = preferred)"))) }
+        if ($wl.ContainsKey([string]$a.Name)) {
+            foreach ($p in $wl[[string]$a.Name]) { if ($p[0] -notmatch '^(Description|GUID|Physical address|Interface type)$') { [void]$b.Add((InfoKV ('Wi-Fi ' + $p[0]) $p[1])) } }
+        }
+    }
+    return $b
+}
+
+# ---- A4 Bluetooth ----
+function Get-BtInfo {
+    $b = New-Object Collections.ArrayList
+    $dev = @(); try { $dev = @(Get-PnpDevice -Class Bluetooth -ErrorAction Stop) } catch {}
+    $radioMac = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.InterfaceDescription -match 'Bluetooth' } | ForEach-Object { Format-Mac $_.MacAddress })
+    $radios = @($dev | Where-Object { $_.InstanceId -notmatch '^(BTHENUM|BTHLE|BTHLEDEVICE|BTHMODEM|BTHHFENUM|SWD)\\' -and $_.InstanceId -notmatch '^ROOT\\' })
+    [void]$b.Add((InfoH 'Bluetooth adapter'))
+    if (-not $dev.Count) { [void]$b.Add((InfoT 'No Bluetooth adapter or devices were found on this PC.' 'Warn')); return $b }
+    if (-not $radios.Count) { [void]$b.Add((InfoT 'No Bluetooth radio found (only remembered devices).' 'Warn')) }
+    foreach ($r in $radios) {
+        [void]$b.Add((InfoKV 'Adapter' $r.FriendlyName))
+        [void]$b.Add((InfoKV 'Status' $(if ($r.Status -eq 'OK') { 'working' } else { [string]$r.Status }) $(if ($r.Status -eq 'OK') { 'Good' } else { 'Warn' })))
+        $ver = ''; try { $ver = (Get-PnpDeviceProperty -InstanceId $r.InstanceId -KeyName 'DEVPKEY_Device_DriverVersion' -ErrorAction Stop).Data } catch {}
+        if ($ver) { [void]$b.Add((InfoKV 'Driver version' $ver)) }
+    }
+    if ($radioMac.Count) { [void]$b.Add((InfoKV 'Adapter MAC address' $radioMac)) }
+    # paired devices: BTHENUM\DEV_<address> (classic) and BTHLE\DEV_<address> (low energy)
+    $paired = @{}
+    foreach ($d in $dev) {
+        if ($d.InstanceId -notmatch '^(BTHENUM|BTHLE)\\DEV_([0-9A-F]{12})') { continue }
+        $addr = $Matches[2]; $kind = if ($Matches[1] -eq 'BTHLE') { 'Bluetooth LE' } else { 'Classic' }
+        $conn = $null
+        try { $conn = [bool](Get-PnpDeviceProperty -InstanceId $d.InstanceId -KeyName '{83DA6326-97A6-4088-9453-A1923F573B29} 15' -ErrorAction Stop).Data } catch {}
+        if ($paired.ContainsKey($addr)) { if ($conn) { $paired[$addr].Conn = $true }; continue }
+        $paired[$addr] = [pscustomobject]@{ Name = $d.FriendlyName; Mac = (Format-Mac $addr); Kind = $kind; Conn = $conn; Present = ($d.Status -eq 'OK') }
+    }
+    # devices only remembered in the registry
+    try {
+        foreach ($k in @(Get-ChildItem 'HKLM:\SYSTEM\CurrentControlSet\Services\BTHPORT\Parameters\Devices' -ErrorAction Stop)) {
+            $addr = $k.PSChildName.ToUpper(); if ($addr -notmatch '^[0-9A-F]{12}$' -or $paired.ContainsKey($addr)) { continue }
+            $nm = ''; try { $raw = (Get-ItemProperty -LiteralPath $k.PSPath -Name Name -ErrorAction Stop).Name; $nm = [Text.Encoding]::UTF8.GetString([byte[]]$raw).Trim([char]0) } catch {}
+            $paired[$addr] = [pscustomobject]@{ Name = $(if ($nm) { $nm } else { '(no name)' }); Mac = (Format-Mac $addr); Kind = 'Classic'; Conn = $false; Present = $false }
+        }
+    } catch {}
+    $list = @($paired.Values | Sort-Object @{ e = { -not $_.Conn } }, Name)
+    [void]$b.Add((InfoH ('Paired devices ({0}, {1} connected now)' -f $list.Count, @($list | Where-Object { $_.Conn }).Count)))
+    if (-not $list.Count) { [void]$b.Add((InfoT 'No paired Bluetooth devices.')) }
+    foreach ($p in $list) {
+        $st = if ($p.Conn) { 'CONNECTED' } elseif ($null -eq $p.Conn) { 'paired (connection state unknown)' } else { 'paired, not connected' }
+        [void]$b.Add((InfoKV $p.Name ("$st   |   MAC $($p.Mac)   |   $($p.Kind)") $(if ($p.Conn) { 'Good' } else { '' })))
+    }
+    return $b
+}
+
+# ---- A5 Video cards ----
+function Get-GpuInfo {
+    $b = New-Object Collections.ArrayList
+    $reg = @()
+    # SilentlyContinue: the protected "Properties" subkey must not cancel the whole read
+    try { $reg = @(Get-ChildItem 'HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}' -ErrorAction SilentlyContinue | Where-Object { $_.PSChildName -match '^\d{4}$' } | ForEach-Object { Get-ItemProperty -LiteralPath $_.PSPath -ErrorAction SilentlyContinue }) } catch {}
+    # @(): one WMI object is not an array, and .Count on a single CIM object is empty in PowerShell 5.1
+    $vcs = @(Get-SafeCim 'Win32_VideoController')
+    if (-not $vcs.Count) { [void]$b.Add((InfoT 'No video card information is available.' 'Warn')); return $b }
+    $n = 0
+    foreach ($v in $vcs) {
+        $n++
+        [void]$b.Add((InfoH ("{0}. {1}" -f $n, $v.Name)))
+        [void]$b.Add((InfoKV 'Status' $(if ($v.Status -eq 'OK') { 'working' } else { [string]$v.Status }) $(if ($v.Status -eq 'OK') { 'Good' } else { 'Warn' })))
+        $r = $reg | Where-Object { $_.DriverDesc -eq $v.Name } | Select-Object -First 1
+        [void]$b.Add((InfoKV 'Driver version' $v.DriverVersion))
+        [void]$b.Add((InfoKV 'Driver date' (Format-CimDate $v.DriverDate)))
+        if ($r -and $r.ProviderName) { [void]$b.Add((InfoKV 'Driver made by' $r.ProviderName)) }
+        $mem = $null
+        if ($r) { $q = $r.'HardwareInformation.qwMemorySize'; if ($q) { $mem = [double]$q } else { $m2 = $r.'HardwareInformation.MemorySize'; if ($m2 -is [byte[]] -and $m2.Length -ge 4) { $mem = [double][BitConverter]::ToUInt32($m2, 0) } elseif ($m2) { $mem = [double]$m2 } } }
+        if (-not $mem -and $v.AdapterRAM) { $mem = [double][uint32]$v.AdapterRAM }
+        if ($mem) { [void]$b.Add((InfoKV 'Video memory' ('{0:N1} GB' -f ($mem / 1GB)))) }
+        if ($v.CurrentHorizontalResolution) { [void]$b.Add((InfoKV 'Current display' ("$($v.CurrentHorizontalResolution) x $($v.CurrentVerticalResolution)" + $(if ([int]$v.CurrentRefreshRate -gt 1) { " at $($v.CurrentRefreshRate) Hz" } else { '' })))) }   # virtual adapters report 0 or 1 Hz
+        if ($v.VideoProcessor) { [void]$b.Add((InfoKV 'Graphics chip' $v.VideoProcessor)) }
+        if ($v.PNPDeviceID) { [void]$b.Add((InfoKV 'Device ID' (($v.PNPDeviceID -split '\\')[0..1] -join '\'))) }
+    }
+    $mons = @(Get-SafeCim 'WmiMonitorID' '' 'root\wmi')
+    if ($mons.Count) {
+        [void]$b.Add((InfoH ('Monitors ({0})' -f $mons.Count)))
+        $dec = { param($a) (-join (@($a) | Where-Object { $_ -ne 0 } | ForEach-Object { [char]$_ })).Trim() }
+        foreach ($m in $mons) {
+            $nm = & $dec $m.UserFriendlyName; if (-not $nm) { $nm = '(no name)' }
+            [void]$b.Add((InfoKV $nm ("maker $(& $dec $m.ManufacturerName), made $($m.YearOfManufacture)")))
+        }
+    }
+    return $b
+}
+
+# ---- A6 Audio ----
+$script:AudioApiLoaded = $false
+function Get-AudioDefaultId([int]$flow, [int]$role) {
+    if (-not $script:AudioApiLoaded) {
+        try {
+            Add-Type -ErrorAction Stop -TypeDefinition @'
+using System; using System.Runtime.InteropServices;
+namespace WinSuperToolAudio {
+  [ComImport, Guid("A95664D2-9614-4F35-A746-DE8DB63617E6"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+  interface IMMDeviceEnumerator {
+    [PreserveSig] int EnumAudioEndpoints(int dataFlow, int stateMask, out IntPtr devices);
+    [PreserveSig] int GetDefaultAudioEndpoint(int dataFlow, int role, out IMMDevice endpoint);
+  }
+  [ComImport, Guid("D666063F-1587-4E43-81F1-B948E807363F"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+  interface IMMDevice {
+    [PreserveSig] int Activate(ref Guid iid, int clsCtx, IntPtr p, out IntPtr iface);
+    [PreserveSig] int OpenPropertyStore(int access, out IntPtr store);
+    [PreserveSig] int GetId([MarshalAs(UnmanagedType.LPWStr)] out string id);
+  }
+  [ComImport, Guid("BCDE0395-E52F-467C-8E3D-C4579291692E")] class MMDeviceEnumerator {}
+  public static class Defaults {
+    public static string Get(int flow, int role) {
+      try {
+        IMMDeviceEnumerator e = (IMMDeviceEnumerator)(new MMDeviceEnumerator());
+        IMMDevice d; if (e.GetDefaultAudioEndpoint(flow, role, out d) != 0 || d == null) return null;
+        string id; if (d.GetId(out id) != 0) return null; return id;
+      } catch { return null; }
+    }
+  }
+}
+'@
+            $script:AudioApiLoaded = $true
+        } catch { return $null }
+    }
+    try { [WinSuperToolAudio.Defaults]::Get($flow, $role) } catch { $null }
+}
+function Get-AudioEndpoints([string]$flow) {
+    $base = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\$flow"
+    $out = @()
+    foreach ($k in @(Get-ChildItem -LiteralPath $base -ErrorAction SilentlyContinue)) {
+        $st = 0; try { $st = [int]((Get-ItemProperty -LiteralPath $k.PSPath -ErrorAction Stop).DeviceState) -band 0xF } catch {}
+        $p = Get-ItemProperty -LiteralPath (Join-Path $k.PSPath 'Properties') -ErrorAction SilentlyContinue
+        $name = [string]$p.'{a45c254e-df1c-4efd-8020-67d146a850e0},2'; $card = [string]$p.'{b3f8fa53-0004-438e-9003-51a46e139bfc},6'
+        $out += [pscustomobject]@{ Guid = $k.PSChildName.ToLower(); Name = $name; Card = $card; State = $st }
+    }
+    $out
+}
+function Get-AudioInfo {
+    $b = New-Object Collections.ArrayList
+    $flows = @(@('Render', 0, 'Output devices (speakers, headphones)'), @('Capture', 1, 'Input devices (microphones)'))
+    foreach ($fl in $flows) {
+        $eps = @(Get-AudioEndpoints $fl[0])
+        $def = Get-AudioDefaultId $fl[1] 0; $com = Get-AudioDefaultId $fl[1] 2
+        $act = @($eps | Where-Object { $_.State -eq 1 })
+        [void]$b.Add((InfoH ('{0} - {1} active' -f $fl[2], $act.Count)))
+        if (-not $act.Count) { [void]$b.Add((InfoT 'None active.')) }
+        foreach ($e in ($act | Sort-Object Name)) {
+            $isDef = $def -and $def.ToLower().EndsWith($e.Guid); $isCom = $com -and $com.ToLower().EndsWith($e.Guid)
+            $mark = if ($isDef -and $isCom) { 'DEFAULT (also for calls)' } elseif ($isDef) { 'DEFAULT' } elseif ($isCom) { 'default for calls only' } else { 'available' }
+            [void]$b.Add((InfoKV ("$($e.Name)") ("$mark   |   $($e.Card)") $(if ($isDef) { 'Good' } else { '' })))
+        }
+        if ($null -eq $def -and $act.Count) { [void]$b.Add((InfoT 'The default device could not be read on this PC.' 'Warn')) }
+        $off = @($eps | Where-Object { $_.State -ne 1 -and $_.Name })
+        if ($off.Count) {
+            $why = @{ 2 = 'disabled'; 4 = 'not present'; 8 = 'unplugged' }
+            [void]$b.Add((InfoKV 'Not active' @($off | Sort-Object Name | ForEach-Object { "$($_.Name) ($($_.Card)) - $(if ($why.ContainsKey($_.State)) { $why[$_.State] } else { 'inactive' })" })))
+        }
+    }
+    [void]$b.Add((InfoH 'Sound hardware and drivers'))
+    $drv = @(Get-SafeCim 'Win32_PnPSignedDriver' "DeviceClass='MEDIA'")
+    if (-not $drv.Count) { $drv = @(Get-SafeCim 'Win32_SoundDevice' | ForEach-Object { [pscustomobject]@{ DeviceName = $_.Name; DriverVersion = ''; DriverDate = $null; DriverProviderName = $_.Manufacturer } }) }
+    if (-not $drv.Count) { [void]$b.Add((InfoT 'No sound hardware found.' 'Warn')) }
+    foreach ($d in ($drv | Sort-Object DeviceName)) {
+        $v = if ($d.DriverVersion) { "driver $($d.DriverVersion)  ($(Format-CimDate $d.DriverDate))  by $($d.DriverProviderName)" } else { "by $($d.DriverProviderName)" }
+        [void]$b.Add((InfoKV $d.DeviceName $v))
+    }
+    return $b
+}
+
+# ---- Windows tools launcher ----
+# Exe = program (checked in System32 unless it is a URI), Arg = arguments, Need = file that must exist (edition-specific tools)
+function New-WinTool($name, $exe, $arg = '', $tipText = '', $need = '') { [pscustomobject]@{ Name = $name; Exe = $exe; Arg = $arg; Tip = $tipText; Need = $need } }
+$S32 = Join-Path $env:windir 'System32'
+$WinTools = @(
+    New-WinTool 'DirectX Diagnostic' 'dxdiag.exe' '' 'dxdiag: graphics, sound and DirectX details; can save a full report.'
+    New-WinTool 'System Information' 'msinfo32.exe' '' 'msinfo32: full hardware, drivers and software summary.'
+    New-WinTool 'Event Viewer' 'eventvwr.msc' '' 'All Windows event logs.'
+    New-WinTool 'Advanced System Settings' 'SystemPropertiesAdvanced.exe' '' 'Performance, user profiles, startup and recovery, environment variables.'
+    New-WinTool 'Internet Options' 'control.exe' 'inetcpl.cpl' 'inetcpl.cpl: proxy, security zones, reset Internet settings.' "$S32\inetcpl.cpl"
+    New-WinTool 'Group Policy Editor' 'gpedit.msc' '' 'gpedit.msc (Pro, Enterprise and Education only).'
+    New-WinTool 'Registry Editor' 'regedit.exe' '' 'regedit. Back up a key (File > Export) before changing it.' "$env:windir\regedit.exe"
+    New-WinTool 'Device Manager' 'devmgmt.msc' '' 'Hardware, drivers and device errors.'
+    New-WinTool 'Disk Management' 'diskmgmt.msc' '' 'Disks, partitions and drive letters.'
+    New-WinTool 'Computer Management' 'compmgmt.msc' '' 'Event Viewer, shared folders, users, Device Manager and Disk Management in one window.'
+    New-WinTool 'Services' 'services.msc' '' 'Start, stop and set the startup type of Windows services.'
+    New-WinTool 'Task Manager' 'taskmgr.exe' '' 'Running apps, performance, startup apps.'
+    New-WinTool 'Resource Monitor' 'resmon.exe' '' 'Live CPU, disk, network and memory use per process.'
+    New-WinTool 'Performance Monitor' 'perfmon.exe' '' 'Performance counters and data collector sets.'
+    New-WinTool 'Reliability Monitor' 'perfmon.exe' '/rel' 'History of crashes, failed updates and installs, day by day.'
+    New-WinTool 'System Configuration' 'msconfig.exe' '' 'msconfig: boot options, Safe Mode, services at startup.'
+    New-WinTool 'Task Scheduler' 'taskschd.msc' '' 'Scheduled tasks.'
+    New-WinTool 'Control Panel' 'control.exe' '' 'The classic Control Panel.'
+    New-WinTool 'Programs and Features' 'control.exe' 'appwiz.cpl' 'Uninstall or repair programs.' "$S32\appwiz.cpl"
+    New-WinTool 'Network Connections' 'control.exe' 'ncpa.cpl' 'Network adapters: enable, disable, properties.' "$S32\ncpa.cpl"
+    New-WinTool 'Sound Settings (classic)' 'control.exe' 'mmsys.cpl' 'Playback and recording devices, set the default.' "$S32\mmsys.cpl"
+    New-WinTool 'Power Options' 'control.exe' 'powercfg.cpl' 'Power plans.' "$S32\powercfg.cpl"
+    New-WinTool 'System Properties' 'control.exe' 'sysdm.cpl' 'Computer name, hardware, System Protection, remote settings.' "$S32\sysdm.cpl"
+    New-WinTool 'Environment Variables' 'rundll32.exe' 'sysdm.cpl,EditEnvironmentVariables' 'Edit user and system environment variables.' "$S32\sysdm.cpl"
+    New-WinTool 'Firewall (advanced)' 'wf.msc' '' 'Windows Defender Firewall with Advanced Security.'
+    New-WinTool 'Windows Security' 'windowsdefender:' '' 'Virus protection, firewall, device security.'
+    New-WinTool 'Local Users and Groups' 'lusrmgr.msc' '' 'lusrmgr.msc (Pro and higher).'
+    New-WinTool 'Local Security Policy' 'secpol.msc' '' 'secpol.msc (Pro and higher).'
+    New-WinTool 'Credential Manager' 'control.exe' '/name Microsoft.CredentialManager' 'Saved Windows and web passwords.'
+    New-WinTool 'Certificates (user)' 'certmgr.msc' '' 'Personal and trusted certificates of the current user.'
+    New-WinTool 'Shared Folders' 'fsmgmt.msc' '' 'Shares, open sessions and open files.'
+    New-WinTool 'Print Management' 'printmanagement.msc' '' 'printmanagement.msc (Pro and higher).'
+    New-WinTool 'Windows Features' 'optionalfeatures.exe' '' 'Turn Windows features on or off (.NET 3.5, SMB1, Hyper-V...).'
+    New-WinTool 'Disk Cleanup' 'cleanmgr.exe' '' 'Free up disk space.'
+    New-WinTool 'Optimize Drives' 'dfrgui.exe' '' 'Defragment / TRIM drives.'
+    New-WinTool 'System Restore' 'rstrui.exe' '' 'Roll back to a restore point.'
+    New-WinTool 'Memory Diagnostic' 'MdSched.exe' '' 'Tests the RAM at the next restart (asks first).'
+    New-WinTool 'Windows Update' 'ms-settings:windowsupdate' '' 'Settings > Windows Update.'
+    New-WinTool 'About this PC' 'ms-settings:about' '' 'Settings > System > About.'
+    New-WinTool 'Windows version (winver)' 'winver.exe' '' 'The About Windows box with the exact build.'
+    New-WinTool 'Command Prompt (admin)' 'cmd.exe' '' 'Opens as administrator (this tool runs elevated).'
+    New-WinTool 'PowerShell (admin)' $PsExePath '-NoExit -NoProfile' 'Opens as administrator (this tool runs elevated).' $PsExePath
+)
+function Test-WinTool($t) {
+    if ($t.Exe -match '^[a-z-]+:$|^ms-settings:') { return (-not $IsWinPE) }      # Settings / Windows Security pages
+    if ($t.Need) { return [IO.File]::Exists($t.Need) }
+    return ([IO.File]::Exists((Join-Path $S32 $t.Exe)) -or [IO.File]::Exists((Join-Path $env:windir $t.Exe)))
+}
+function Start-WinTool($t) {
+    if (-not (Test-WinTool $t)) { Msg "$($t.Name) is not available on this PC (it is not part of this Windows edition, or this is WinPE)." 'Windows tools' 'Warning'; return }
+    $exe = $t.Exe
+    if ($exe -match '\.msc$') { $exe = Join-Path $S32 $exe }
+    if ($t.Arg) { Start-Process -FilePath $exe -ArgumentList $t.Arg } else { Start-Process -FilePath $exe }
+    Log "Opened: $($t.Name) ($($t.Exe) $($t.Arg))"
+}
+
+# =====================================================================
+#  BETA: 10. AUTOMATION (a queue of up to 10 tasks, run one after another)
+# =====================================================================
+# Script tasks print their own result messages (matched by the rules in $TaskRules) and set $LASTEXITCODE.
+$AutoScriptRestore = @'
+$rc = 1
+$key = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\SystemRestore'
+$old = $null; try { $old = (Get-ItemProperty -LiteralPath $key -Name SystemRestorePointCreationFrequency -ErrorAction Stop).SystemRestorePointCreationFrequency } catch {}
+try {
+    if (__ENABLE__) { try { Enable-ComputerRestore -Drive ($env:SystemDrive + '\') -ErrorAction Stop; Write-Host "System Protection is on for $env:SystemDrive." } catch { Write-Host "Could not turn on System Protection: $($_.Exception.Message)" } }
+    if (-not (Test-Path -LiteralPath $key)) { New-Item -Path $key -Force | Out-Null }
+    # Windows allows only one restore point per 24 hours by default: allow this one, then put the setting back
+    Set-ItemProperty -LiteralPath $key -Name SystemRestorePointCreationFrequency -Value 0 -Type DWord -ErrorAction Stop
+    $desc = 'WinSuperTool ' + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+    Write-Host "Creating restore point '$desc' (this can take a minute)..."
+    Checkpoint-Computer -Description $desc -RestorePointType MODIFY_SETTINGS -ErrorAction Stop
+    $rp = @(Get-ComputerRestorePoint -ErrorAction SilentlyContinue | Where-Object { $_.Description -eq $desc })
+    if ($rp.Count) { Write-Host ("Restore point created: {0} (number {1})." -f $desc, $rp[-1].SequenceNumber); $rc = 0 }
+    else { Write-Host 'Restore point was NOT created. Is System Protection turned on for the system drive?' }
+} catch { Write-Host "Restore point FAILED: $($_.Exception.Message)" }
+finally {
+    try { if ($null -eq $old) { Remove-ItemProperty -LiteralPath $key -Name SystemRestorePointCreationFrequency -ErrorAction Stop } else { Set-ItemProperty -LiteralPath $key -Name SystemRestorePointCreationFrequency -Value $old -Type DWord -ErrorAction Stop } } catch {}
+}
+$global:LASTEXITCODE = $rc
+'@
+$AutoScriptWU = @'
+$rc = 1
+try {
+    $ses = New-Object -ComObject Microsoft.Update.Session; $ses.ClientApplicationID = 'WinSuperTool'
+    Write-Host 'Searching Windows Update (this can take several minutes)...'
+    $wuFound = $ses.CreateUpdateSearcher().Search("IsInstalled=0 and IsHidden=0 and Type='Software'")
+    $ups = @(); foreach ($u in $wuFound.Updates) { if (-not $u.InstallationBehavior.CanRequestUserInput) { $ups += $u } }
+    if (-not $ups.Count) { Write-Host 'Windows Update: no updates are available. Windows is up to date.'; $rc = 0 }
+    else {
+        Write-Host ('Windows Update: {0} update(s) are available:' -f $ups.Count)
+        foreach ($u in $ups) { Write-Host ('  - ' + $u.Title) }
+        if (__INSTALL__) {
+            $coll = New-Object -ComObject Microsoft.Update.UpdateColl
+            foreach ($u in $ups) { if (-not $u.EulaAccepted) { $u.AcceptEula() }; [void]$coll.Add($u) }
+            Write-Host ''; Write-Host 'Downloading...'
+            $dl = $ses.CreateUpdateDownloader(); $dl.Updates = $coll; [void]$dl.Download()
+            Write-Host 'Installing...'
+            $ins = $ses.CreateUpdateInstaller(); $ins.Updates = $coll; $ir = $ins.Install()
+            $ok = 0; $bad = 0
+            for ($i = 0; $i -lt $coll.Count; $i++) {
+                $r = $ir.GetUpdateResult($i)
+                if ($r.ResultCode -eq 2 -or $r.ResultCode -eq 3) { $ok++; Write-Host ('  Installed: ' + $coll.Item($i).Title) }
+                else { $bad++; Write-Host ('  FAILED (result {0}, 0x{1:X8}): {2}' -f $r.ResultCode, $r.HResult, $coll.Item($i).Title) }
+            }
+            Write-Host ''
+            Write-Host ('Windows Update: {0} of {1} updates installed, {2} failed.' -f $ok, $coll.Count, $bad)
+            if ($ir.RebootRequired) { Write-Host 'A restart is required to finish installing the updates.' }
+            if ($bad -eq 0) { $rc = 0 }
+        } else { $rc = 0 }
+    }
+} catch { Write-Host ('Windows Update FAILED: {0} (0x{1:X8})' -f $_.Exception.Message, $_.Exception.HResult) }
+$global:LASTEXITCODE = $rc
+'@
+$AutoScriptWinget = @'
+$wg = $null; try { $wg = (Get-Command winget.exe -ErrorAction Stop).Source } catch {}
+if (-not $wg) { $c = @(Get-ChildItem "$env:ProgramFiles\WindowsApps\Microsoft.DesktopAppInstaller_*_x64__8wekyb3d8bbwe\winget.exe" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime); if ($c.Count) { $wg = $c[-1].FullName } }
+if (-not $wg) { Write-Host 'winget is not available for this account (the "App Installer" app is missing or too old).'; $global:LASTEXITCODE = 1 }
+else {
+    & $wg upgrade --all --accept-source-agreements --accept-package-agreements --silent
+}
+'@
+$AutoScriptDefender = @'
+$rc = 1
+try {
+    if (-not (Get-Command Start-MpScan -ErrorAction SilentlyContinue)) { throw 'the Microsoft Defender commands are not available on this PC' }
+    Write-Host 'Updating Microsoft Defender definitions...'
+    try { Update-MpSignature -ErrorAction Stop; Write-Host 'Definitions updated.' } catch { Write-Host "Definition update failed (the scan still runs): $($_.Exception.Message)" }
+    $scanStart = Get-Date
+    Write-Host 'Running a Microsoft Defender quick scan (several minutes)...'
+    Start-MpScan -ScanType QuickScan -ErrorAction Stop
+    $th = @(Get-MpThreatDetection -ErrorAction SilentlyContinue | Where-Object { $_.InitialDetectionTime -ge $scanStart })
+    if ($th.Count) {
+        Write-Host ('Defender quick scan finished: {0} threat(s) found.' -f $th.Count)
+        foreach ($d in $th) { $n = ''; try { $n = (Get-MpThreat -ThreatID $d.ThreatID -ErrorAction Stop).ThreatName } catch {}; Write-Host ('  - {0}  {1}' -f $n, (@($d.Resources) | Select-Object -First 1)) }
+    } else { Write-Host 'Defender quick scan finished: no threats found.'; $rc = 0 }
+} catch { Write-Host "Defender scan FAILED: $($_.Exception.Message)" }
+$global:LASTEXITCODE = $rc
+'@
+# Catalog. Code: param($opt) -> @{ Call = PowerShell code; Line = what the summary shows as the command }
+# Then: if the result (Find) matches If, the task Add is queued right after it (for "repair only if needed").
+function New-AutoTask($id, $name, $kind, $help, $logs, [scriptblock]$code, $then = $null) { [pscustomobject]@{ Id = $id; Name = $name; Kind = $kind; Help = $help; Logs = @($logs); Code = $code; Then = $then } }
+$CbsSr = 'CBS.log - SFC lines only ([SR])'
+$AutoCatalog = @(
+    New-AutoTask 'restore-point' 'Create a system restore point' 'restorepoint' 'Creates a restore point of the system drive, so the changes made by the next tasks can be rolled back with System Restore. Needs System Protection on for the system drive (tick the option below to turn it on).' @() { param($o) @{ Call = $AutoScriptRestore.Replace('__ENABLE__', $(if ($o.EnableSR) { '$true' } else { '$false' })); Line = 'Checkpoint-Computer (restore point)' } }
+    New-AutoTask 'sfc-verify' 'SFC: scan only (sfc /verifyonly)' 'sfc-verify' 'Checks the protected system files for corruption without repairing anything.' @($CbsSr) { param($o) @{ Call = (Get-ExeCall 'sfc.exe' @('/verifyonly')); Line = 'sfc.exe /verifyonly' } }
+    New-AutoTask 'sfc-verify-fix' 'SFC: scan, repair only if corruption is found' 'sfc-verify' 'Runs sfc /verifyonly. If it finds corruption, sfc /scannow is added right after it to repair the files.' @($CbsSr) { param($o) @{ Call = (Get-ExeCall 'sfc.exe' @('/verifyonly')); Line = 'sfc.exe /verifyonly' } } @{ If = '^CORRUPTION DETECTED'; Add = 'sfc-scannow'; Why = 'added because sfc found corruption' }
+    New-AutoTask 'sfc-scannow' 'SFC: scan and repair (sfc /scannow)' 'sfc' 'Checks the protected system files and repairs the corrupt ones.' @($CbsSr) { param($o) @{ Call = (Get-ExeCall 'sfc.exe' @('/scannow')); Line = 'sfc.exe /scannow' } }
+    New-AutoTask 'dism-check' 'DISM: check health (quick)' 'dism-check' 'Quick check (seconds): has the component store already been flagged as corrupt? Changes nothing.' @('dism.log') { param($o) @{ Call = (Get-ExeCall 'dism.exe' @('/online', '/cleanup-image', '/checkhealth')); Line = 'dism.exe /online /cleanup-image /checkhealth' } }
+    New-AutoTask 'dism-scan' 'DISM: scan health (full scan)' 'dism-check' 'Full scan of the component store for corruption (several minutes). Repairs nothing.' @('dism.log', 'CBS.log (full)') { param($o) @{ Call = (Get-ExeCall 'dism.exe' @('/online', '/cleanup-image', '/scanhealth')); Line = 'dism.exe /online /cleanup-image /scanhealth' } }
+    New-AutoTask 'dism-scan-fix' 'DISM: scan, repair only if corruption is found' 'dism-check' 'Runs DISM scan health. If it finds repairable corruption, DISM restore health is added right after it.' @('dism.log', 'CBS.log (full)') { param($o) @{ Call = (Get-ExeCall 'dism.exe' @('/online', '/cleanup-image', '/scanhealth')); Line = 'dism.exe /online /cleanup-image /scanhealth' } } @{ If = 'can be repaired'; Add = 'dism-restore'; Why = 'added because DISM found repairable corruption' }
+    New-AutoTask 'dism-restore' 'DISM: restore health (repair)' 'dism-restore' 'Repairs the component store, downloading good files from Windows Update.' @('dism.log', 'CBS.log (full)') { param($o) @{ Call = (Get-ExeCall 'dism.exe' @('/online', '/cleanup-image', '/restorehealth')); Line = 'dism.exe /online /cleanup-image /restorehealth' } }
+    New-AutoTask 'dism-cleanup' 'DISM: clean up the component store' 'dism-cleanup' 'Removes superseded versions of updated components (frees disk space). Old updates can no longer be uninstalled afterwards.' @('dism.log') { param($o) @{ Call = (Get-ExeCall 'dism.exe' @('/online', '/cleanup-image', '/startcomponentcleanup')); Line = 'dism.exe /online /cleanup-image /startcomponentcleanup' } }
+    New-AutoTask 'chkdsk-scan' 'Check disk: read-only scan of the system drive' 'chkdsk-scan' 'chkdsk <system drive> /scan - checks the file system online without fixing anything.' @() { param($o) @{ Call = (Get-ExeCall 'chkdsk.exe' @($env:SystemDrive, '/scan')); Line = "chkdsk.exe $env:SystemDrive /scan" } }
+    New-AutoTask 'winupdate-check' 'Windows Update: check for updates (list only)' 'winupdate-check' 'Lists the updates Windows Update offers, without installing them.' @('Event: WindowsUpdateClient/Operational') { param($o) @{ Call = $AutoScriptWU.Replace('__INSTALL__', '$false'); Line = 'Windows Update API: search' } }
+    New-AutoTask 'winupdate' 'Windows Update: download and install updates' 'winupdate' 'Downloads and installs the updates Windows Update offers (not optional driver updates). Updates that need you to click something are skipped. Some need a restart.' @('Event: WindowsUpdateClient/Operational') { param($o) @{ Call = $AutoScriptWU.Replace('__INSTALL__', '$true'); Line = 'Windows Update API: search, download, install' } }
+    New-AutoTask 'winget-check' 'winget: list available app upgrades' 'winget-check' 'winget upgrade - lists the installed apps that have a newer version. Changes nothing.' @() { param($o) @{ Call = $AutoScriptWinget.Replace('upgrade --all --accept-source-agreements --accept-package-agreements --silent', 'upgrade --accept-source-agreements'); Line = 'winget upgrade --accept-source-agreements' } }
+    New-AutoTask 'winget' 'winget: upgrade all apps' 'winget' 'winget upgrade --all --silent - updates the installed apps winget knows about. Close the apps first; a running app can fail to update.' @() { param($o) @{ Call = $AutoScriptWinget; Line = 'winget upgrade --all --accept-source-agreements --accept-package-agreements --silent' } }
+    New-AutoTask 'defender' 'Microsoft Defender: update + quick scan' 'defender' 'Updates the Microsoft Defender definitions, then runs a quick scan. Does not work when another antivirus has replaced Defender.' @('Windows Defender/Operational') { param($o) @{ Call = $AutoScriptDefender; Line = 'Update-MpSignature; Start-MpScan -ScanType QuickScan' } }
+)
+$AutoPresets = [ordered]@{
+    'Health check (scans only, changes nothing)' = @('dism-check', 'sfc-verify', 'chkdsk-scan', 'winupdate-check', 'winget-check')
+    'Repair Windows (restore point, DISM, SFC)'  = @('restore-point', 'dism-scan-fix', 'sfc-scannow', 'chkdsk-scan')
+    'Update everything'                           = @('restore-point', 'winupdate', 'winget', 'defender')
+    'Full maintenance'                            = @('restore-point', 'dism-scan-fix', 'sfc-verify-fix', 'winupdate', 'winget', 'defender', 'dism-cleanup')
+}
+$AutoMax = 10
+$AutoStateFile = Join-Path $DataDir 'automation.json'
+$script:AutoQueue = New-Object Collections.ArrayList      # catalog ids, in order
+$script:AutoRun = $null                                     # rows of the current / last run
+$script:Auto = @{ Running = $false; StopReq = $false; Index = -1; Started = $null; Opt = $null; StopWhy = '' }
+function Get-AutoCat([string]$id) { $AutoCatalog | Where-Object { $_.Id -eq $id } | Select-Object -First 1 }
+function Save-AutoState {
+    try {
+        $s = [ordered]@{ Queue = @($script:AutoQueue); Popups = $chkAutoPop.Checked; StopOnFail = $chkAutoStop.Checked; Monitor = $chkAutoMon.Checked; EnableSR = $chkAutoSR.Checked }
+        [IO.File]::WriteAllText($AutoStateFile, ($s | ConvertTo-Json -Depth 3))
+    } catch {}
+}
+function Load-AutoState {
+    try {
+        if (-not [IO.File]::Exists($AutoStateFile)) { return }
+        $s = [IO.File]::ReadAllText($AutoStateFile) | ConvertFrom-Json
+        $script:AutoQueue.Clear()
+        foreach ($id in @($s.Queue)) { if ((Get-AutoCat $id) -and $script:AutoQueue.Count -lt $AutoMax) { [void]$script:AutoQueue.Add([string]$id) } }
+        $chkAutoPop.Checked = [bool]$s.Popups; $chkAutoStop.Checked = [bool]$s.StopOnFail; $chkAutoMon.Checked = [bool]$s.Monitor; $chkAutoSR.Checked = [bool]$s.EnableSR
+    } catch {}
+}
+function Format-Dur($a, $b) { if (-not $a -or -not $b) { return '' }; $d = $b - $a; if ($d.TotalHours -ge 1) { $d.ToString('h\:mm\:ss') } else { $d.ToString('m\:ss') } }
+function Update-AutoList {
+    $lvAuto.BeginUpdate(); $lvAuto.Items.Clear()
+    $green = [Drawing.Color]::FromArgb(30, 130, 60); $red = [Drawing.Color]::FromArgb(190, 35, 35); $orange = [Drawing.Color]::FromArgb(190, 100, 0)
+    if ($script:AutoRun) {
+        $i = 0
+        foreach ($r in $script:AutoRun) {
+            $i++
+            $name = if ($r.Auto) { "   + $($r.Name)  ($($r.Why))" } else { $r.Name }
+            $it = New-Object Windows.Forms.ListViewItem([string]$i)
+            [void]$it.SubItems.Add($name); [void]$it.SubItems.Add($r.Status); [void]$it.SubItems.Add([string]$r.Find); [void]$it.SubItems.Add((Format-Dur $r.Started $(if ($r.Ended) { $r.Ended } elseif ($r.Started) { Get-Date } else { $null })))
+            switch ($r.Status) { 'PASSED' { $it.ForeColor = $(if ($r.Tone -eq 'Bad') { $red } elseif ($r.Tone -eq 'Warn') { $orange } else { $green }) } 'FAILED' { $it.ForeColor = $red } 'NOT RUN' { $it.ForeColor = $orange } 'Running' { $it.ForeColor = [Drawing.Color]::FromArgb(0, 70, 140); $it.Font = New-Object Drawing.Font($lvAuto.Font, [Drawing.FontStyle]::Bold) } 'Skipped' { $it.ForeColor = [Drawing.Color]::Gray } }
+            [void]$lvAuto.Items.Add($it)
+        }
+    } else {
+        $i = 0
+        foreach ($id in $script:AutoQueue) {
+            $i++; $c = Get-AutoCat $id
+            $it = New-Object Windows.Forms.ListViewItem([string]$i)
+            [void]$it.SubItems.Add($c.Name); [void]$it.SubItems.Add('Waiting'); [void]$it.SubItems.Add(''); [void]$it.SubItems.Add('')
+            [void]$lvAuto.Items.Add($it)
+        }
+    }
+    $lvAuto.EndUpdate()
+    $lblAutoCount.Text = '{0} of {1} tasks queued' -f $script:AutoQueue.Count, $AutoMax
+}
+function Set-AutoEditing([bool]$on) {
+    foreach ($c in @($btnAutoAdd, $btnAutoUp, $btnAutoDown, $btnAutoRemove, $btnAutoClear, $btnAutoPreset, $cmbAutoPreset, $lstAutoCat, $chkAutoPop, $chkAutoStop, $chkAutoMon, $chkAutoSR)) { $c.Enabled = $on }
+    $btnAutoStart.Enabled = $on -and -not $IsWinPE; $btnAutoStopReq.Enabled = -not $on
+}
+function Start-AutoRun {
+    if ($IsWinPE) { Msg 'Automation runs on the running Windows only, not in WinPE.' 'Automation' 'Warning'; return }
+    if (-not $script:AutoQueue.Count) { Msg 'Add at least one task to the queue first.' 'Automation' 'Warning'; return }
+    $names = (@($script:AutoQueue) | ForEach-Object { '  ' + (Get-AutoCat $_).Name }) -join $NL
+    if (-not (Ask "Run these $($script:AutoQueue.Count) task(s) on THIS PC ($env:COMPUTERNAME), one after another?${NL}${NL}$names${NL}${NL}Each task opens its own window. Some tasks change the system (repairs, updates, app upgrades). BETA feature." 'Start automation' 'Question' 'Button2')) { return }
+    $script:AutoRun = New-Object Collections.ArrayList
+    foreach ($id in $script:AutoQueue) { $c = Get-AutoCat $id; [void]$script:AutoRun.Add([pscustomobject]@{ Id = $id; Name = $c.Name; Auto = $false; Why = ''; Status = 'Waiting'; Find = ''; Ok = $null; Tone = ''; Rc = $null; Started = $null; Ended = $null; OutFile = ''; Quote = @(); Line = '' }) }
+    $script:Auto = @{ Running = $true; StopReq = $false; Index = -1; Started = (Get-Date); StopWhy = ''
+        Opt = @{ Popups = $chkAutoPop.Checked; StopOnFail = $chkAutoStop.Checked; Monitor = $chkAutoMon.Checked; EnableSR = $chkAutoSR.Checked } }
+    Save-AutoState
+    Set-AutoEditing $false
+    Log "AUTOMATION: started, $($script:AutoRun.Count) task(s)."
+    Start-AutoNext
+}
+function Start-AutoNext {
+    $A = $script:Auto
+    if (-not $A.Running) { return }
+    if ($A.StopReq) {
+        for ($i = $A.Index + 1; $i -lt $script:AutoRun.Count; $i++) { $script:AutoRun[$i].Status = 'Skipped' }
+        Complete-AutoRun; return
+    }
+    $A.Index++
+    if ($A.Index -ge $script:AutoRun.Count) { Complete-AutoRun; return }
+    $r = $script:AutoRun[$A.Index]; $c = Get-AutoCat $r.Id
+    $r.Status = 'Running'; $r.Started = Get-Date
+    $lblAutoStatus.Text = "Running $($A.Index + 1) of $($script:AutoRun.Count): $($c.Name)"
+    Update-AutoList
+    try {
+        if ($A.Opt.Monitor) { [void](Start-TaskMonitors $c) }
+        $code = & $c.Code $A.Opt
+        $r.Line = $code.Line
+        Log "AUTOMATION $($A.Index + 1)/$($script:AutoRun.Count): $($c.Name)  ($($code.Line))"
+        [void](Start-TaskWindow $c.Name $c.Kind $code.Line $code.Call $true $r)
+    } catch {
+        $r.Status = 'FAILED'; $r.Find = "COULD NOT START - $($_.Exception.Message)"; $r.Ended = Get-Date; $r.Ok = $false; $r.Tone = 'Bad'
+        Log "AUTOMATION: $($c.Name) could not start: $($_.Exception.Message)"
+        if ($A.Opt.StopOnFail) { $A.StopReq = $true; $A.StopWhy = 'stopped because a task failed' }
+        Start-AutoNext
+    }
+}
+function Complete-AutoTask($t, $res, $v) {
+    $A = $script:Auto; $r = $t.AutoItem
+    $r.Ended = Get-Date; $r.Rc = $res.Rc; $r.Ok = $v.Ok; $r.Tone = $v.Tone; $r.Find = $v.Find; $r.Quote = @($v.Quote); $r.OutFile = $t.ResultFile
+    $r.Status = if ($v.Ok) { 'PASSED' } elseif ($v.Tone -eq 'Warn') { 'NOT RUN' } else { 'FAILED' }
+    if ($A.Opt -and $A.Opt.Popups) { try { Show-TaskSummary $t $res $v $true } catch { Log "Summary window error: $($_.Exception.Message)" } }
+    # "repair only if needed": queue the repair right after this task
+    $c = Get-AutoCat $r.Id
+    if ($c.Then -and $v.Find -match $c.Then.If) {
+        $add = Get-AutoCat $c.Then.Add
+        $script:AutoRun.Insert($A.Index + 1, [pscustomobject]@{ Id = $add.Id; Name = $add.Name; Auto = $true; Why = $c.Then.Why; Status = 'Waiting'; Find = ''; Ok = $null; Tone = ''; Rc = $null; Started = $null; Ended = $null; OutFile = ''; Quote = @(); Line = '' })
+        Log "AUTOMATION: $($add.Name) $($c.Then.Why)."
+    }
+    if ($r.Status -ne 'PASSED' -and $A.Opt.StopOnFail) { $A.StopReq = $true; $A.StopWhy = 'stopped because a task did not pass' }
+    Update-AutoList
+    Start-AutoNext
+}
+function Get-RebootPending {
+    $why = @()
+    if (Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending') { $why += 'Windows servicing (component updates or repairs)' }
+    if (Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired') { $why += 'Windows Update' }
+    try { if ((Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager' -Name PendingFileRenameOperations -ErrorAction Stop).PendingFileRenameOperations) { $why += 'files waiting to be replaced at restart' } } catch {}
+    $why
+}
+function Get-AutoSummaryBlocks {
+    $A = $script:Auto; $rows = @($script:AutoRun)
+    $ran = @($rows | Where-Object { $_.Status -in 'PASSED', 'FAILED', 'NOT RUN' })
+    $pass = @($rows | Where-Object { $_.Status -eq 'PASSED' }).Count; $fail = @($rows | Where-Object { $_.Status -eq 'FAILED' }).Count
+    $nr = @($rows | Where-Object { $_.Status -eq 'NOT RUN' }).Count; $skip = @($rows | Where-Object { $_.Status -eq 'Skipped' }).Count
+    $b = New-Object Collections.ArrayList
+    [void]$b.Add((InfoH 'Result'))
+    $line = "$($ran.Count) task(s) ran: $pass passed, $fail failed" + $(if ($nr) { ", $nr did not run" } else { '' }) + $(if ($skip) { ", $skip skipped" } else { '' }) + '.'
+    [void]$b.Add((InfoT $line $(if ($fail -or $nr) { 'Bad' } else { 'Good' })))
+    if ($A.StopWhy) { [void]$b.Add((InfoT ('The queue ' + $A.StopWhy + '.') 'Warn')) }
+    [void]$b.Add((InfoKV 'Started' ('{0:yyyy-MM-dd HH:mm:ss}' -f $A.Started)))
+    [void]$b.Add((InfoKV 'Finished' ('{0:yyyy-MM-dd HH:mm:ss}  (took {1})' -f (Get-Date), (Format-Dur $A.Started (Get-Date)))))
+    $rb = @(Get-RebootPending)
+    [void]$b.Add((InfoKV 'Restart needed' $(if ($rb.Count) { 'YES - ' + ($rb -join ', ') } else { 'no' }) $(if ($rb.Count) { 'Warn' } else { 'Good' })))
+    [void]$b.Add((InfoH 'Tasks'))
+    $i = 0
+    foreach ($r in $rows) {
+        $i++
+        $name = "$i. $($r.Name)"
+        $val = @("$($r.Status)" + $(if ($r.Find) { " - $($r.Find)" } else { '' }) + $(if ($r.Started -and $r.Ended) { "   ($(Format-Dur $r.Started $r.Ended))" } else { '' }))
+        if ($r.Auto) { $val += "($($r.Why))" }
+        foreach ($q in @($r.Quote)) { if ($q) { $val += ('"' + $q + '"') } }
+        $col = switch ($r.Status) { 'PASSED' { if ($r.Tone -eq 'Bad') { 'Bad' } elseif ($r.Tone -eq 'Warn') { 'Warn' } else { 'Good' } } 'FAILED' { 'Bad' } 'NOT RUN' { 'Warn' } default { '' } }
+        [void]$b.Add((InfoKV $name $val $col))
+    }
+    return $b
+}
+function Complete-AutoRun {
+    $A = $script:Auto; $A.Running = $false
+    Set-AutoEditing $true
+    $blocks = New-Object Collections.ArrayList; $blocks.AddRange(@(Get-AutoSummaryBlocks))
+    $rep = (Get-TaskFileBase 'Automation-summary') + '.txt'
+    try { [IO.File]::WriteAllText($rep, (Format-InfoText $blocks 'Automation summary')) } catch { $rep = '' }
+    if ($rep) { [void]$blocks.Add((InfoH 'Saved')); [void]$blocks.Add((InfoKV 'This summary' $rep)); [void]$blocks.Add((InfoKV 'Each task''s output' $TaskDir)) }
+    $lblAutoStatus.Text = 'Finished at {0:HH:mm}. {1}' -f (Get-Date), $(if ($A.StopWhy) { "The queue $($A.StopWhy)." } else { '' })
+    Update-AutoList
+    Log "AUTOMATION: finished. Summary: $rep"
+    $script:InSummary = $true
+    try { Show-Info 'Automation summary' $blocks 'BETA: every task ran in its own window; its full output is saved in WinSuperTool-Data\Task-Results.' $true } finally { $script:InSummary = $false }
 }
 
 # =====================================================================
@@ -2209,7 +3062,9 @@ $tpMnt  = New-Page '4. Mount'
 $tpSafe = New-Page '5. Safe Mode'
 $tpSys  = New-Page '6. Sysprep'
 $tpUna  = New-Page '7. Unattend'
-$tpRec  = New-Page '8. Recovery (experimental)'
+$tpRec  = New-Page '8. Recovery'
+$tpInfo = New-Page '9. System Info'
+$tpAuto = New-Page '10. Automation'
 
 # ---------- activity log ----------
 $lblLog = New-Ctl 'Label' $form 10 556 600 18 'Activity log (also saved as activity.log in the data folder):'
@@ -2264,6 +3119,8 @@ foreach ($sec in @($MonItems | Select-Object -ExpandProperty Section -Unique)) {
     foreach ($it in @($MonItems | Where-Object { $_.Section -eq $sec })) {
         $cb = New-Ctl 'CheckBox' $monPanel 22 $y 600 22 $it.Name
         $cb.Tag = $it
+        # an event log that is not on this Windows (they differ between versions) is shown greyed out
+        if ($it.Type -eq 'Evt' -and $EvtLogNames.Count -and $EvtLogNames -notcontains $it.Target) { $cb.Enabled = $false; $cb.Text += '   (not on this PC)' }
         $tip.SetToolTip($cb, [string]$it.Target)
         [void]$secBoxes.Add($cb); [void]$monChecks.Add($cb)
         $y += 24
@@ -2449,6 +3306,74 @@ $chkTaskSum.Checked = $true
 Add-Help $tpRec 840 239 'BETA: monitor and summary' ("Monitor this task's logs: opens a live window for each log the selected tool writes while it runs, for example CBS.log ([SR] lines) for sfc and dism.log for DISM. Close those windows when you are done.${NL}${NL}Show a pass / fail summary: when the tool finishes, a window shows whether the task ran to the end (PASSED / FAILED) and what it found - for example 'NO CORRUPTION DETECTED', 'CORRUPTION DETECTED - FIX WORKED' or 'FIX DID NOT WORK' - quoting the tool's own result message. The full output is saved in WinSuperTool-Data\Task-Results.${NL}${NL}How it works: the task's console window runs the command as before; when it ends, the window reads back what the command printed and hands it to this window. With the summary on, the task opens in a classic console window so the whole output can be read back.${NL}${NL}Result messages are matched in English. On another display language the summary uses the exit code instead.${NL}${NL}BETA: new in 1.9 beta 1 and only lightly tested. Greyed out when the selected tool has no logs to watch or no result to summarize (the BCD and boot-menu tools show their own result).")
 $lblBeta = New-Ctl 'Label' $tpRec 12 276 920 36 'BETA 1.9: new scan-only tools (sfc /verifyonly, DISM check health and scan health), live log windows per task, and a pass / fail summary that quotes the tool''s own result message.'
 $lblBeta.ForeColor = [Drawing.Color]::FromArgb(200, 110, 0)
+
+# ---------- 9. System Info (BETA) ----------
+$lblInfo = New-Ctl 'Label' $tpInfo 12 8 930 20 'System information - each button opens an easy-to-read window (Copy all / Save as... at the bottom). Nothing is changed.'
+$lblInfo.Font = New-Object Drawing.Font('Segoe UI', 9, [Drawing.FontStyle]::Bold)
+function New-InfoButton($text, [scriptblock]$do, $tipText) { [pscustomobject]@{ Text = $text; Do = $do; Tip = $tipText } }
+$InfoButtons = @(
+    New-InfoButton 'Wi-Fi networks and passwords'     { Show-Info 'Wi-Fi networks and passwords' (Invoke-Busy 'Wi-Fi networks' { Get-WifiInfo }) 'Passwords are shown in plain text. Close this window before anyone else can see the screen.' } 'Saved Wi-Fi networks with their passwords, the one connected now, and the networks in range.'
+    New-InfoButton 'Windows version and product keys' { Show-Info 'Windows version and product keys' (Invoke-Busy 'Windows version' { Get-WindowsInfo }) } 'Edition, release (for example 24H2), full build number, installed key, motherboard (firmware) key and activation.'
+    New-InfoButton 'Network connections (IP, MAC)'    { Show-Info 'Network connections' (Invoke-Busy 'network' { Get-NetInfo }) 'Connected adapters first; the one used for internet is marked.' } 'Every adapter in order: connected first, with IP addresses, gateway, DNS, DHCP, MAC address, type and Wi-Fi details.'
+    New-InfoButton 'Bluetooth devices'                { Show-Info 'Bluetooth devices' (Invoke-Busy 'Bluetooth' { Get-BtInfo }) } 'The Bluetooth adapter and every paired device with its MAC address, connected ones first.'
+    New-InfoButton 'Video cards and drivers'          { Show-Info 'Video cards and drivers' (Invoke-Busy 'video' { Get-GpuInfo }) } 'Graphics cards with driver version and date, video memory, current resolution, and the monitors.'
+    New-InfoButton 'Audio devices and drivers'        { Show-Info 'Audio devices and drivers' (Invoke-Busy 'audio' { Get-AudioInfo }) } 'Speakers and microphones with the DEFAULT ones marked, plus the sound hardware and driver versions.'
+    New-InfoButton 'Everything in one report'         { Show-Info 'Full system report' (Invoke-Busy 'full report' { @(Get-WindowsInfo) + @(Get-NetInfo) + @(Get-GpuInfo) + @(Get-AudioInfo) + @(Get-BtInfo) + @(Get-WifiInfo) }) 'Contains Wi-Fi passwords and product keys. Keep a saved copy private.' } 'All of the above in one window (use Save as... to keep it).'
+)
+$i = 0
+foreach ($ib in $InfoButtons) {
+    $x = 12 + ($i % 4) * 232; $y = 34 + [Math]::Floor($i / 4) * 40
+    $bt = New-Ctl 'Button' $tpInfo $x $y 226 34 $ib.Text
+    $bt.Tag = $ib.Do; $tip.SetToolTip($bt, $ib.Tip)
+    $bt.Add_Click({ $sb = $this.Tag; Safe { & $sb } })
+    $i++
+}
+$lblTools = New-Ctl 'Label' $tpInfo 12 122 930 20 'Windows tools - opens the built-in tool (greyed out when it is not part of this Windows edition):'
+$lblTools.Font = New-Object Drawing.Font('Segoe UI', 9, [Drawing.FontStyle]::Bold)
+$i = 0
+foreach ($wt in $WinTools) {
+    $x = 12 + ($i % 5) * 186; $y = 146 + [Math]::Floor($i / 5) * 30
+    $bt = New-Ctl 'Button' $tpInfo $x $y 182 27 $wt.Name
+    $bt.Tag = $wt; $tip.SetToolTip($bt, $wt.Tip)
+    if (-not (Test-WinTool $wt)) { $bt.Enabled = $false; $tip.SetToolTip($bt, $wt.Tip + ' - not available on this PC.') }
+    $bt.Add_Click({ $t = $this.Tag; Safe { Start-WinTool $t } })
+    $i++
+}
+
+# ---------- 10. Automation (BETA) ----------
+$lblAutoHead = New-Ctl 'Label' $tpAuto 12 6 930 32 'BETA - run up to 10 tasks one after another on THIS PC. Each task opens its own window (it closes 15 seconds after the task ends) and gets a pass / fail result; a final summary lists them all.'
+$lblAutoHead.ForeColor = [Drawing.Color]::FromArgb(200, 110, 0)
+[void](New-Ctl 'Label' $tpAuto 12 42 300 18 'Available tasks (double-click to add):')
+$lstAutoCat = New-Ctl 'ListBox' $tpAuto 12 62 300 240; $lstAutoCat.DisplayMember = 'Name'; $lstAutoCat.HorizontalScrollbar = $true
+foreach ($c in $AutoCatalog) { [void]$lstAutoCat.Items.Add($c) }
+$lblAutoHelp = New-Ctl 'Label' $tpAuto 12 306 300 64 ''; $lblAutoHelp.ForeColor = 'DimGray'
+$btnAutoAdd = New-Ctl 'Button' $tpAuto 318 150 72 30 'Add >'
+[void](New-Ctl 'Label' $tpAuto 12 378 60 20 'Preset:')
+$cmbAutoPreset = New-Ctl 'ComboBox' $tpAuto 62 375 250 24
+foreach ($k in $AutoPresets.Keys) { [void]$cmbAutoPreset.Items.Add($k) }; $cmbAutoPreset.SelectedIndex = 0; $cmbAutoPreset.DropDownWidth = 320
+$btnAutoPreset = New-Ctl 'Button' $tpAuto 318 374 72 26 'Load'
+$tip.SetToolTip($btnAutoPreset, 'Replaces the queue with the chosen preset (you can still change it).')
+[void](New-Ctl 'Label' $tpAuto 398 42 260 18 'Queue - runs from top to bottom:')
+$lblAutoCount = New-Ctl 'Label' $tpAuto 760 42 182 18 ''; $lblAutoCount.TextAlign = 'TopRight'
+$lvAuto = New-Object Windows.Forms.ListView
+$lvAuto.Location = New-Object Drawing.Point(398, 62); $lvAuto.Size = New-Object Drawing.Size(544, 240)
+$lvAuto.View = 'Details'; $lvAuto.FullRowSelect = $true; $lvAuto.HideSelection = $false; $lvAuto.MultiSelect = $false; $lvAuto.GridLines = $true
+foreach ($col in @(@('#', 30), @('Task', 230), @('Status', 66), @('Result', 160), @('Time', 50))) { [void]$lvAuto.Columns.Add($col[0], $col[1]) }
+$tpAuto.Controls.Add($lvAuto)
+$btnAutoUp     = New-Ctl 'Button' $tpAuto 398 306 90 26 'Move up'
+$btnAutoDown   = New-Ctl 'Button' $tpAuto 492 306 90 26 'Move down'
+$btnAutoRemove = New-Ctl 'Button' $tpAuto 586 306 90 26 'Remove'
+$btnAutoClear  = New-Ctl 'Button' $tpAuto 680 306 90 26 'Clear'
+$chkAutoPop  = New-Ctl 'CheckBox' $tpAuto 398 338 270 22 'Pop up a summary after each task'; $chkAutoPop.Checked = $true
+$chkAutoStop = New-Ctl 'CheckBox' $tpAuto 672 338 270 22 'Stop the queue if a task does not pass'
+$chkAutoMon  = New-Ctl 'CheckBox' $tpAuto 398 362 270 22 'Open live log windows for each task'
+$chkAutoSR   = New-Ctl 'CheckBox' $tpAuto 672 362 270 22 'Turn on System Protection if it is off'
+$tip.SetToolTip($chkAutoSR, 'For "Create a system restore point": turns System Protection on for the system drive first (Enable-ComputerRestore).')
+$btnAutoStart   = New-Ctl 'Button' $tpAuto 398 394 170 34 'Start queue'
+$btnAutoStart.Font = New-Object Drawing.Font('Segoe UI', 9, [Drawing.FontStyle]::Bold)
+$btnAutoStopReq = New-Ctl 'Button' $tpAuto 574 394 170 34 'Stop after this task'; $btnAutoStopReq.Enabled = $false
+$lblAutoStatus  = New-Ctl 'Label' $tpAuto 750 392 192 44 ''
+if ($IsWinPE) { $lblAutoStatus.Text = 'Automation needs a running Windows - not available in WinPE.'; $lblAutoStatus.ForeColor = 'Red' }
 
 $timer = New-Object Windows.Forms.Timer
 $timer.Interval = 250
@@ -2859,17 +3784,9 @@ $btnTool.Add_Click({ Safe {
     elseif ($def.Window) {
         # PowerShell console with every argument single-quoted: no cmd.exe parsing, so & ^ % ( ) in paths are safe
         Log $def.Line
-        $call = "& '" + (Esc-Sq $def.Exe) + "' " + ((@($def.Argv) | ForEach-Object { "'" + (Esc-Sq ([string]$_)) + "'" }) -join ' ')
+        $call = Get-ExeCall $def.Exe @($def.Argv)
         if ($wantSum) {
-            $resFile = (Get-TaskFileBase $tool.Name) + '.txt'
-            $cmd = $tplTask.Replace('__CMD__', $call).Replace('__TITLE__', (Esc-Sq ('TASK: ' + $tool.Name))).Replace('__RESULT__', (Esc-Sq $resFile)).Replace('__LINE__', (Esc-Sq $def.Line))
-            $enc = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($cmd))
-            # a classic console window (not Windows Terminal) keeps the whole output in its buffer, so all of it can be read back
-            $conhost = Join-Path $env:windir 'System32\conhost.exe'
-            if ([IO.File]::Exists($conhost)) { $p = Start-Process -FilePath $conhost -PassThru -ArgumentList ('"{0}" -NoProfile -ExecutionPolicy Bypass -EncodedCommand {1}' -f $PsExePath, $enc) }
-            else { $p = Start-Process -FilePath $PsExePath -PassThru -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $enc }
-            [void]$script:Consoles.Add($p)
-            [void]$script:TaskWatch.Add([pscustomobject]@{ Name = $tool.Name; Kind = $tool.Kind; Line = $def.Line; ResultFile = $resFile; OutFile = $null; Proc = $p })
+            $resFile = Start-TaskWindow $tool.Name $tool.Kind $def.Line $call
             Log "Summary on: the summary opens when the task ends. Output: $resFile"
         } else {
             $cmd = $call + "`r`nWrite-Host ''; Write-Host ('Exit code: ' + `$LASTEXITCODE); Read-Host 'Press Enter to close this window'"
@@ -2895,8 +3812,64 @@ $btnTool.Add_Click({ Safe {
     }
 } })
 
+# ---- 10. Automation (BETA) ----
+function Edit-AutoQueue([scriptblock]$change) {
+    if ($script:Auto.Running) { return }
+    $script:AutoRun = $null          # editing the queue clears the results of the last run from the list
+    & $change
+    Update-AutoList; Save-AutoState
+}
+function Add-AutoTask {
+    $c = $lstAutoCat.SelectedItem; if (-not $c) { Msg 'Select a task on the left first.' 'Automation'; return }
+    if ($script:AutoQueue.Count -ge $AutoMax) { Msg "The queue holds at most $AutoMax tasks." 'Automation' 'Warning'; return }
+    Edit-AutoQueue { [void]$script:AutoQueue.Add($c.Id) }
+    $lvAuto.Items[$lvAuto.Items.Count - 1].Selected = $true
+}
+$lstAutoCat.Add_SelectedIndexChanged({ $c = $lstAutoCat.SelectedItem; if ($c) { $lblAutoHelp.Text = $c.Help } })
+$lstAutoCat.Add_DoubleClick({ Safe { Add-AutoTask } })
+$btnAutoAdd.Add_Click({ Safe { Add-AutoTask } })
+$btnAutoPreset.Add_Click({ Safe {
+    $p = $AutoPresets[[string]$cmbAutoPreset.SelectedItem]; if (-not $p) { return }
+    if ($script:AutoQueue.Count -and -not (Ask "Replace the $($script:AutoQueue.Count) queued task(s) with the preset '$($cmbAutoPreset.SelectedItem)'?" 'Automation')) { return }
+    Edit-AutoQueue { $script:AutoQueue.Clear(); foreach ($id in $p) { [void]$script:AutoQueue.Add($id) } }
+} })
+# after a run the list shows its results (rows can include added repair tasks): the first edit click switches back to the queue
+function Test-AutoQueueShown { if ($script:AutoRun) { $script:AutoRun = $null; Update-AutoList; return $false }; return $true }
+$btnAutoUp.Add_Click({ Safe {
+    if (-not (Test-AutoQueueShown)) { return }
+    if (-not $lvAuto.SelectedIndices.Count) { return }; $i = $lvAuto.SelectedIndices[0]
+    if ($i -le 0 -or $i -ge $script:AutoQueue.Count) { return }
+    Edit-AutoQueue { $x = $script:AutoQueue[$i]; $script:AutoQueue.RemoveAt($i); $script:AutoQueue.Insert($i - 1, $x) }
+    $lvAuto.Items[$i - 1].Selected = $true
+} })
+$btnAutoDown.Add_Click({ Safe {
+    if (-not (Test-AutoQueueShown)) { return }
+    if (-not $lvAuto.SelectedIndices.Count) { return }; $i = $lvAuto.SelectedIndices[0]
+    if ($i -ge $script:AutoQueue.Count - 1) { return }
+    Edit-AutoQueue { $x = $script:AutoQueue[$i]; $script:AutoQueue.RemoveAt($i); $script:AutoQueue.Insert($i + 1, $x) }
+    $lvAuto.Items[$i + 1].Selected = $true
+} })
+$btnAutoRemove.Add_Click({ Safe {
+    if (-not (Test-AutoQueueShown)) { return }
+    if (-not $lvAuto.SelectedIndices.Count) { return }; $i = $lvAuto.SelectedIndices[0]
+    if ($i -ge $script:AutoQueue.Count) { return }
+    Edit-AutoQueue { $script:AutoQueue.RemoveAt($i) }
+    if ($lvAuto.Items.Count) { $lvAuto.Items[[Math]::Min($i, $lvAuto.Items.Count - 1)].Selected = $true }
+} })
+$btnAutoClear.Add_Click({ Safe { if ($script:AutoQueue.Count -and (Ask 'Remove every task from the queue?' 'Automation')) { Edit-AutoQueue { $script:AutoQueue.Clear() } } } })
+foreach ($cb in @($chkAutoPop, $chkAutoStop, $chkAutoMon, $chkAutoSR)) { $cb.Add_CheckedChanged({ if (-not $script:Auto.Running) { Save-AutoState } }) }
+$btnAutoStart.Add_Click({ Safe { Start-AutoRun } })
+$btnAutoStopReq.Add_Click({
+    if ($script:Auto.Running) { $script:Auto.StopReq = $true; $script:Auto.StopWhy = 'was stopped by you'; $lblAutoStatus.Text = 'Stopping after the current task...'; Log 'AUTOMATION: stop requested - stops after the current task.' }
+})
+
 # ---- form ----
-$form.Add_Shown({ Safe {
+$form.Add_Shown({
+    # start the shared timer FIRST: if a startup step below fails, task summaries, Automation and AI login must still work
+    $timer.Start()
+    Safe {
+    Load-AutoState; Update-AutoList; Set-AutoEditing $true
+    if ($lstAutoCat.Items.Count) { $lstAutoCat.SelectedIndex = 0 }
     $where = 'Windows'; if ($IsWinPE) { $where = 'WinPE' }
     Log "$AppName started in $where. Data folder: $DataDir"
     if ($DataOnRam) { Log 'NOTE: the data folder is on the WinPE RAM disk - copy backups and logs somewhere permanent before rebooting.' }
@@ -2906,11 +3879,12 @@ $form.Add_Shown({ Safe {
     if ($cmbTool.Items.Count) { $cmbTool.SelectedIndex = 0 }
     Update-Disks; Update-Letters; Load-Mounts; Update-MountList; Update-Esp
     Update-Windows $true
-    $timer.Start()
-} })
+    }
+})
 $tabs.Add_Selecting({ if ($script:Busy) { $_.Cancel = $true } })    # no Mount / Rescan etc. while a collection runs
 $form.Add_FormClosing({
     if ($script:Busy) { $_.Cancel = $true; Msg "$($script:Busy) is still running. Wait until it has finished, then close." 'Busy' 'Warning'; return }
+    if ($script:Auto.Running -and -not (Ask "The automation queue is still running (task $($script:Auto.Index + 1) of $(@($script:AutoRun).Count)).${NL}${NL}Close anyway? The current task's window keeps running, but the rest of the queue does not run and there is no final summary." 'Automation running' 'Warning' 'Button2')) { $_.Cancel = $true; return }
     try { $timer.Stop() } catch {}
     Stop-AiRequest; Stop-Pairing; $script:ApiKey = $null
     if ($chkAuto.Checked -and $script:Mounts.Count -gt 0) {
