@@ -1,5 +1,6 @@
 @echo off
-rem Version 1.3 (2026-11-19) - edited copy. What changed: Edited scripts\V1.3\CHANGES.md
+rem Version 1.8 (2026-11-19) - edited copy. What changed: Edited scripts\V1.8\CHANGES.md
+setlocal
 rem Launches WinFixKit with no console window and no execution-policy prompt.
 rem If the script is missing or cannot start, you now get a message instead of nothing at all.
 if not exist "%~dp0WinFixKit.ps1" (

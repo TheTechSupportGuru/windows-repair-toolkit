@@ -1,5 +1,5 @@
 #requires -Version 5.1
-# Version 1.3 (2026-11-19) - edited copy. What changed: Edited scripts\V1.3\CHANGES.md
+# Version 1.8 (2026-11-19) - edited copy. What changed: Edited scripts\V1.8\CHANGES.md
 # Claude Log & Screenshot Analyzer - Windows 11, no extra libraries.
 # Works with Claude (Anthropic) or Gemini (Google, has a free tier) - pick in the dropdown.
 # Login: the PC shows a QR code, you scan it with your phone, type/paste your API key on the phone.
@@ -15,7 +15,14 @@ $GeminiModel = 'gemini-flash-latest'   # if Google retires it, try 'gemini-2.5-f
 $SessionMin  = 60      # session length in minutes
 $PairingMin  = 5       # how long each QR code stays valid
 $ImageTypes  = @{ '.png'='image/png'; '.jpg'='image/jpeg'; '.jpeg'='image/jpeg'; '.gif'='image/gif'; '.webp'='image/webp' }
-$MaxLogChars = 150000
+$MaxLogChars = 150000    # newest part of each log that is sent
+$MaxTotalChars = 450000  # all logs together (keeps requests fast and inside model limits)
+$MaxImageBytes = 3.5MB   # per image (raw); bigger ones are scaled down instead of refused
+$MaxTotalImageB64 = 15MB # all images together, as base64
+$ImageMaxEdge  = 2000    # bigger screenshots are scaled down before upload
+$ConvertTypes  = @('.bmp', '.tif', '.tiff')
+$SystemPrompt  = 'You are a Windows troubleshooting expert. Give a concise analysis: 1) Summary, 2) Key errors/findings, 3) Likely cause, 4) Step-by-step fixes. Use plain text, no markdown.'
+$script:AiJob = $null; $script:TickErr = $false
 $files       = New-Object System.Collections.ArrayList
 
 $script:ApiKey = $null; $script:SessionEnd = [datetime]::MinValue
@@ -274,9 +281,10 @@ function Start-Pairing {
     $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
     $pad = New-Object byte[] 128; $rng.GetBytes($pad)
     $tk  = New-Object byte[] 8;   $rng.GetBytes($tk)
+    $rng.Dispose()
     $script:Pad = $pad
     $script:Token = ([BitConverter]::ToString($tk) -replace '-', '').ToLower()
-    $script:Listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Any, 0)
+    $script:Listener = New-Object Net.Sockets.TcpListener ([Net.IPAddress]::Any), 0
     $script:Listener.Start()
     $port = $script:Listener.LocalEndpoint.Port
     $b64 = [Convert]::ToBase64String($pad).TrimEnd('=').Replace('+', '-').Replace('/', '_')
@@ -286,8 +294,10 @@ function Start-Pairing {
 }
 
 function Send-Resp($stream, [int]$code, [string]$ctype, [string]$body) {
+    # correct reason phrase (it used to send "400 OK" and "404 OK")
+    $reasonText = switch ($code) { 200 { 'OK' } 400 { 'Bad Request' } default { 'Not Found' } }
     $b = [Text.Encoding]::UTF8.GetBytes($body)
-    $h = "HTTP/1.1 $code OK`r`nContent-Type: $ctype; charset=utf-8`r`nContent-Length: $($b.Length)`r`nCache-Control: no-store`r`nReferrer-Policy: no-referrer`r`nConnection: close`r`n`r`n"
+    $h = "HTTP/1.1 $code $reasonText`r`nContent-Type: $ctype; charset=utf-8`r`nContent-Length: $($b.Length)`r`nCache-Control: no-store`r`nReferrer-Policy: no-referrer`r`nConnection: close`r`n`r`n"
     $hb = [Text.Encoding]::ASCII.GetBytes($h)
     $stream.Write($hb, 0, $hb.Length); $stream.Write($b, 0, $b.Length); $stream.Flush()
 }
@@ -297,7 +307,10 @@ function Handle-Client($client) {
     $script:PairConns++                     # every connection counts toward the junk limit (see the timer)
     $stream = $client.GetStream()
     $buf = New-Object byte[] 8192; $total = 0; $hEnd = -1; $txt = ''
+    # overall deadline: the 700 ms timeout is per Read, so a client sending one byte at a time could hold the GUI thread
+    $deadline = [DateTime]::UtcNow.AddMilliseconds(1500)
     while ($total -lt $buf.Length) {
+        if ([DateTime]::UtcNow -gt $deadline) { return }
         $r = $stream.Read($buf, $total, $buf.Length - $total)
         if ($r -le 0) { break }
         $total += $r
@@ -312,6 +325,7 @@ function Handle-Client($client) {
     if ($hEnd -lt 0) { return }
     $head   = $txt.Substring(0, $hEnd) -split "`r`n"
     $parts  = $head[0] -split ' '
+    if ($parts.Count -lt 2) { return }
     $method = $parts[0]
     $path   = ($parts[1] -split '\?')[0]
     $body   = $txt.Substring($hEnd + 4)
@@ -335,7 +349,8 @@ function Handle-Client($client) {
             }
         } catch {}
         if ($ok) { Send-Resp $stream 200 'text/plain' 'OK' }
-        else { $script:Attempts++; Send-Resp $stream 400 'text/plain' 'Invalid' }
+        # one rejected key ends this QR code: a second attempt with the same one-time pad would leak key XOR key
+        else { $script:Attempts = 5; Send-Resp $stream 400 'text/plain' 'Invalid' }
     }
     else { Send-Resp $stream 404 'text/plain' 'Not found' }
 }
@@ -399,8 +414,10 @@ $lst.Anchor = 'Top,Left,Right'
 $txtPrompt = New-Ctl $pnlMain TextBox 15 265 855 80 'Analyze these files. Identify errors, likely root causes, and recommended fixes.'
 $txtPrompt.Multiline = $true; $txtPrompt.ScrollBars = 'Vertical'; $txtPrompt.Anchor = 'Top,Left,Right'
 
-$btnGo = New-Ctl $pnlMain Button 15 355 855 42 'Upload && Analyze'
+$btnGo = New-Ctl $pnlMain Button 15 355 700 42 'Upload && Analyze'
 $btnGo.Font = New-Object System.Drawing.Font('Segoe UI Semibold', 11); $btnGo.Anchor = 'Top,Left,Right'
+$btnCancel = New-Ctl $pnlMain Button 725 355 145 42 'Cancel'
+$btnCancel.Anchor = 'Top,Right'; $btnCancel.Enabled = $false
 
 [void](New-Ctl $pnlMain Label 15 407 400 24 'Analysis:')
 $txtOut = New-Ctl $pnlMain TextBox 15 433 855 250 ''
@@ -409,6 +426,211 @@ $txtOut.BackColor = [System.Drawing.Color]::White; $txtOut.Anchor = 'Top,Bottom,
 
 $status = New-Ctl $pnlMain Label 15 695 855 24 'Ready.'
 $status.Anchor = 'Bottom,Left,Right'
+
+# ---- reading files for the request (same code as WinSuperTool's AI tab) ----
+# reads the newest $maxChars characters of a text file, even while Windows is writing to it
+# (ReadAllText failed on logs Windows holds open, and loaded whole multi-hundred-MB files into memory)
+function Read-TextTail([string]$path, [int]$maxChars) {
+    $fs = [IO.File]::Open($path, 'Open', 'Read', 'ReadWrite,Delete')
+    try {
+        $enc = [Text.Encoding]::UTF8
+        $bom = New-Object byte[] 4
+        $got = $fs.Read($bom, 0, 4)
+        if ($got -ge 2 -and $bom[0] -eq 0xFF -and $bom[1] -eq 0xFE) { $enc = [Text.Encoding]::Unicode }
+        elseif ($got -ge 2 -and $bom[0] -eq 0xFE -and $bom[1] -eq 0xFF) { $enc = [Text.Encoding]::BigEndianUnicode }
+        $bpc = 1; if ($enc -is [Text.UnicodeEncoding]) { $bpc = 2 }
+        $start = [Math]::Max([long]0, $fs.Length - ([long]$maxChars * $bpc))
+        if ($bpc -eq 2) { $start -= ($start % 2) }
+        $fs.Position = $start
+        $sr = New-Object IO.StreamReader($fs, $enc, ($start -eq 0))
+        $text = $sr.ReadToEnd()
+        return @{ Text = $text; Truncated = ($start -gt 0) }
+    } finally { $fs.Dispose() }
+}
+function Read-LogForAi([string]$path, [int]$cap) {
+    $trunc = $false
+    if ([IO.Path]::GetExtension($path).ToLower() -eq '.evtx') {
+        $ev = @(Get-WinEvent -FilterHashtable @{ Path = $path; Level = 1, 2, 3 } -MaxEvents 400 -ErrorAction SilentlyContinue)
+        $hdr = 'Critical / Error / Warning events only, newest first:'
+        if (-not $ev.Count) { $ev = @(Get-WinEvent -Path $path -MaxEvents 400 -ErrorAction SilentlyContinue); $hdr = 'Newest events (no errors or warnings found):' }
+        if (-not $ev.Count) { return @{ Text = '(this event log contains no events)'; Truncated = $false; Binary = $false } }
+        $lines = foreach ($e in $ev) {
+            $m = $e.Message
+            if (-not $m) { $m = '(no message text) ' + ((@($e.Properties) | ForEach-Object { $_.Value }) -join '; ') }
+            '{0} [{1}] {2} (ID {3}): {4}' -f $e.TimeCreated, $e.LevelDisplayName, $e.ProviderName, $e.Id, ($m -replace '\s+', ' ')
+        }
+        $text = $hdr + "`n" + (@($lines) -join "`n")
+    } else {
+        # known binary formats (ETL traces, dumps, hives, archives) are never sent as text
+        if ([IO.Path]::GetExtension($path).ToLower() -in '.etl', '.dmp', '.hiv', '.dat', '.zip', '.cab', '.exe', '.dll', '.sys', '.bin', '.db', '.edb', '.mdmp', '.hdmp') { return @{ Binary = $true } }
+        $t = Read-TextTail $path $cap
+        $text = $t.Text; $trunc = $t.Truncated
+        # binary data decoded as UTF-8 mostly turns into U+FFFD replacement characters, so count those as well
+        if ($text.Length -gt 200 -and ([regex]::Matches($text, '[\x00-\x08\x0E-\x1A\uFFFD]')).Count -gt ($text.Length / 20)) { return @{ Binary = $true } }
+        $text = $text.Replace([string][char]0, '')
+    }
+    if ($text.Length -gt $cap) {
+        # event logs are listed NEWEST FIRST, so keep the start; text logs grow at the end, so keep the end
+        if ([IO.Path]::GetExtension($path) -ieq '.evtx') { $text = $text.Substring(0, $cap) } else { $text = $text.Substring($text.Length - $cap) }
+        $trunc = $true
+    }
+    return @{ Text = $text; Truncated = $trunc; Binary = $false }
+}
+# returns @{ Mime; Data(base64); Note } - converts BMP/TIFF and shrinks oversized screenshots to JPEG
+# (it used to refuse any image over 5 MB and stop the whole request)
+function Get-ImagePart([string]$path) {
+    $ext  = [IO.Path]::GetExtension($path).ToLower()
+    $len  = (Get-Item -LiteralPath $path).Length
+    $mime = $ImageTypes[$ext]
+    $convert = (-not $mime) -or ($len -gt $MaxImageBytes)
+    $img = $null; $bmp = $null; $g = $null; $ms = $null
+    try {
+        if (-not $convert -and $ext -ne '.webp' -and $ext -ne '.gif') {
+            # a file that GDI+ cannot decode is not a usable picture: sending it would make the API reject the WHOLE request
+            try { $img = [Drawing.Image]::FromFile($path) } catch { throw 'not a valid image file' }
+            if ([Math]::Max($img.Width, $img.Height) -gt $ImageMaxEdge) { $convert = $true }
+        }
+        if (-not $convert) { return @{ Mime = $mime; Data = [Convert]::ToBase64String([IO.File]::ReadAllBytes($path)); Note = '' } }
+        if (-not $img) { $img = [Drawing.Image]::FromFile($path) }
+        $scale = [Math]::Min(1.0, $ImageMaxEdge / [double][Math]::Max($img.Width, $img.Height))
+        $nw = [Math]::Max(1, [int]($img.Width * $scale)); $nh = [Math]::Max(1, [int]($img.Height * $scale))
+        $bmp = New-Object Drawing.Bitmap $nw, $nh
+        $g = [Drawing.Graphics]::FromImage($bmp)
+        $g.InterpolationMode = [Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+        $g.Clear([Drawing.Color]::White)
+        $g.DrawImage($img, 0, 0, $nw, $nh)
+        $codec = [Drawing.Imaging.ImageCodecInfo]::GetImageEncoders() | Where-Object { $_.MimeType -eq 'image/jpeg' } | Select-Object -First 1
+        $ep = New-Object Drawing.Imaging.EncoderParameters 1
+        $ep.Param[0] = New-Object Drawing.Imaging.EncoderParameter ([Drawing.Imaging.Encoder]::Quality, [long]85)
+        $ms = New-Object IO.MemoryStream
+        $bmp.Save($ms, $codec, $ep)
+        return @{ Mime = 'image/jpeg'; Data = [Convert]::ToBase64String($ms.ToArray()); Note = " (converted to ${nw}x${nh} JPEG for upload)" }
+    } catch {
+        throw "Image '$([IO.Path]::GetFileName($path))' could not be prepared: $($_.Exception.Message)"
+    } finally {
+        foreach ($o in $g, $bmp, $ms, $img) { if ($o) { try { $o.Dispose() } catch {} } }
+    }
+}
+function ConvertTo-JsonText([string]$s) {
+    if ($null -eq $s) { return 'null' }
+    $s = $s.Replace('\', '\\').Replace('"', '\"').Replace("`r", '\r').Replace("`n", '\n').Replace("`t", '\t')
+    $s = [regex]::Replace($s, '[\x00-\x1F]', { param($m) '\u{0:x4}' -f [int][char]$m.Value })
+    return '"' + $s + '"'
+}
+function New-AiRequest([bool]$gemini) {
+    $parts  = New-Object 'System.Collections.Generic.List[string]'
+    $notes  = New-Object 'System.Collections.Generic.List[string]'
+    $budget = $MaxTotalChars
+    $addText = {
+        param($t)
+        if ($gemini) { $parts.Add('{"text":' + (ConvertTo-JsonText $t) + '}') }
+        else { $parts.Add('{"type":"text","text":' + (ConvertTo-JsonText $t) + '}') }
+    }
+    $imgBytes = 0
+    foreach ($f in @($files)) {
+        $name = [IO.Path]::GetFileName($f)
+        $ext  = [IO.Path]::GetExtension($f).ToLower()
+        $status.Text = "Preparing $name ..."; [Windows.Forms.Application]::DoEvents()
+        if ($ImageTypes.ContainsKey($ext) -or $ConvertTypes -contains $ext) {
+            # one unreadable file must not cancel the whole request: skip it and say so in the prompt
+            try { $img = Get-ImagePart $f } catch { $notes.Add("not sent ($($_.Exception.Message)): $name"); continue }
+            if ($imgBytes + $img.Data.Length -gt $MaxTotalImageB64) { $notes.Add("not sent (image size budget used up): $name"); continue }
+            $imgBytes += $img.Data.Length
+            & $addText ("Image file: $name" + $img.Note)
+            if ($gemini) { $parts.Add('{"inline_data":{"mime_type":"' + $img.Mime + '","data":"' + $img.Data + '"}}') }
+            else { $parts.Add('{"type":"image","source":{"type":"base64","media_type":"' + $img.Mime + '","data":"' + $img.Data + '"}}') }
+        } else {
+            if ($budget -lt 2000) { $notes.Add("not sent (size budget used up): $name"); continue }
+            try { $r = Read-LogForAi $f ([Math]::Min($MaxLogChars, $budget)) } catch { $notes.Add("not sent (could not read: $($_.Exception.Message)): $name"); continue }
+            if ($r.Binary) { $notes.Add("not sent (binary file): $name"); continue }
+            $budget -= $r.Text.Length
+            $label = "Log file: $name"
+            if ($r.Truncated) { $label += ' (truncated - newest part only)' }
+            & $addText ($label + "`n-----`n" + $r.Text + "`n-----")
+        }
+    }
+    $userPrompt = $txtPrompt.Text.Trim()
+    if (-not $userPrompt) { $userPrompt = 'Analyze these files and give a short summary of problems and fixes.' }
+    if ($notes.Count) { $userPrompt += "`n`n(Note: some files were not included: " + ($notes -join '; ') + ')' }
+    & $addText $userPrompt
+
+    $joined = $parts -join ','
+    if ($gemini) {
+        $json = '{"system_instruction":{"parts":[{"text":' + (ConvertTo-JsonText $SystemPrompt) + '}]},"contents":[{"role":"user","parts":[' + $joined + ']}],"generationConfig":{"maxOutputTokens":8192}}'
+        $uri = "https://generativelanguage.googleapis.com/v1beta/models/$($GeminiModel):generateContent"
+        $headers = @{ 'x-goog-api-key' = $script:ApiKey }
+    } else {
+        # max_tokens 16000: on Sonnet 5.5 adaptive thinking is on by default and its tokens count toward max_tokens, so 2500
+        # could leave little or no room for the answer (16000 is the recommended ceiling for a non-streaming request).
+        # "fallbacks":"default" (beta) lets the API retry a refused request on a fallback model instead of returning nothing.
+        $json = '{"model":' + (ConvertTo-JsonText $Model) + ',"max_tokens":16000,"fallbacks":"default","system":' + (ConvertTo-JsonText $SystemPrompt) + ',"messages":[{"role":"user","content":[' + $joined + ']}]}'
+        $uri = 'https://api.anthropic.com/v1/messages'
+        $headers = @{ 'x-api-key' = $script:ApiKey; 'anthropic-version' = '2023-06-01'; 'anthropic-beta' = 'server-side-fallback-2026-07-01' }
+    }
+    return @{ Uri = $uri; Headers = $headers; Body = [Text.Encoding]::UTF8.GetBytes($json); Notes = $notes }
+}
+# the web request runs in a background runspace so the window stays responsive and can be cancelled
+# (it used to block the window for up to 3 minutes, with no cancel and no session-expiry check)
+function Start-AiRequest($req, [bool]$gemini) {
+    $ps = [PowerShell]::Create()
+    $job = {
+        param($u, $h, $b)
+        try {
+            [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+            # Invoke-WebRequest + explicit UTF-8 decode: PS 5.1 would read a charset-less JSON reply as ISO-8859-1
+            $w = Invoke-WebRequest -Uri $u -Method Post -Body $b -ContentType 'application/json; charset=utf-8' -Headers $h -TimeoutSec 600 -UseBasicParsing -ErrorAction Stop
+            $r = [Text.Encoding]::UTF8.GetString($w.RawContentStream.ToArray()) | ConvertFrom-Json
+            [pscustomobject]@{ Ok = $true; Resp = $r; Err = '' }
+        } catch {
+            $m = $_.Exception.Message
+            if ($_.ErrorDetails -and $_.ErrorDetails.Message) { $m = $_.ErrorDetails.Message }
+            [pscustomobject]@{ Ok = $false; Resp = $null; Err = $m }
+        }
+    }
+    [void]$ps.AddScript($job.ToString()).AddArgument($req.Uri).AddArgument($req.Headers).AddArgument($req.Body)
+    $script:AiJob = @{ PS = $ps; Handle = $ps.BeginInvoke(); Gemini = $gemini; Started = Get-Date }
+}
+function Stop-AiRequest {
+    if ($script:AiJob) { try { [void]$script:AiJob.PS.BeginStop($null, $null) } catch {} }
+}
+function Get-AnswerText($resp, [bool]$gemini) {
+    if ($gemini) {
+        $cand = @($resp.candidates)
+        $out = ''
+        if ($cand.Count -and $cand[0].content) { $out = (@($cand[0].content.parts) | ForEach-Object { $_.text }) -join "`r`n" }
+        if (-not $out) {
+            # a blocked prompt has no candidates at all (this used to throw "Cannot index into a null array")
+            $why = ''
+            if ($cand.Count) { $why = $cand[0].finishReason }
+            if ($resp.promptFeedback) { $why += ' ' + $resp.promptFeedback.blockReason }
+            $out = "No response text was returned (reason: $($why.Trim())). The content may have been blocked by Google."
+        } elseif ($cand[0].finishReason -eq 'MAX_TOKENS') { $out += "`r`n`r`n[The answer was cut off at the length limit.]" }
+    } else {
+        $out = (@($resp.content) | Where-Object { $_.type -eq 'text' } | ForEach-Object { $_.text }) -join "`r`n"
+        if ($resp.stop_reason -eq 'refusal') {
+            $cat = ''; if ($resp.stop_details -and $resp.stop_details.category) { $cat = " (category: $($resp.stop_details.category))" }
+            $out = "Claude declined to analyze this request$cat." + $(if ($out) { "`r`n`r`nPartial text:`r`n$out" } else { '' })
+        } elseif ($resp.stop_reason -eq 'max_tokens') { $out += "`r`n`r`n[The answer was cut off at the length limit.]" }
+        if (-not $out) { $out = "No response text was returned (stop_reason: $($resp.stop_reason))." }
+    }
+    return $out
+}
+function Complete-AiRequest {
+    $job = $script:AiJob; $script:AiJob = $null
+    $btnGo.Enabled = $true; $btnCancel.Enabled = $false; $form.Cursor = 'Default'
+    $res = $null
+    try { $res = $job.PS.EndInvoke($job.Handle) }
+    catch { $status.Text = 'Cancelled.'; try { $job.PS.Dispose() } catch {}; return }
+    try { $job.PS.Dispose() } catch {}
+    $r = $null
+    if ($res -and $res.Count) { $r = $res[0] }
+    if (-not $r) { $txtOut.Text = 'Error: no result was returned.'; $status.Text = 'Failed.'; return }
+    if (-not $r.Ok) { $txtOut.Text = "Error:`r`n" + $r.Err; $status.Text = 'Failed.'; return }
+    $out = Get-AnswerText $r.Resp $job.Gemini
+    if ($job.Notes -and $job.Notes.Count) { $out += "`n`n[Not included: " + ($job.Notes -join '; ') + ']' }
+    $txtOut.Text = ($out -replace "(?<!`r)`n", "`r`n")
+    $status.Text = "Done in $([int]((Get-Date) - $job.Started).TotalSeconds) s."
+}
 
 # ---- Session / pairing logic ----
 function Show-NewQr {
@@ -426,16 +648,22 @@ function Show-NewQr {
         $lblCount.Text = "Could not start login: $($_.Exception.Message)"
     } finally { $form.Cursor = 'Default' }
 }
+function Clear-Qr {
+    Stop-Pairing
+    $old = $picQr.Image; $picQr.Image = $null; if ($old) { $old.Dispose() }
+}
 
 function Enter-Session {
     $script:SessionEnd = (Get-Date).AddMinutes($SessionMin)
     $lblNotice.Text = ''
     if ($script:ApiKey.StartsWith('AIza')) { $cmbAi.SelectedIndex = 1 } else { $cmbAi.SelectedIndex = 0 }
+    Clear-Qr      # the old QR code stayed in memory and on the hidden panel
     $pnlLogin.Visible = $false; $pnlMain.Visible = $true
     $status.Text = 'Logged in via phone. Add your files.'
 }
 
 function Exit-Session([string]$msg) {
+    Stop-AiRequest      # a running request is cancelled when the session ends
     $script:ApiKey = $null
     $files.Clear(); $lst.Items.Clear(); $txtOut.Clear()
     $pnlMain.Visible = $false; $pnlLogin.Visible = $true
@@ -446,66 +674,59 @@ function Exit-Session([string]$msg) {
 $timer = New-Object System.Windows.Forms.Timer
 $timer.Interval = 250
 $timer.Add_Tick({
-    $now = Get-Date
-    if (-not $script:ApiKey) {
-        if ($script:Listener) {
-            if ($now -gt $script:PairExpires -or $script:Attempts -ge 5 -or $script:PairConns -ge 40) {
-                Stop-Pairing
-                $lblCount.Text = 'This QR code is no longer valid. Click "New QR code".'
-                $old = $picQr.Image; $picQr.Image = $null; if ($old) { $old.Dispose() }
-            } else {
-                $lblCount.Text = 'Waiting for your phone... code valid for ' + ($script:PairExpires - $now).ToString('m\:ss')
-                # at most 3 clients per tick: this runs on the GUI thread, so a flood of connections must not freeze the window
-                $n = 0
-                while ($script:Listener -and $n -lt 3 -and $script:Listener.Pending()) {
-                    $n++
-                    $c = $script:Listener.AcceptTcpClient()
-                    try { Handle-Client $c } catch {} finally { $c.Close() }
-                    if ($script:ApiKey) { break }
+    try {
+        $now = Get-Date
+        if ($script:AiJob -and $script:AiJob.Handle.IsCompleted) { Complete-AiRequest }
+        if (-not $script:ApiKey) {
+            if ($script:Listener) {
+                if ($now -gt $script:PairExpires -or $script:Attempts -ge 5 -or $script:PairConns -ge 40) {
+                    Clear-Qr
+                    $lblCount.Text = 'This QR code is no longer valid. Click "New QR code".'
+                } else {
+                    $lblCount.Text = 'Waiting for your phone... code valid for ' + ($script:PairExpires - $now).ToString('m\:ss')
+                    # at most 3 clients per tick: this runs on the GUI thread, so a flood of connections must not freeze the window
+                    $n = 0
+                    while ($script:Listener -and $n -lt 3 -and $script:Listener.Pending()) {
+                        $n++
+                        $c = $script:Listener.AcceptTcpClient()
+                        try { Handle-Client $c } catch {} finally { $c.Close() }
+                        if ($script:ApiKey) { break }
+                    }
+                    if ($script:ApiKey) { Enter-Session }
                 }
-                if ($script:ApiKey) { Stop-Pairing; Enter-Session }
             }
+        } else {
+            $left = $script:SessionEnd - $now
+            if ($left.TotalSeconds -le 0) { Exit-Session "Your $SessionMin-minute session ended. Scan a new QR code to continue." }
+            else { $lblSession.Text = 'Session ends in ' + $left.ToString('hh\:mm\:ss') }
         }
-    } else {
-        $left = $script:SessionEnd - $now
-        if ($left.TotalSeconds -le 0) { Exit-Session "Your $SessionMin-minute session ended. Scan a new QR code to continue." }
-        else { $lblSession.Text = 'Session ends in ' + $left.ToString('hh\:mm\:ss') }
+    } catch {
+        # an error here would otherwise pop up a WinForms error box 4 times a second
+        if (-not $script:TickErr) { $script:TickErr = $true; $status.Text = "Timer error: $($_.Exception.Message)" }
     }
 })
 
 $btnNewQr.Add_Click({ $lblNotice.Text = ''; Show-NewQr })
 $btnLogout.Add_Click({ Exit-Session 'Logged out. Key and files cleared from this PC.' })
 $form.Add_Shown({ Show-NewQr; $timer.Start() })
-$form.Add_FormClosing({ $timer.Stop(); Stop-Pairing; $script:ApiKey = $null })
+$form.Add_FormClosing({ $timer.Stop(); Stop-AiRequest; Stop-Pairing; $script:ApiKey = $null })
 
 # ---- File handling ----
 function Add-Files($paths) {
-    foreach ($p in $paths) {
-        if ((Test-Path $p -PathType Leaf) -and -not $files.Contains($p)) {
+    foreach ($p in @($paths)) {
+        if (-not $p) { continue }
+        # -LiteralPath: names with [ ] used to be read as wildcards and silently ignored
+        if ((Test-Path -LiteralPath $p -PathType Leaf) -and -not $files.Contains($p)) {
             [void]$files.Add($p); [void]$lst.Items.Add($p)
         }
     }
     $status.Text = "$($files.Count) file(s) selected."
 }
 
-function Read-Log($path) {
-    if ([IO.Path]::GetExtension($path).ToLower() -eq '.evtx') {
-        $ev = Get-WinEvent -Path $path -MaxEvents 400 -ErrorAction Stop |
-              ForEach-Object { "{0} [{1}] {2} (ID {3}): {4}" -f $_.TimeCreated, $_.LevelDisplayName, $_.ProviderName, $_.Id, ($_.Message -replace '\s+', ' ') }
-        $text = $ev -join "`n"
-    } else {
-        $text = [IO.File]::ReadAllText($path)
-    }
-    if ($text.Length -gt $MaxLogChars) {
-        $text = "[...truncated, showing last $MaxLogChars characters...]`n" + $text.Substring($text.Length - $MaxLogChars)
-    }
-    return $text
-}
-
 $btnBrowse.Add_Click({
     $dlg = New-Object System.Windows.Forms.OpenFileDialog
     $dlg.Multiselect = $true
-    $dlg.Filter = 'Logs and images|*.log;*.txt;*.csv;*.evtx;*.json;*.xml;*.png;*.jpg;*.jpeg;*.gif;*.webp|All files|*.*'
+    $dlg.Filter = 'Logs and images|*.log;*.txt;*.csv;*.evtx;*.json;*.xml;*.png;*.jpg;*.jpeg;*.gif;*.webp;*.bmp|All files|*.*'
     if ($dlg.ShowDialog() -eq 'OK') { Add-Files $dlg.FileNames }
 })
 $btnRemove.Add_Click({
@@ -513,88 +734,38 @@ $btnRemove.Add_Click({
     $status.Text = "$($files.Count) file(s) selected."
 })
 $btnClear.Add_Click({ $files.Clear(); $lst.Items.Clear(); $status.Text = 'Cleared.' })
-$lst.Add_DragEnter({ $_.Effect = 'Copy' })
-$lst.Add_DragDrop({ Add-Files $_.Data.GetData('FileDrop') })
+# only accept dropped FILES (dropped text used to be passed on as a list of nulls)
+$lst.Add_DragEnter({ if ($_.Data.GetDataPresent([Windows.Forms.DataFormats]::FileDrop)) { $_.Effect = 'Copy' } else { $_.Effect = 'None' } })
+$lst.Add_DragDrop({ Add-Files $_.Data.GetData([Windows.Forms.DataFormats]::FileDrop) })
 
 $btnGo.Add_Click({
     if (-not $script:ApiKey -or (Get-Date) -gt $script:SessionEnd) { Exit-Session 'Session ended. Scan a new QR code.'; return }
+    if ($script:AiJob) { return }
     if ($files.Count -eq 0) { [void][System.Windows.Forms.MessageBox]::Show('Add at least one file.'); return }
-
-    $btnGo.Enabled = $false
-    $form.Cursor = 'WaitCursor'
-    $status.Text = 'Analyzing... this can take up to a minute.'
-    $txtOut.Text = ''
-    $form.Refresh()
-
-    try {
-        $isGemini    = ($cmbAi.SelectedIndex -eq 1)
-        $isGeminiKey = $script:ApiKey.StartsWith('AIza')
-        if ($isGemini -ne $isGeminiKey) {
-            $want = if ($isGeminiKey) { 'Gemini' } else { 'Claude' }
-            throw "The selected AI does not match the key you logged in with. Switch the dropdown to $want, or log out and scan again with the other key."
-        }
-        $sys = 'You are a Windows troubleshooting expert. Give a concise analysis: 1) Summary, 2) Key errors/findings, 3) Likely cause, 4) Step-by-step fixes. Use plain text, no markdown.'
-
-        $content = New-Object System.Collections.ArrayList   # Claude format
-        $parts   = New-Object System.Collections.ArrayList   # Gemini format
-        foreach ($f in $files) {
-            $name = [IO.Path]::GetFileName($f)
-            $ext  = [IO.Path]::GetExtension($f).ToLower()
-            if ($ImageTypes.ContainsKey($ext)) {
-                if ((Get-Item $f).Length -gt 5MB) { throw "Image '$name' is over 5 MB. Please use a smaller screenshot." }
-                $b64 = [Convert]::ToBase64String([IO.File]::ReadAllBytes($f))
-                [void]$content.Add(@{ type='text'; text="Image file: $name" })
-                [void]$content.Add(@{ type='image'; source=@{ type='base64'; media_type=$ImageTypes[$ext]; data=$b64 } })
-                [void]$parts.Add(@{ text="Image file: $name" })
-                [void]$parts.Add(@{ inline_data=@{ mime_type=$ImageTypes[$ext]; data=$b64 } })
-            } else {
-                $t = "Log file: $name`n-----`n$(Read-Log $f)`n-----"
-                [void]$content.Add(@{ type='text'; text=$t })
-                [void]$parts.Add(@{ text=$t })
-            }
-        }
-        $userPrompt = $txtPrompt.Text.Trim()
-        if (-not $userPrompt) { $userPrompt = 'Analyze these files and give a short summary of problems and fixes.' }
-        [void]$content.Add(@{ type='text'; text=$userPrompt })
-        [void]$parts.Add(@{ text=$userPrompt })
-
-        if ($isGemini) {
-            $payload = @{
-                system_instruction = @{ parts = @(, @{ text = $sys }) }
-                contents = @(, @{ role = 'user'; parts = $parts })
-                generationConfig = @{ maxOutputTokens = 2500 }
-            }
-            $uri = "https://generativelanguage.googleapis.com/v1beta/models/$($GeminiModel):generateContent"
-            $headers = @{ 'x-goog-api-key' = $script:ApiKey }
-        } else {
-            $payload = @{
-                model = $Model; max_tokens = 2500; system = $sys
-                messages = @(, @{ role='user'; content=$content })
-            }
-            $uri = 'https://api.anthropic.com/v1/messages'
-            $headers = @{ 'x-api-key' = $script:ApiKey; 'anthropic-version' = '2023-06-01' }
-        }
-        $json  = ConvertTo-Json -InputObject $payload -Depth 12 -Compress
-        $bytes = [Text.Encoding]::UTF8.GetBytes($json)
-
-        $resp = Invoke-RestMethod -Uri $uri -Method Post -Body $bytes -ContentType 'application/json; charset=utf-8' -Headers $headers -TimeoutSec 180
-
-        if ($isGemini) {
-            $out = ($resp.candidates[0].content.parts | ForEach-Object { $_.text }) -join "`r`n"
-            if (-not $out) { $out = 'No response text was returned. The content may have been blocked by Google.' }
-        } else {
-            $out = ($resp.content | Where-Object { $_.type -eq 'text' } | ForEach-Object { $_.text }) -join "`r`n"
-        }
-        $txtOut.Text = ($out -replace "(?<!`r)`n", "`r`n")
-        $status.Text = 'Done.'
-    } catch {
-        $msg = if ($_.ErrorDetails.Message) { $_.ErrorDetails.Message } else { $_.Exception.Message }
-        $txtOut.Text = "Error:`r`n$msg"
-        $status.Text = 'Failed.'
-    } finally {
-        $btnGo.Enabled = $true
-        $form.Cursor = 'Default'
+    $isGemini    = ($cmbAi.SelectedIndex -eq 1)
+    $isGeminiKey = $script:ApiKey.StartsWith('AIza')
+    if ($isGemini -ne $isGeminiKey) {
+        $want = if ($isGeminiKey) { 'Gemini' } else { 'Claude' }
+        [void][System.Windows.Forms.MessageBox]::Show("The selected AI does not match the key you logged in with. Switch the dropdown to $want, or log out and scan again with the other key.")
+        return
     }
+    $btnGo.Enabled = $false
+    $txtOut.Text = ''
+    try {
+        $form.Cursor = 'WaitCursor'
+        $req = New-AiRequest $isGemini
+        Start-AiRequest $req $isGemini
+        $script:AiJob.Notes = $req.Notes
+        $btnCancel.Enabled = $true
+        $mb = '{0:N1}' -f ($req.Body.Length / 1MB)
+        $status.Text = "Analyzing ($mb MB sent)... the window stays usable; this can take a minute."
+        if ($req.Notes.Count) { $txtOut.Text = 'Not included: ' + ($req.Notes -join '; ') }
+    } catch {
+        $txtOut.Text = "Error:`r`n$($_.Exception.Message)"
+        $status.Text = 'Failed.'
+        $btnGo.Enabled = $true
+    } finally { $form.Cursor = 'Default' }
 })
+$btnCancel.Add_Click({ Stop-AiRequest; $btnCancel.Enabled = $false; $status.Text = 'Cancelling...' })
 
 [void]$form.ShowDialog()

@@ -1,4 +1,5 @@
 @echo off
+rem Version 1.8 (2026-11-19) - edited copy. What changed: Edited scripts\V1.8\CHANGES.md
 setlocal EnableExtensions
 title Windows Super Tool launcher
 
@@ -16,6 +17,8 @@ set "KEEPOPEN=0"
 rem ---- always use 64-bit PowerShell, even when started from a 32-bit program
 set "PSEXE=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
 if exist "%SystemRoot%\Sysnative\WindowsPowerShell\v1.0\powershell.exe" set "PSEXE=%SystemRoot%\Sysnative\WindowsPowerShell\v1.0\powershell.exe"
+rem The ELEVATED copy is started BY the 64-bit PowerShell above, where Sysnative does not exist: give it the System32 path.
+set "PSEXE64=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
 
 set "ISMAIN=0"
 
@@ -38,8 +41,11 @@ set "PSFILE="
 set /p "PSFILE=Paste the full path to the PowerShell script (.ps1): "
 if not defined PSFILE goto :prompt
 set "PSFILE=%PSFILE:"=%"
-rem expand %variables% in a pasted path, e.g. %USERPROFILE%\Desktop\x.ps1
+rem expand %variables% in a pasted path, e.g. %USERPROFILE%\Desktop\x.ps1. `call set` also eats ^ characters,
+rem so if the expanded path does not exist, keep the path exactly as pasted.
+set "PSRAW=%PSFILE%"
 call set "PSFILE=%PSFILE%"
+if not exist "%PSFILE%" set "PSFILE=%PSRAW%"
 
 :validate
 if not exist "%PSFILE%" goto :notfound
@@ -72,7 +78,7 @@ fltmc >nul 2>&1 && goto :direct
 
 echo.
 echo Launching as Administrator: "%PSFILE%"
-"%PSEXE%" -NoProfile -ExecutionPolicy Bypass -Command "try { $a = @('-NoProfile','-ExecutionPolicy','Bypass','-STA','-File',([char]34 + $env:PSFILE + [char]34)); if ($env:NOEXIT) { $a = @($env:NOEXIT) + $a }; Start-Process -FilePath $env:PSEXE -Verb RunAs -WindowStyle $env:WINSTYLE -ArgumentList $a -ErrorAction Stop } catch { Write-Host ('Launch cancelled or failed: ' + $_.Exception.Message) -ForegroundColor Red; exit 1 }"
+"%PSEXE%" -NoProfile -ExecutionPolicy Bypass -Command "try { $a = @('-NoProfile','-ExecutionPolicy','Bypass','-STA','-File',([char]34 + $env:PSFILE + [char]34)); if ($env:NOEXIT) { $a = @($env:NOEXIT) + $a }; Start-Process -FilePath $env:PSEXE64 -Verb RunAs -WindowStyle $env:WINSTYLE -ArgumentList $a -ErrorAction Stop } catch { Write-Host ('Launch cancelled or failed: ' + $_.Exception.Message) -ForegroundColor Red; exit 1 }"
 if errorlevel 1 (
     echo.
     pause

@@ -1,4 +1,4 @@
-# Version 1.4 (2026-11-19) - edited copy. What changed: Edited scripts\V1.4\CHANGES.md
+# Version 1.8 (2026-11-19) - edited copy. What changed: Edited scripts\V1.8\CHANGES.md
 <#
   Windows Repair Toolkit v2 - single-file WinForms GUI (Windows 11 and WinPE / Hiren's PE 11)
   Tab 1  Mount / unmount partitions (diskpart OR Storage cmdlets, whitelisted non-destructive commands only)
@@ -10,11 +10,22 @@ $ErrorActionPreference = 'Continue'
 $IsWinPE = Test-Path 'HKLM:\SYSTEM\CurrentControlSet\Control\MiniNT'
 $NL = "`r`n"
 
+# ---- 64-bit: a 32-bit host sees SysWOW64 (no sysprep.exe, no bcdedit/bootrec there) and a redirected registry ----
+if ([Environment]::Is64BitOperatingSystem -and -not [Environment]::Is64BitProcess) {
+    $native = Join-Path $env:windir 'Sysnative\WindowsPowerShell\v1.0\powershell.exe'
+    if (Test-Path -LiteralPath $native) { Start-Process -FilePath $native -ArgumentList "-NoProfile -STA -ExecutionPolicy Bypass -File `"$PSCommandPath`""; exit }
+}
+$PsExePath = Join-Path $env:windir 'System32\WindowsPowerShell\v1.0\powershell.exe'
+
 # ---- self-elevate (normal Windows only; WinPE already runs as SYSTEM) ----
 if (-not $IsWinPE) {
     $id = [Security.Principal.WindowsIdentity]::GetCurrent()
     if (-not (New-Object Security.Principal.WindowsPrincipal $id).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-        Start-Process powershell.exe -Verb RunAs -ArgumentList "-NoProfile -STA -ExecutionPolicy Bypass -File `"$PSCommandPath`""
+        try { Start-Process powershell.exe -Verb RunAs -ArgumentList "-NoProfile -STA -ExecutionPolicy Bypass -File `"$PSCommandPath`"" -ErrorAction Stop }
+        catch {
+            Add-Type -AssemblyName System.Windows.Forms
+            [void][Windows.Forms.MessageBox]::Show("Windows Repair Toolkit needs administrator rights, and the UAC prompt was cancelled or failed:`r`n`r`n$($_.Exception.Message)", 'Windows Repair Toolkit', 'OK', 'Warning')
+        }
         exit
     }
 }
@@ -33,7 +44,13 @@ if ($PSScriptRoot) {
 }
 $StateFile = Join-Path $StateDir 'WinRepairTool.mounts.json'
 $script:Mounts = New-Object Collections.ArrayList
-$CloneMarker = 'Safe Mode (minimal) [WinRepairTool]'
+# [0] names new clones; [1] = clones made by WinSuperTool (both tools now see and delete each other's clones)
+$CloneMarkers = @('Safe Mode (minimal) [WinRepairTool]', 'Safe Mode (minimal) [WinSuperTool]')
+$CloneMarker = $CloneMarkers[0]
+$BcdBackupDir = Join-Path $StateDir 'BCD-Backups'
+$script:Consoles = New-Object Collections.ArrayList     # repair console windows started from the Recovery tab
+# PowerShell also treats the typographic quotes U+2018-U+201B as single quotes, so double those too
+function Esc-Sq([string]$s) { return ($s -replace "(['$([char]0x2018)-$([char]0x201B)])", '$1$1') }
 
 # ================= helpers =================
 function Msg($t, $c = 'Windows Repair Toolkit', $i = 'Information') { [void][Windows.Forms.MessageBox]::Show($t, $c, 'OK', $i) }
@@ -115,10 +132,22 @@ function Get-PartLetter($disk, $part) {
         $p = Get-Partition -DiskNumber $disk -PartitionNumber $part
         if ([int][char]$p.DriveLetter -gt 0) { return [string]$p.DriveLetter } else { return '' }
     }
-    $detail = Invoke-Diskpart @("select disk $disk", "select partition $part", 'detail partition')
-    if ($detail -match 'no volume') { return 'NOVOLUME' }
-    if ($detail -match '(?m)^\s*\*?\s*Volume\s+\d+\s+([A-Z])\s') { return $Matches[1] }
-    return ''
+    return (Get-DpPartLetter $disk $part)
+}
+function Get-DpPartLetter($disk, $part, [string]$Detail = '') {
+    if (-not $Detail) { $Detail = Invoke-Diskpart @("select disk $disk", "select partition $part", 'detail partition') }
+    $lines = @($Detail -split "`r?`n")
+    for ($i = 0; $i -lt $lines.Count - 1; $i++) {
+        if ($lines[$i] -match '^\s*-{2,}(\s+-{2,})+\s*$') {
+            $cols = [regex]::Matches($lines[$i], '-+')
+            $row = $lines[$i + 1]
+            if ($cols.Count -lt 2 -or -not $row.Trim()) { return 'NOVOLUME' }
+            $c = $cols[1]                                                   # 2nd column = drive letter
+            $l = $row.PadRight($c.Index + $c.Length).Substring($c.Index, $c.Length).Trim()
+            if ($l -cmatch '^[A-Z]$') { return $l } else { return '' }
+        }
+    }
+    return 'NOVOLUME'                                                       # no volume table at all
 }
 # The Storage cmdlets cache disk/partition data per process and do not see letters that diskpart (or another
 # program) changed meanwhile. Refresh before trusting Get-Partition.
@@ -190,7 +219,9 @@ function Load-Mounts {
 # Otherwise "Unmount" could remove the letter of a different drive that took that letter since.
 function Test-MountStillOurs($m) {
     $L = ([string]$m.Letter).ToUpper()
-    if (-not (Test-LetterUsed $L)) { return $false }
+    if (-not $L -or -not (Test-LetterUsed $L)) { return $false }
+    # WinPE without Storage cmdlets: ask diskpart which letter that disk/partition has now
+    if (-not (Get-Command Get-Partition -ErrorAction SilentlyContinue)) { return ((Get-DpPartLetter $m.Disk $m.Partition) -eq $L) }
     $p = Get-LetterPartition $L                                                           # $null = cannot verify -> do not trust
     if (-not $p) { return $false }
     return ([int]$p.DiskNumber -eq [int]$m.Disk -and [int]$p.PartitionNumber -eq [int]$m.Partition)
@@ -219,7 +250,16 @@ function Update-Parts {
 function Dismount-One($m) {
     $L = ([string]$m.Letter).ToUpper()
     if ($L -notmatch '^[A-Z]$') { Log "Refusing to unmount: '$L' is not a drive letter."; return $false }
-    if ($L -eq $env:SystemDrive.Substring(0, 1)) { Log "Refusing to unmount the system drive ${L}:"; return $false }
+    if ($L -eq $env:SystemDrive.Substring(0, 1).ToUpper()) { Log "Refusing to unmount the system drive ${L}:"; return $false }
+    # the letter may have been taken by ANOTHER volume since it was mounted here (Explorer, Disk Management, USB re-plug)
+    if (Test-LetterUsed $L) {
+        $owner = $null                                                  # $null = cannot tell -> keep the old behaviour
+        if (Get-Command Get-Partition -ErrorAction SilentlyContinue) {
+            $p = Get-LetterPartition $L
+            if ($p) { $owner = ([int]$p.DiskNumber -eq [int]$m.Disk -and [int]$p.PartitionNumber -eq [int]$m.Partition) }
+        } else { $owner = ((Get-DpPartLetter $m.Disk $m.Partition) -eq $L) }
+        if ($owner -eq $false) { Log "${L}: now belongs to another partition - forgetting it, NOT unmounting."; $script:Mounts.Remove($m); return $false }
+    }
     try { if (Test-LetterUsed $L) { Unmount-Letter $L; Start-Sleep -Milliseconds 600 } } catch { Log "Unmount error: $($_.Exception.Message)" }
     if (Test-LetterUsed $L) { Log "Could not unmount ${L}: (in use?)"; return $false }
     $script:Mounts.Remove($m); Log "Unmounted ${L}:"; return $true
@@ -231,14 +271,15 @@ function Get-WinInstalls {
         $t = $d.DriveType.ToString()
         if ($t -ne 'Fixed' -and $t -ne 'Removable') { continue }
         if (-not $d.IsReady) { continue }
-        $l = $d.Name.Substring(0, 2)
-        if ($IsWinPE -and $l -eq $env:SystemDrive) { continue }
+        $l = $d.Name.Substring(0, 2).ToUpper()
+        if ($IsWinPE -and $l -eq $env:SystemDrive.ToUpper()) { continue }
         if (-not ([IO.File]::Exists("$l\Windows\System32\config\SYSTEM") -and [IO.File]::Exists("$l\Windows\System32\ntoskrnl.exe"))) { continue }
-        $ver = ''; try { $ver = (Get-Item "$l\Windows\System32\ntoskrnl.exe").VersionInfo.ProductVersion } catch {}
+        $ver = ''; try { $ver = (Get-Item -LiteralPath "$l\Windows\System32\ntoskrnl.exe").VersionInfo.ProductVersion } catch {}
         $build = 0; if ($ver -match '^\d+\.\d+\.(\d+)') { $build = [int]$Matches[1] }
         $name = if ($build -ge 22000) { 'Windows 11' } elseif ($build -ge 10240) { 'Windows 10/Server' } else { 'Windows' }
-        $run = if (-not $IsWinPE -and $l -eq $env:SystemDrive) { '  [RUNNING]' } else { '' }
-        [pscustomobject]@{ Drive = $l; Text = ("{0}\Windows  -  {1} {2}  [{3}]{4}" -f $l, $name, $ver, $d.VolumeLabel, $run) }
+        $running = (-not $IsWinPE) -and ($l -eq $env:SystemDrive.ToUpper())
+        $tag = if ($running) { '  [RUNNING - this PC]' } else { '  [offline]' }
+        [pscustomobject]@{ Drive = $l; Running = $running; Text = ('{0}\Windows  -  {1} {2}  [{3}]{4}' -f $l, $name, $ver, $d.VolumeLabel, $tag) }
     }
 }
 function ConvertFrom-BcdText([string]$text) {
@@ -259,12 +300,20 @@ function Get-BcdAll($t) {
     return @(ConvertFrom-BcdText ((& bcdedit.exe @a 2>&1) | Out-String))
 }
 function Resolve-BcdTarget($drive) {
-    if (-not $IsWinPE -and $drive -eq $env:SystemDrive) {
+    if (-not $IsWinPE -and $drive -eq $env:SystemDrive.ToUpper()) {
         $e = @(ConvertFrom-BcdText ((& bcdedit.exe /enum '{current}' 2>&1) | Out-String)) | Select-Object -First 1
-        return @{ Store = $null; Id = '{current}'; Safeboot = $(if ($e) { $e.Safeboot } else { '' }) }
+        $sb = ''; if ($e) { $sb = $e.Safeboot }
+        return @{ Store = $null; Id = '{current}'; Safeboot = $sb }
+    }
+    # Running Windows + another install on this PC (dual boot): its entry normally lives in the LOADED system store.
+    # Use that (no /store): the same file on a mounted ESP is locked as a registry hive, so backups would fail.
+    if (-not $IsWinPE) {
+        foreach ($e in @(ConvertFrom-BcdText ((& bcdedit.exe /enum osloader 2>&1) | Out-String))) {
+            if ($e.Dev -eq $drive.ToUpper()) { return @{ Store = $null; Id = $e.Id; Safeboot = $e.Safeboot } }
+        }
     }
     foreach ($d in [IO.DriveInfo]::GetDrives()) {
-        if (-not $d.IsReady) { continue }
+        if ($d.DriveType -notin 'Fixed', 'Removable' -or -not $d.IsReady) { continue }   # no network / optical drives
         $l = $d.Name.Substring(0, 2)
         foreach ($rel in '\EFI\Microsoft\Boot\BCD', '\Boot\BCD') {
             $store = "$l$rel"
@@ -278,7 +327,7 @@ function Resolve-BcdTarget($drive) {
     return $null
 }
 function Get-Clones($t, $drive) {
-    return @(Get-BcdAll $t | Where-Object { $_.Dev -eq $drive.ToUpper() -and $_.Desc -eq $CloneMarker -and $_.Id -match '^\{[0-9a-fA-F-]{36}\}$' })
+    return @(Get-BcdAll $t | Where-Object { $_.Dev -eq $drive.ToUpper() -and $CloneMarkers -contains $_.Desc -and $_.Id -match '^\{[0-9a-fA-F-]{36}\}$' })
 }
 function Backup-Bcd($t) {
     try {
@@ -293,7 +342,7 @@ function Backup-Bcd($t) {
         }
         if ($ok) {
             Log "BCD backup saved: $f"
-            if ($dir -like "$env:TEMP*") { Log 'NOTE: that is a temporary (RAM) drive - copy the backup somewhere permanent.' }
+            if ($IsWinPE -and $dir.StartsWith($env:SystemDrive, [StringComparison]::OrdinalIgnoreCase)) { Log 'NOTE: that is the WinPE RAM disk - copy the backup somewhere permanent before rebooting.' }
             return $true
         }
         Log "BCD backup FAILED: $($o.Trim())"
@@ -335,20 +384,34 @@ function Restore-BcdBackup($t, [string]$File) {
     if (-not [IO.File]::Exists($File)) { return [pscustomobject]@{ Rc = 1; Out = "Backup file not found: $File" } }
     if ($t.Store) {
         if (-not (Backup-Bcd $t)) { return [pscustomobject]@{ Rc = 1; Out = 'The BCD backup failed, so the restore was NOT done.' } }
+        $attr = $null
         try {
             $attr = [IO.File]::GetAttributes($t.Store)
             [IO.File]::SetAttributes($t.Store, 'Normal')
             Copy-Item -LiteralPath $File -Destination $t.Store -Force -ErrorAction Stop
-            [IO.File]::SetAttributes($t.Store, $attr)
             $same = (Get-FileHash -LiteralPath $File).Hash -eq (Get-FileHash -LiteralPath $t.Store).Hash
             Log "BCD restored by file copy: $File -> $($t.Store) (verified identical: $same)"
             if ($same) { return [pscustomobject]@{ Rc = 0; Out = 'Restored by file copy (verified identical to the backup).' } }
             return [pscustomobject]@{ Rc = 1; Out = 'The file was copied, but the result does not match the backup.' }
         } catch { return [pscustomobject]@{ Rc = 1; Out = "File copy failed: $($_.Exception.Message)" } }
+        finally { if ($null -ne $attr) { try { [IO.File]::SetAttributes($t.Store, $attr) } catch {} } }   # hidden+system back on every path
     }
     return (Invoke-Bcd $t @('/import', $File))
 }
+# A Safe Mode clone can only be picked in the boot menu; with "timeout 0" Windows never shows that menu.
+# Only an explicit 0 is acted on (element names in bcdedit /enum output are not translated).
+function Confirm-BootMenuShown($t) {
+    $a = @(); if ($t.Store) { $a += '/store'; $a += $t.Store }; $a += '/enum'; $a += '{bootmgr}'
+    $o = (& bcdedit.exe @a 2>&1) | Out-String
+    if ($o -notmatch '(?m)^timeout\s+(\d+)\s*$' -or [int]$Matches[1] -gt 0) { return }
+    if (Ask "The boot menu timeout is 0 seconds, so Windows starts without showing the boot menu and the Safe Mode entry cannot be picked.${NL}${NL}Set the boot menu timeout to 5 seconds?" 'Boot menu' 'Question') {
+        $r = Invoke-Bcd $t @('/timeout', '5')
+        if ($r.Rc -ne 0) { Msg 'Could not set the boot menu timeout. See the log.' 'Error' 'Error' }
+    }
+}
 function Update-Windows([bool]$Popup = $false) {
+    $prev = ''
+    if ($cmbWin.SelectedItem) { $prev = $cmbWin.SelectedItem.Drive }
     $cmbWin.Items.Clear()
     $found = @(Get-WinInstalls)
     foreach ($w in $found) { [void]$cmbWin.Items.Add($w) }
@@ -357,8 +420,9 @@ function Update-Windows([bool]$Popup = $false) {
         $lblWarn.Text = 'No Windows installation found. Mount its partition on tab 1, then press Rescan.'
     } elseif ($found.Count -gt 1) {
         $lblWarn.ForeColor = 'Red'
-        $lblWarn.Text = "WARNING: $($found.Count) Windows installations found. Select the correct one - nothing is pre-selected."
-        if ($Popup) { Msg "$($found.Count) Windows installations were detected.$NL$NL Choose the one you want to modify on the Safe Mode tab before changing anything." 'Multiple Windows installations' 'Warning' }
+        $lblWarn.Text = "WARNING: $($found.Count) Windows installations found. Select the one to work on - nothing is pre-selected."
+        for ($i = 0; $i -lt $found.Count; $i++) { if ($prev -and $found[$i].Drive -eq $prev) { $cmbWin.SelectedIndex = $i } }
+        if ($Popup) { Msg "$($found.Count) Windows installations were detected.${NL}${NL}Choose the one you want to modify on the Safe Mode tab before changing anything." 'Multiple Windows installations' 'Warning' }
     } else {
         $lblWarn.ForeColor = 'DarkGreen'
         $lblWarn.Text = 'One Windows installation found (selected).'
@@ -384,6 +448,8 @@ function Update-SafeStatus {
     $btnSafeOn.Enabled = $true; $btnSafeOff.Enabled = $true
 }
 function Update-Esp {
+    $prev = ''
+    if ($cmbEsp.SelectedItem) { $prev = $cmbEsp.SelectedItem.Drive }
     $cmbEsp.Items.Clear()
     foreach ($d in [IO.DriveInfo]::GetDrives()) {
         $t = $d.DriveType.ToString()
@@ -393,11 +459,12 @@ function Update-Esp {
         if ($IsWinPE -and $l -eq $env:SystemDrive) { continue }
         $mb = [math]::Round($d.TotalSize / 1MB)
         $rem = ($t -eq 'Removable'); $tag = if ($rem) { '  (removable)' } else { '' }
-        [void]$cmbEsp.Items.Add([pscustomobject]@{ Drive = $l; FS = $d.DriveFormat; Text = ("{0}  [{1}]  {2}  {3} MB{4}" -f $l, $d.VolumeLabel, $d.DriveFormat, $mb, $tag); MB = $mb; Removable = $rem })
+        [void]$cmbEsp.Items.Add([pscustomobject]@{ Drive = $l; FS = $d.DriveFormat; Text = ('{0}  [{1}]  {2}  {3} MB{4}' -f $l, $d.VolumeLabel, $d.DriveFormat, $mb, $tag); MB = $mb; Removable = $rem })
     }
     $pick = -1
+    for ($i = 0; $i -lt $cmbEsp.Items.Count; $i++) { if ($prev -and $cmbEsp.Items[$i].Drive -eq $prev) { $pick = $i } }
     # auto-pick only a small FAT32 partition on a FIXED disk - never a USB stick (it can still be chosen by hand)
-    for ($i = 0; $i -lt $cmbEsp.Items.Count; $i++) { $x = $cmbEsp.Items[$i]; if ($x.FS -eq 'FAT32' -and $x.MB -lt 1100 -and -not $x.Removable) { $pick = $i; break } }
+    if ($pick -lt 0) { for ($i = 0; $i -lt $cmbEsp.Items.Count; $i++) { $x = $cmbEsp.Items[$i]; if ($x.FS -eq 'FAT32' -and $x.MB -lt 1100 -and -not $x.Removable) { $pick = $i; break } } }
     if ($pick -ge 0) { $cmbEsp.SelectedIndex = $pick }
 }
 function Read-Text($prompt, $title = 'Input') {
@@ -510,6 +577,7 @@ function Build-Unattend {
     if (-not ($chkSkip.Checked -or $chkUser.Checked -or $chkPC.Checked -or $chkRegion.Checked)) { Msg 'Tick at least one option on the Unattend tab first.' 'Unattend' 'Warning'; return $null }
     if ($chkSkip.Checked -and -not $chkUser.Checked) { Msg "Skipping the OOBE screens without creating an account leaves no usable account.$NL Tick 'Create local account' as well." 'Unattend' 'Warning'; return $null }
     if ($chkUser.Checked -and ($user.Length -lt 1 -or $user.Length -gt 20 -or $user -match "[\\/\[\]:;|=,+*?<>`"@%'$([char]0x2018)-$([char]0x201B)]")) { Msg 'User name must be 1-20 characters and may not contain \ / [ ] : ; | = , + * ? < > " @ % or apostrophes.' 'Unattend' 'Warning'; return $null }   # % would be expanded by cmd in FirstLogonCommands
+    if ($chkUser.Checked -and $chkNoExp.Checked -and [string]$cmbGroup.SelectedItem -ne 'Administrators') { Msg "'Password never expires' runs as the new account at its first logon, and only an administrator may change that setting.$NL Choose the Administrators group or untick 'Password never expires'." 'Unattend' 'Warning'; return $null }
     if ($chkPC.Checked -and $pcn -notmatch '^(\*|[A-Za-z0-9-]{1,15})$') { Msg 'Computer name: 1-15 letters, digits or hyphens, or * for a random name.' 'Unattend' 'Warning'; return $null }
     if ($chkRegion.Checked -and (-not $cmbTz.SelectedItem -or $locale -notmatch '^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})+$')) { Msg 'Pick a time zone and enter a locale such as en-US.' 'Unattend' 'Warning'; return $null }
 
@@ -611,110 +679,104 @@ function Init-Unattend {
 }
 
 # ================= experimental boot recovery tools =================
-# Exe tools: Exe + Argv (returns arg array; empty array = cancel) + Window ($true = own console window with progress)
-# Script tools: Build returns @{Summary; Run; RunArg} (empty = cancel)
+# Exe tools: Exe + Argv (param $c -> argument array, or @{Exe;Args} to use another program; empty = cancel) + Window ($true = own console)
+# Script tools: Build (param $c, $tool -> @{Summary; Run; RunArg}; $null = cancel)
+# $c = @{ Win = 'D:'; Live = running Windows?; Esp = 'S:'; EspFS = 'FAT32' }
+$BcdSetBuild = {
+    param($c, $tool)
+    $t = Resolve-BcdTarget $c.Win
+    if (-not $t) { Msg 'No boot entry found for that install. Mount the EFI partition first.' 'Recovery' 'Warning'; return $null }
+    return @{
+        Summary = "bcdedit /set $($t.Id) $($tool.Elem) $($tool.Val)"
+        RunArg  = @{ T = $t; E = $tool.Elem; V = $tool.Val }
+        Run     = { param($a) $r = Invoke-Bcd $a.T @('/set', $a.T.Id, $a.E, $a.V); if ($r.Rc -ne 0) { Msg 'bcdedit reported an error. See the log.' 'Error' 'Error' } }
+    }
+}
 $Tools = @(
     [pscustomobject]@{ Name = 'BCD: back up store (export)'; Needs = 'install'
-        Help = "Exports the BCD store that boots the selected Windows to a timestamped file in the BCD-Backups folder next to this script.$NL$NL Use cases:$NL- Take a safety copy before any boot repair.$NL- Keep a known-good copy to restore later.$NL$NL Every BCD change made by this tool already makes an automatic backup first."
+        Help = "Exports the BCD store that boots the selected Windows to a timestamped file in the BCD-Backups folder next to this script.${NL}${NL}Use cases:${NL}- Take a safety copy before any boot repair.${NL}- Keep a known-good copy to restore later.${NL}${NL}Every BCD change made by this tool already makes an automatic backup first."
         Build = { param($c, $tool)
             $t = Resolve-BcdTarget $c.Win
-            if (-not $t) { Msg 'No boot entry found for that install. Mount the EFI partition first.'; return $null }
-            @{ Summary = 'bcdedit /export <timestamped file>'; Run = { param($a) if (-not (Backup-Bcd $a)) { Msg 'The BCD backup failed. See the log.' 'Error' 'Error' } }; RunArg = $t } } },
+            if (-not $t) { Msg 'No boot entry found for that install. Mount the EFI partition first.' 'Recovery' 'Warning'; return $null }
+            return @{ Summary = $(if ($t.Store) { 'copy the offline BCD file to a timestamped backup' } else { 'bcdedit /export <timestamped file>' }); Run = { param($a) if (-not (Backup-Bcd $a)) { Msg 'The BCD backup failed. See the log.' 'Error' 'Error' } }; RunArg = $t } } },
     [pscustomobject]@{ Name = 'BCD: restore from backup (import)'; Needs = 'install'
-        Help = "Replaces the boot configuration store with a backup file made earlier.$NL$NL Use cases:$NL- Undo a failed repair or rebuild.$NL- Recover after a bad BCD edit.$NL$NL A fresh backup of the current store is taken first. Replaces the WHOLE store.$NL$NL In WinPE / for another drive's BCD: restored by a verified file copy (reliable).$NL For the RUNNING Windows: bcdedit /import - this fails on some UEFI PCs and VMs (seen on VirtualBox) and then closes the boot store until Windows restarts. Prefer running the restore from WinPE."
+        Help = "Replaces the boot configuration store with a backup file made earlier.${NL}${NL}Use cases:${NL}- Undo a failed repair or rebuild.${NL}- Recover after a bad BCD edit.${NL}${NL}A fresh backup of the current store is taken first. This replaces the WHOLE store.${NL}${NL}In WinPE / for another drive's BCD: restored by a verified file copy (reliable).${NL}For the RUNNING Windows: bcdedit /import - this fails on some UEFI PCs and VMs (seen on VirtualBox) and then closes the boot store until Windows restarts. Prefer running the restore from WinPE."
         Build = { param($c, $tool)
             $t = Resolve-BcdTarget $c.Win
-            if (-not $t) { Msg 'No boot entry found for that install. Mount the EFI partition first.'; return $null }
-            if (-not $t.Store -and -not (Ask "This restores into the boot store of the RUNNING Windows with bcdedit /import.$NL${NL}On some UEFI PCs and virtual machines (seen on VirtualBox) bcdedit /import FAILS and then closes the boot store until Windows restarts. In testing the BCD on disk stayed as it was and Windows started normally.$NL${NL}The reliable way: run this tool from WinPE (Hiren's) - the restore is then a verified file copy.$NL${NL}Try bcdedit /import now?" 'Restore BCD into the running Windows' 'Warning' 'Button2')) { return $null }
+            if (-not $t) { Msg 'No boot entry found for that install. Mount the EFI partition first.' 'Recovery' 'Warning'; return $null }
+            if (-not $t.Store -and -not (Ask "This restores into the boot store of the RUNNING Windows with bcdedit /import.${NL}${NL}On some UEFI PCs and virtual machines (seen on VirtualBox) bcdedit /import FAILS and then closes the boot store until Windows restarts. In testing the BCD on disk stayed as it was and Windows started normally.${NL}${NL}The reliable way: run this tool from WinPE (Hiren's) - the restore is then a verified file copy.${NL}${NL}Try bcdedit /import now?" 'Restore BCD into the running Windows' 'Warning' 'Button2')) { return $null }
             $dlg = New-Object Windows.Forms.OpenFileDialog; $dlg.Title = 'Select a BCD backup file'
+            if (Test-Path $BcdBackupDir) { $dlg.InitialDirectory = $BcdBackupDir }
             if ($dlg.ShowDialog() -ne 'OK') { return $null }
             $how = if ($t.Store) { "copy `"$($dlg.FileName)`" over $($t.Store) (verified)" } else { "bcdedit /import `"$($dlg.FileName)`"" }
-            @{ Summary = $how; RunArg = @{ T = $t; F = $dlg.FileName }
-               Run = { param($a) $r = Restore-BcdBackup $a.T $a.F; if ($r.Rc -ne 0) { Msg ("Restore failed:$NL$NL" + $r.Out.Trim()) 'Error' 'Error' } else { Msg $r.Out.Trim() } } } } },
+            return @{ Summary = $how; RunArg = @{ T = $t; F = $dlg.FileName }
+                Run = { param($a) $r = Restore-BcdBackup $a.T $a.F; if ($r.Rc -ne 0) { Msg ("Restore failed:${NL}${NL}" + $r.Out.Trim()) 'Error' 'Error' } else { Msg $r.Out.Trim() } } } } },
     [pscustomobject]@{ Name = 'Rebuild boot files (bcdboot)'; Needs = 'both'; Exe = 'bcdboot.exe'; Window = $false
-        Help = "bcdboot <Windows>\Windows /s <boot partition> /f UEFI|BIOS$NL$NL Copies fresh boot files from the selected Windows onto the chosen boot partition and creates a new BCD entry. Firmware type (/f) comes from how THIS PC boots (UEFI or BIOS); you are warned if the chosen partition does not match.$NL$NL Use cases:$NL- 'BOOTMGR is missing' or 'winload.efi not found'.$NL- Empty or recreated EFI partition.$NL- Boot files damaged or wiped."
+        Help = "bcdboot <Windows>\Windows /s <boot partition> /f UEFI|BIOS${NL}${NL}Copies fresh boot files from the selected Windows onto the chosen boot partition and creates a new BCD entry. Firmware type (/f) comes from how THIS PC boots (UEFI or BIOS); you are warned if the chosen partition does not match.${NL}${NL}Use cases:${NL}- 'BOOTMGR is missing' or 'winload.efi not found'.${NL}- Empty or recreated EFI partition.${NL}- Boot files damaged or wiped."
         Argv = { param($c)
             # /f follows the FIRMWARE of this PC, not the file system of the picked partition (a FAT32 USB stick is not an ESP)
-            $byFs = if ($c.EspFS -eq 'FAT32') { 'UEFI' } else { 'BIOS' }
+            $byFs = 'BIOS'; if ($c.EspFS -eq 'FAT32') { $byFs = 'UEFI' }
             $fw = Get-FirmwareType
             if (-not $fw) { $fw = $byFs }
             elseif ($fw -ne $byFs) {
                 $why = if ($fw -eq 'UEFI') { "This PC boots in UEFI mode, but $($c.Esp) is $($c.EspFS) - the EFI system partition is normally a small FAT32 partition." } else { "This PC boots in legacy BIOS mode, but $($c.Esp) is FAT32 (that looks like an EFI partition)." }
-                if (-not (Ask "$why$NL${NL}bcdboot will use /f $fw (the firmware of THIS PC). Check that you picked the right boot partition.$NL${NL}Continue?" 'Check boot partition' 'Warning' 'Button2')) { return @() }
+                if (-not (Ask "$why${NL}${NL}bcdboot will use /f $fw (the firmware of THIS PC). Check that you picked the right boot partition.${NL}${NL}Continue?" 'Check boot partition' 'Warning' 'Button2')) { return @() }
             }
             @("$($c.Win)\Windows", '/s', $c.Esp, '/f', $fw) } },
     [pscustomobject]@{ Name = 'Scan for Windows installs (bootrec /scanos)'; Needs = 'none'; Exe = 'bootrec.exe'; Window = $false
-        Help = "bootrec /scanos$NL$NL Read-only scan for Windows installations not currently in the boot menu.$NL$NL Use case: check whether Windows is detected before rebuilding the BCD."
+        Help = "bootrec /scanos${NL}${NL}Read-only scan for Windows installations that are not in the boot menu.${NL}${NL}Use case: check whether Windows is detected before rebuilding the BCD.${NL}bootrec ships with WinRE; some WinPE builds do not include it."
         Argv = { param($c) @('/scanos') } },
     [pscustomobject]@{ Name = 'Rebuild BCD (bootrec /rebuildbcd)'; Needs = 'none'; Exe = 'bootrec.exe'; Window = $true
-        Help = "bootrec /rebuildbcd$NL$NL Scans for installs and offers to add them to the BCD (asks Yes / No / All in its own window).$NL$NL Use cases: missing boot menu entry; 'no operating system found'.$NL Tip: run 'BCD: back up store' first."
+        Help = "bootrec /rebuildbcd${NL}${NL}Scans for installs and offers to add them to the BCD (asks Yes / No / All in its own window).${NL}${NL}Use cases: missing boot menu entry; 'no operating system found'.${NL}Tip: run 'BCD: back up store' first."
         Argv = { param($c) @('/rebuildbcd') } },
     [pscustomobject]@{ Name = 'Write new MBR (bootrec /fixmbr)'; Needs = 'none'; Exe = 'bootrec.exe'; Window = $false
-        Help = "bootrec /fixmbr$NL$NL Writes a standard Windows master boot record to the system disk without touching the partition table.$NL$NL Use cases: corrupted MBR, boot-sector virus, a non-Windows loader left on a BIOS/MBR disk.$NL Rarely needed on UEFI/GPT disks."
+        Help = "bootrec /fixmbr${NL}${NL}Writes a standard Windows master boot record to the system disk without touching the partition table.${NL}${NL}Use cases: corrupted MBR, boot-sector virus, a non-Windows loader left on a BIOS/MBR disk.${NL}Rarely needed on UEFI/GPT disks."
         Argv = { param($c)
-            if ((Get-FirmwareType) -eq 'UEFI' -and -not (Ask "This PC boots in UEFI mode. bootrec /fixmbr only matters for BIOS/MBR disks and does not repair UEFI boot - use 'Rebuild boot files (bcdboot)' instead.$NL${NL}Run it anyway?" 'UEFI system' 'Warning' 'Button2')) { return @() }
+            if ((Get-FirmwareType) -eq 'UEFI' -and -not (Ask "This PC boots in UEFI mode. bootrec /fixmbr only matters for BIOS/MBR disks and does not repair UEFI boot - use 'Rebuild boot files (bcdboot)' instead.${NL}${NL}Run it anyway?" 'UEFI system' 'Warning' 'Button2')) { return @() }
             @('/fixmbr') } },
     [pscustomobject]@{ Name = 'Write boot sector (bootrec /fixboot)'; Needs = 'none'; Exe = 'bootrec.exe'; Window = $false
-        Help = "bootrec /fixboot$NL$NL Writes a new boot sector to the system partition.$NL$NL Use case: BIOS/MBR systems with a damaged boot sector.$NL On UEFI it often returns 'Access is denied' - use 'Rebuild boot files (bcdboot)' instead."
+        Help = "bootrec /fixboot${NL}${NL}Writes a new boot sector to the system partition.${NL}${NL}Use case: BIOS/MBR systems with a damaged boot sector.${NL}On UEFI it often returns 'Access is denied' - use 'Rebuild boot files (bcdboot)' instead."
         Argv = { param($c)
-            if ((Get-FirmwareType) -eq 'UEFI' -and -not (Ask "This PC boots in UEFI mode. bootrec /fixboot is for BIOS/MBR boot sectors and usually fails with 'Access is denied' on UEFI - use 'Rebuild boot files (bcdboot)' instead.$NL${NL}Run it anyway?" 'UEFI system' 'Warning' 'Button2')) { return @() }
+            if ((Get-FirmwareType) -eq 'UEFI' -and -not (Ask "This PC boots in UEFI mode. bootrec /fixboot is for BIOS/MBR boot sectors and usually fails with 'Access is denied' on UEFI - use 'Rebuild boot files (bcdboot)' instead.${NL}${NL}Run it anyway?" 'UEFI system' 'Warning' 'Button2')) { return @() }
             @('/fixboot') } },
-    [pscustomobject]@{ Name = 'Offline system file check (sfc)'; Needs = 'install'; Exe = 'sfc.exe'; Window = $true
-        Help = "sfc /scannow /offbootdir=D:\ /offwindir=D:\Windows$NL$NL Verifies and repairs protected system files of the selected offline Windows.$NL$NL Use cases: Windows will not boot because of corrupt system files; after malware or a failed update."
-        Argv = { param($c) @('/scannow', "/offbootdir=$($c.Win)\", "/offwindir=$($c.Win)\Windows") } },
-    [pscustomobject]@{ Name = 'Offline DISM: restore health'; Needs = 'install'; Exe = 'dism.exe'; Window = $true
-        Help = "dism /image:D:\ /cleanup-image /restorehealth /scratchdir:D:\Windows\Temp$NL$NL Repairs the component store of the offline install.$NL$NL Use case: sfc cannot repair files. Offline repair may fail without a /source (install.wim); check the console output."
-        Argv = { param($c) @("/image:$($c.Win)\", '/cleanup-image', '/restorehealth', "/scratchdir:$($c.Win)\Windows\Temp") } },
-    [pscustomobject]@{ Name = 'Offline DISM: list third-party drivers'; Needs = 'install'; Exe = 'dism.exe'; Window = $true
-        Help = "dism /image:D:\ /get-drivers$NL$NL Read-only list of non-Microsoft drivers (oemNN.inf) in the offline install.$NL$NL Use case: find the NVMe / RAID / Intel RST-VMD driver name before removing it."
-        Argv = { param($c) @("/image:$($c.Win)\", '/get-drivers') } },
-    [pscustomobject]@{ Name = 'Offline DISM: inject drivers from folder'; Needs = 'install'; Exe = 'dism.exe'; Window = $true
-        Help = "dism /image:D:\ /add-driver /driver:<folder> /recurse$NL$NL Adds every driver found in a folder to the offline install.$NL$NL Use cases: 0x7B INACCESSIBLE_BOOT_DEVICE after moving the disk to new hardware; adding NVMe / RAID / VMD storage drivers so Windows can boot."
+    [pscustomobject]@{ Name = 'System file check (sfc)'; Needs = 'install'; Exe = 'sfc.exe'; Window = $true
+        Help = "Offline install: sfc /scannow /offbootdir=D:\ /offwindir=D:\Windows${NL}Running Windows: sfc /scannow${NL}${NL}Verifies and repairs protected system files of the selected Windows.${NL}${NL}Use cases: Windows will not boot because of corrupt system files; after malware or a failed update."
+        Argv = { param($c) if ($c.Live) { @('/scannow') } else { @('/scannow', "/offbootdir=$($c.Win)\", "/offwindir=$($c.Win)\Windows") } } },
+    [pscustomobject]@{ Name = 'DISM: restore health'; Needs = 'install'; Exe = 'dism.exe'; Window = $true
+        Help = "Offline install: dism /image:D:\ /cleanup-image /restorehealth /scratchdir:D:\Windows\Temp${NL}Running Windows: dism /online /cleanup-image /restorehealth${NL}${NL}Repairs the component store.${NL}${NL}Use case: sfc cannot repair files. Offline repair may fail without a /source (install.wim); check the console output."
+        Argv = { param($c) if ($c.Live) { @('/online', '/cleanup-image', '/restorehealth') } else { @("/image:$($c.Win)\", '/cleanup-image', '/restorehealth', "/scratchdir:$($c.Win)\Windows\Temp") } } },
+    [pscustomobject]@{ Name = 'Drivers: list third-party drivers'; Needs = 'install'; Exe = 'dism.exe'; Window = $true
+        Help = "dism /image:D:\ /get-drivers   (running Windows: dism /online /get-drivers)${NL}${NL}Read-only list of non-Microsoft drivers (oemNN.inf).${NL}${NL}Use case: find the NVMe / RAID / Intel RST-VMD driver name before removing it."
+        Argv = { param($c) if ($c.Live) { @('/online', '/get-drivers') } else { @("/image:$($c.Win)\", '/get-drivers') } } },
+    [pscustomobject]@{ Name = 'Drivers: inject from folder'; Needs = 'install'; Exe = 'dism.exe'; Window = $true
+        Help = "Offline install: dism /image:D:\ /add-driver /driver:<folder> /recurse${NL}Running Windows: pnputil /add-driver <folder>\*.inf /subdirs /install${NL}${NL}Adds every driver found in a folder.${NL}${NL}Use cases: 0x7B INACCESSIBLE_BOOT_DEVICE after moving the disk to new hardware; adding NVMe / RAID / VMD storage drivers so Windows can boot."
         Argv = { param($c)
             $fb = New-Object Windows.Forms.FolderBrowserDialog; $fb.Description = 'Folder containing the driver .inf files'
             if ($fb.ShowDialog() -ne 'OK') { return @() }
-            @("/image:$($c.Win)\", '/add-driver', "/driver:$($fb.SelectedPath)", '/recurse') } },
-    [pscustomobject]@{ Name = 'Offline DISM: remove a driver'; Needs = 'install'; Exe = 'dism.exe'; Window = $true
-        Help = "dism /image:D:\ /remove-driver /driver:oemNN.inf$NL$NL Removes one third-party driver package from the offline install.$NL$NL Use cases: a storage / RAID driver is causing a boot crash; clean up before switching controller mode.$NL Run 'list third-party drivers' first to get the oemNN.inf name."
+            if ($c.Live) { return @{ Exe = 'pnputil.exe'; Args = @('/add-driver', (Join-Path $fb.SelectedPath '*.inf'), '/subdirs', '/install') } }
+            return @("/image:$($c.Win)\", '/add-driver', "/driver:$($fb.SelectedPath)", '/recurse') } },
+    [pscustomobject]@{ Name = 'Drivers: remove one (oemNN.inf)'; Needs = 'install'; Exe = 'dism.exe'; Window = $true
+        Help = "Offline install: dism /image:D:\ /remove-driver /driver:oemNN.inf${NL}Running Windows: pnputil /delete-driver oemNN.inf /uninstall${NL}${NL}Removes one third-party driver package.${NL}${NL}Use cases: a storage / RAID driver is causing a boot crash; clean up before switching controller mode.${NL}Run 'Drivers: list third-party drivers' first to get the oemNN.inf name."
         Argv = { param($c)
             $n = Read-Text 'Driver published name (for example oem12.inf):' 'Remove driver'
             if (-not $n) { return @() }
             if ($n -notmatch '^oem\d+\.inf$') { Msg 'Invalid name. Use the oemNN.inf name from the driver list.' 'Invalid' 'Warning'; return @() }
-            @("/image:$($c.Win)\", '/remove-driver', "/driver:$n") } },
+            if ($c.Live) { return @{ Exe = 'pnputil.exe'; Args = @('/delete-driver', $n, '/uninstall') } }
+            return @("/image:$($c.Win)\", '/remove-driver', "/driver:$n") } },
     [pscustomobject]@{ Name = 'Check disk, read-only scan (chkdsk /scan)'; Needs = 'install'; Exe = 'chkdsk.exe'; Window = $true
-        Help = "chkdsk D: /scan$NL$NL Scans the file system of the selected Windows volume without fixing anything.$NL$NL Use case: see whether file-system errors explain a boot failure."
+        Help = "chkdsk D: /scan${NL}${NL}Scans the file system of the selected Windows volume without fixing anything.${NL}${NL}Use case: see whether file-system errors explain a boot failure."
         Argv = { param($c) @($c.Win, '/scan') } },
     [pscustomobject]@{ Name = 'Check disk and REPAIR (chkdsk /f)'; Needs = 'install'; Exe = 'chkdsk.exe'; Window = $true
-        Help = "chkdsk D: /f$NL$NL Fixes file-system errors on the selected Windows volume. This WRITES to the disk.$NL$NL Use case: the read-only scan reported errors. Back up important data first if possible."
+        Help = "chkdsk D: /f${NL}${NL}Fixes file-system errors on the selected Windows volume. This WRITES to the disk. On the running system drive it asks to schedule the check for the next restart.${NL}${NL}Use case: the read-only scan reported errors. Back up important data first if possible."
         Argv = { param($c) @($c.Win, '/f') } },
-    [pscustomobject]@{ Name = 'Boot menu: enable legacy F8 menu'; Needs = 'install'; Elem = 'bootmenupolicy'; Val = 'legacy'
-        Help = "bcdedit /set <entry> bootmenupolicy legacy$NL$NL Brings back the classic F8 Advanced Boot Options menu (Safe Mode, Disable driver signature enforcement...).$NL$NL Use case: you need F8 options on Windows 10/11."
-        Build = { param($c, $tool)
-            $t = Resolve-BcdTarget $c.Win
-            if (-not $t) { Msg 'No boot entry found for that install. Mount the EFI partition first.'; return $null }
-            @{ Summary = "bcdedit /set $($t.Id) $($tool.Elem) $($tool.Val)"; RunArg = @{ T = $t; E = $tool.Elem; V = $tool.Val }
-               Run = { param($a) $r = Invoke-Bcd $a.T @('/set', $a.T.Id, $a.E, $a.V); if ($r.Rc -ne 0) { Msg 'bcdedit reported an error. See the log.' 'Error' 'Error' } } } } },
-    [pscustomobject]@{ Name = 'Boot menu: restore standard menu'; Needs = 'install'; Elem = 'bootmenupolicy'; Val = 'standard'
-        Help = "bcdedit /set <entry> bootmenupolicy standard$NL$NL Returns to the default boot menu behavior (undoes the legacy F8 menu)."
-        Build = { param($c, $tool)
-            $t = Resolve-BcdTarget $c.Win
-            if (-not $t) { Msg 'No boot entry found for that install. Mount the EFI partition first.'; return $null }
-            @{ Summary = "bcdedit /set $($t.Id) $($tool.Elem) $($tool.Val)"; RunArg = @{ T = $t; E = $tool.Elem; V = $tool.Val }
-               Run = { param($a) $r = Invoke-Bcd $a.T @('/set', $a.T.Id, $a.E, $a.V); if ($r.Rc -ne 0) { Msg 'bcdedit reported an error. See the log.' 'Error' 'Error' } } } } },
-    [pscustomobject]@{ Name = 'Automatic Repair loop: disable'; Needs = 'install'; Elem = 'recoveryenabled'; Val = 'No'
-        Help = "bcdedit /set <entry> recoveryenabled No$NL$NL Stops Windows from launching Automatic Repair after failed boots.$NL$NL Use case: the PC loops 'Preparing Automatic Repair' / 'Diagnosing your PC' and you want to see the real error or reach Safe Mode."
-        Build = { param($c, $tool)
-            $t = Resolve-BcdTarget $c.Win
-            if (-not $t) { Msg 'No boot entry found for that install. Mount the EFI partition first.'; return $null }
-            @{ Summary = "bcdedit /set $($t.Id) $($tool.Elem) $($tool.Val)"; RunArg = @{ T = $t; E = $tool.Elem; V = $tool.Val }
-               Run = { param($a) $r = Invoke-Bcd $a.T @('/set', $a.T.Id, $a.E, $a.V); if ($r.Rc -ne 0) { Msg 'bcdedit reported an error. See the log.' 'Error' 'Error' } } } } },
-    [pscustomobject]@{ Name = 'Automatic Repair loop: re-enable'; Needs = 'install'; Elem = 'recoveryenabled'; Val = 'Yes'
-        Help = "bcdedit /set <entry> recoveryenabled Yes$NL$NL Turns Automatic Repair back on (the Windows default)."
-        Build = { param($c, $tool)
-            $t = Resolve-BcdTarget $c.Win
-            if (-not $t) { Msg 'No boot entry found for that install. Mount the EFI partition first.'; return $null }
-            @{ Summary = "bcdedit /set $($t.Id) $($tool.Elem) $($tool.Val)"; RunArg = @{ T = $t; E = $tool.Elem; V = $tool.Val }
-               Run = { param($a) $r = Invoke-Bcd $a.T @('/set', $a.T.Id, $a.E, $a.V); if ($r.Rc -ne 0) { Msg 'bcdedit reported an error. See the log.' 'Error' 'Error' } } } } }
+    [pscustomobject]@{ Name = 'Boot menu: enable legacy F8 menu'; Needs = 'install'; Elem = 'bootmenupolicy'; Val = 'legacy'; Build = $BcdSetBuild
+        Help = "bcdedit /set <entry> bootmenupolicy legacy${NL}${NL}Brings back the classic F8 Advanced Boot Options menu (Safe Mode, Disable driver signature enforcement...).${NL}${NL}Use case: you need F8 options on Windows 10/11." },
+    [pscustomobject]@{ Name = 'Boot menu: restore standard menu'; Needs = 'install'; Elem = 'bootmenupolicy'; Val = 'standard'; Build = $BcdSetBuild
+        Help = "bcdedit /set <entry> bootmenupolicy standard${NL}${NL}Returns to the default boot menu behavior (undoes the legacy F8 menu)." },
+    [pscustomobject]@{ Name = 'Automatic Repair loop: disable'; Needs = 'install'; Elem = 'recoveryenabled'; Val = 'No'; Build = $BcdSetBuild
+        Help = "bcdedit /set <entry> recoveryenabled No${NL}${NL}Stops Windows from launching Automatic Repair after failed boots.${NL}${NL}Use case: the PC loops 'Preparing Automatic Repair' / 'Diagnosing your PC' and you want to see the real error or reach Safe Mode." },
+    [pscustomobject]@{ Name = 'Automatic Repair loop: re-enable'; Needs = 'install'; Elem = 'recoveryenabled'; Val = 'Yes'; Build = $BcdSetBuild
+        Help = "bcdedit /set <entry> recoveryenabled Yes${NL}${NL}Turns Automatic Repair back on (the Windows default)." }
 )
 
 # ================= GUI =================
@@ -890,7 +952,8 @@ $btnUDeploy.Add_Click({ Safe {
     $dest = "$($w.Drive)\Windows\Panther\Unattend\unattend.xml"
     $q = "Write the answer file to:$NL$dest$NL$NL for $($w.Text)$NL$NL An existing file is backed up first. Continue?"
     if ([Windows.Forms.MessageBox]::Show($q, 'Deploy answer file', 'YesNo', 'Question') -ne 'Yes') { return }
-    if ([IO.File]::Exists($dest)) { Copy-Item $dest ("{0}.bak_{1}" -f $dest, (Get-Date -Format yyyyMMdd_HHmmss)) }
+    # -ErrorAction Stop: if the existing answer file cannot be backed up, do NOT overwrite it (Safe shows the error)
+    if ([IO.File]::Exists($dest)) { Copy-Item -LiteralPath $dest -Destination ('{0}.bak_{1}' -f $dest, (Get-Date -Format yyyyMMdd_HHmmss)) -ErrorAction Stop }
     Write-Xml $dest $x
     Log "Answer file deployed: $dest"
     Msg "Deployed to $dest"
@@ -931,7 +994,7 @@ $btnSafeOn.Add_Click({ Safe {
         $new = $Matches[1]
         $r2 = Invoke-Bcd $t @('/set', $new, 'safeboot', 'minimal')
         if ($r2.Rc -ne 0) { [void](Invoke-Bcd $t @('/delete', $new)); Msg 'Could not set safeboot on the copy; the copy was removed. See the log.' 'Error' 'Error' }
-        else { Msg "Done. Choose 'Safe Mode (minimal)' in the boot menu on next start." }
+        else { Confirm-BootMenuShown $t; Msg "Done. Choose 'Safe Mode (minimal)' in the boot menu on next start." }
     } else {
         $q = "Enable Safe Mode (minimal) for:$NL$NL$($w.Text)$NL$NL It will boot into Safe Mode on every start until you remove the flag."
         if ([Windows.Forms.MessageBox]::Show($q, 'Confirm', 'YesNo', 'Warning', 'Button2') -ne 'Yes') { return }
@@ -947,7 +1010,8 @@ $btnSafeOff.Add_Click({ Safe {
         $cl = @(Get-Clones $t $w.Drive)
         if ($cl.Count -eq 0) { Msg 'No Safe Mode clone created by this tool was found for this install.'; return }
         if ([Windows.Forms.MessageBox]::Show("Delete $($cl.Count) Safe Mode clone entry(ies) for:$NL$NL$($w.Text)", 'Confirm', 'YesNo', 'Question') -ne 'Yes') { return }
-        foreach ($e in $cl) { [void](Invoke-Bcd $t @('/delete', $e.Id)) }
+        $bad = @($cl | Where-Object { (Invoke-Bcd $t @('/delete', $_.Id)).Rc -ne 0 })
+        if ($bad.Count) { Msg "$($bad.Count) clone(s) could not be deleted. See the log." 'Error' 'Error' }
     } else {
         if ([Windows.Forms.MessageBox]::Show("Remove the Safe Mode flag for:$NL$NL$($w.Text)", 'Confirm', 'YesNo', 'Question') -ne 'Yes') { return }
         $r = Invoke-Bcd $t @('/deletevalue', $t.Id, 'safeboot')
@@ -994,29 +1058,59 @@ $btnRun.Add_Click({ Safe {
 $btnTool.Add_Click({ Safe {
     $tool = $cmbTool.SelectedItem; if (-not $tool) { Msg 'Select a tool first.'; return }
     $w = $cmbWin.SelectedItem; $e = $cmbEsp.SelectedItem
-    if ($tool.Needs -in 'install', 'both' -and -not $w) { Msg 'Select a Windows installation on the Safe Mode tab first.'; return }
-    if ($tool.Needs -eq 'both' -and -not $e) { Msg 'Select the boot partition on this tab first.'; return }
-    $ctx = @{ Win = $(if ($w) { $w.Drive } else { '' }); Esp = $(if ($e) { $e.Drive } else { '' }); EspFS = $(if ($e) { $e.FS } else { '' }) }
+    if (($tool.Needs -eq 'install' -or $tool.Needs -eq 'both') -and -not $w) { Msg 'Select a Windows installation on the Safe Mode tab first.' 'Recovery' 'Warning'; return }
+    if ($tool.Needs -eq 'both' -and -not $e) { Msg 'Select the boot partition on this tab first.' 'Recovery' 'Warning'; return }
+    $ctx = @{ Win = ''; Live = $false; Esp = ''; EspFS = '' }
+    if ($w) { $ctx.Win = $w.Drive; $ctx.Live = [bool]$w.Running }
+    if ($e) { $ctx.Esp = $e.Drive; $ctx.EspFS = $e.FS }
     if ($tool.Build) {
         $def = & $tool.Build $ctx $tool
         if (-not $def) { return }
     } else {
-        $a = @(& $tool.Argv $ctx)
+        $res = @(& $tool.Argv $ctx)
+        $exe = $tool.Exe
+        if ($res.Count -eq 1 -and $res[0] -is [hashtable]) { $exe = $res[0].Exe; $a = @($res[0].Args) } else { $a = $res }
         if ($a.Count -eq 0) { return }
-        $line = $tool.Exe + ' ' + (($a | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } }) -join ' ')
-        $def = @{ Summary = $line; Exe = $tool.Exe; Argv = $a; Window = $tool.Window; Line = $line }
+        if (-not (Get-Command $exe -ErrorAction SilentlyContinue)) {
+            $hint = ''; if ($exe -eq 'bootrec.exe') { $hint = "${NL}${NL}bootrec ships with WinRE (the recovery environment) and is missing from many WinPE builds. Use 'Rebuild boot files (bcdboot)' instead." }
+            Msg "$exe is not available in this environment.$hint" 'Not available' 'Warning'; return
+        }
+        $line = $exe + ' ' + (($a | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } }) -join ' ')
+        $def = @{ Summary = $line; Exe = $exe; Argv = $a; Window = $tool.Window; Line = $line }
     }
-    $q = "EXPERIMENTAL - $($tool.Name)$NL$NL $($def.Summary)$NL$NL This tool is experimental and untested on your hardware. It may change boot configuration or disk contents. Continue?"
-    if ([Windows.Forms.MessageBox]::Show($q, 'EXPERIMENTAL - confirm', 'YesNo', 'Warning', 'Button2') -ne 'Yes') { return }
+    $q = "EXPERIMENTAL - $($tool.Name)${NL}${NL}$($def.Summary)${NL}${NL}This tool is experimental and untested on your hardware. It may change boot configuration or disk contents. Continue?"
+    if (-not (Ask $q 'EXPERIMENTAL - confirm' 'Warning' 'Button2')) { return }
     Log "TOOL: $($tool.Name)"
+    # bcdboot and bootrec /rebuildbcd change the BCD too: back it up first, like every bcdedit change
+    if ($w -and ($def.Exe -eq 'bcdboot.exe' -or ($def.Exe -eq 'bootrec.exe' -and @($def.Argv) -contains '/rebuildbcd'))) {
+        $bt = Resolve-BcdTarget $w.Drive
+        if (-not $bt) { Log 'No existing BCD entry found for this install - nothing to back up first.' }
+        elseif (-not (Backup-Bcd $bt) -and -not (Ask "The BCD backup failed (see the log).${NL}${NL}Run $($def.Exe) anyway?" 'Recovery' 'Warning' 'Button2')) { return }
+    }
     if ($def.Run) { & $def.Run $def.RunArg }
-    elseif ($def.Window) { Start-Process cmd.exe -ArgumentList ('/c ' + $def.Line + ' & pause') }
-    else { $o = (& $def.Exe @($def.Argv) 2>&1) | Out-String; Log $o.Trim() }
+    elseif ($def.Window) {
+        # PowerShell console with every argument single-quoted: no cmd.exe parsing, so & ^ % ( ) in paths are safe
+        Log $def.Line
+        $cmd = "& '" + (Esc-Sq $def.Exe) + "' " + ((@($def.Argv) | ForEach-Object { "'" + (Esc-Sq ([string]$_)) + "'" }) -join ' ') +
+               "`r`nWrite-Host ''; Write-Host ('Exit code: ' + `$LASTEXITCODE); Read-Host 'Press Enter to close this window'"
+        $p = Start-Process -FilePath $PsExePath -PassThru -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', ([Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($cmd)))
+        [void]$script:Consoles.Add($p)
+    }
+    else {
+        Log $def.Line
+        $o = (& $def.Exe @($def.Argv) 2>&1 | ForEach-Object { if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.Exception.Message } else { [string]$_ } }) -join $NL
+        $rc = $LASTEXITCODE; Log $o.Trim()
+        if ($rc -ne 0) { Msg "$($def.Exe) failed (exit code $rc):${NL}${NL}$($o.Trim())" $tool.Name 'Error' } else { Msg ("Done:${NL}${NL}" + $o.Trim()) $tool.Name }
+    }
 } })
 
 $form.Add_FormClosing({
     if ($chkAuto.Checked -and $script:Mounts.Count -gt 0) {
-        foreach ($m in @($script:Mounts)) { [void](Dismount-One $m) }
+        # a repair console started from the Recovery tab may still be working on a mounted drive
+        $live = @($script:Consoles | Where-Object { $_ -and -not $_.HasExited })
+        $unmount = $true
+        if ($live.Count) { $unmount = Ask ("$($live.Count) repair console window(s) started by this tool are still running and may be using a mounted drive.${NL}${NL}Unmount the drives anyway?") 'Close' 'Warning' 'Button2' }
+        if ($unmount) { foreach ($m in @($script:Mounts)) { [void](Dismount-One $m) } }
     }
     Save-Mounts
 })

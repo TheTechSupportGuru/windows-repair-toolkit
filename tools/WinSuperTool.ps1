@@ -1,5 +1,5 @@
 #requires -Version 5.1
-# Version 1.7 (2026-11-19) - edited copy. What changed: Edited scripts\V1.7\CHANGES.md
+# Version 1.8 (2026-11-19) - edited copy. What changed: Edited scripts\V1.8\CHANGES.md
 <#
     WinSuperTool.ps1  -  all-in-one Windows tech toolkit (one file, no extra libraries)
     Runs on Windows 10 / 11 and in WinPE (built for Hiren's BootCD PE 11).
@@ -549,20 +549,27 @@ function Show($e) {
     $col = switch ($e.Level) { 1 {'Red'} 2 {'Red'} 3 {'Yellow'} default {'Gray'} }
     Write-Host ('{0:yyyy-MM-dd HH:mm:ss} [{1}] ID {2} {3}: {4}' -f $e.TimeCreated, $e.LevelDisplayName, $e.Id, $e.ProviderName, $msg) -ForegroundColor $col
 }
+$idq = if ($ids.Count) { ' and (' + (($ids | ForEach-Object { "EventID=$_" }) -join ' or ') + ')' } else { '' }
 function Get-Ev($max) {
     $f = @{ LogName = $log }
     if ($ids.Count) { $f.Id = $ids }
     Get-WinEvent -FilterHashtable $f -MaxEvents $max -ErrorAction SilentlyContinue
 }
+function Get-Top { try { (Get-WinEvent -LogName $log -MaxEvents 1 -ErrorAction Stop).RecordId } catch { 0 } }
 Write-Host "Live event monitor: $log   (Ctrl+C to stop)" -ForegroundColor Cyan
-$last = 0
-try { $last = (Get-WinEvent -LogName $log -MaxEvents 1 -ErrorAction Stop).RecordId } catch {}
+$last = [long](Get-Top)
 Get-Ev $tail | Sort-Object RecordId | ForEach-Object { Show $_ }
 while ($true) {
     Start-Sleep 2
-    $new = @(Get-Ev 100 | Where-Object { $_.RecordId -gt $last } | Sort-Object RecordId)
-    foreach ($e in $new) { Show $e }
-    if ($new.Count) { $last = ($new | Measure-Object RecordId -Maximum).Maximum }
+    # one cheap read of the newest record; only when something new arrived, ask Windows for exactly the new records
+    # (it used to read and render the newest 100 events every 2 seconds, in every monitor window)
+    $top = [long](Get-Top)
+    if ($top -lt $last) { Write-Host '--- the log was cleared ---' -ForegroundColor Yellow; $last = 0 }
+    if ($top -gt $last) {
+        Get-WinEvent -LogName $log -FilterXPath "*[System[EventRecordID>$last$idq]]" -ErrorAction SilentlyContinue |
+            Sort-Object RecordId | ForEach-Object { Show $_ }
+        $last = $top
+    }
 }
 '@
 
@@ -1529,6 +1536,17 @@ function Restore-BcdBackup($t, [string]$File) {
     }
     return (Invoke-Bcd $t @('/import', $File))
 }
+# A Safe Mode clone can only be picked in the boot menu; with "timeout 0" Windows never shows that menu.
+# Only an explicit 0 is acted on (element names in bcdedit /enum output are not translated).
+function Confirm-BootMenuShown($t) {
+    $a = @(); if ($t.Store) { $a += '/store'; $a += $t.Store }; $a += '/enum'; $a += '{bootmgr}'
+    $o = (& bcdedit.exe @a 2>&1) | Out-String
+    if ($o -notmatch '(?m)^timeout\s+(\d+)\s*$' -or [int]$Matches[1] -gt 0) { return }
+    if (Ask "The boot menu timeout is 0 seconds, so Windows starts without showing the boot menu and the Safe Mode entry cannot be picked.${NL}${NL}Set the boot menu timeout to 5 seconds?" 'Boot menu' 'Question') {
+        $r = Invoke-Bcd $t @('/timeout', '5')
+        if ($r.Rc -ne 0) { Msg 'Could not set the boot menu timeout. See the activity log.' 'Error' 'Error' }
+    }
+}
 function Update-SafeLabels {
     if ($rbClone.Checked) { $btnSafeOn.Text = 'Create Safe Mode clone'; $btnSafeOff.Text = 'Delete Safe Mode clone(s)' }
     else { $btnSafeOn.Text = 'Enable Safe Mode (minimal)'; $btnSafeOff.Text = 'Remove Safe Mode flag' }
@@ -1632,6 +1650,7 @@ function Build-Unattend {
     if (-not ($chkSkip.Checked -or $chkUser.Checked -or $chkPC.Checked -or $chkRegion.Checked)) { Msg 'Tick at least one option on the Unattend tab first.' 'Unattend' 'Warning'; return $null }
     if ($chkSkip.Checked -and -not $chkUser.Checked) { Msg "Skipping the OOBE screens without creating an account leaves no usable account.${NL}Tick 'Create local account' as well." 'Unattend' 'Warning'; return $null }
     if ($chkUser.Checked -and ($user.Length -lt 1 -or $user.Length -gt 20 -or $user -match "[\\/\[\]:;|=,+*?<>`"@%'$([char]0x2018)-$([char]0x201B)]")) { Msg 'User name must be 1-20 characters and may not contain \ / [ ] : ; | = , + * ? < > " @ % or apostrophes.' 'Unattend' 'Warning'; return $null }   # % would be expanded by cmd in FirstLogonCommands
+    if ($chkUser.Checked -and $chkNoExp.Checked -and [string]$cmbGroup.SelectedItem -ne 'Administrators') { Msg "'Password never expires' runs as the new account at its first logon, and only an administrator may change that setting.${NL} Choose the Administrators group or untick 'Password never expires'." 'Unattend' 'Warning'; return $null }
     if ($chkPC.Checked -and $pcn -notmatch '^(\*|[A-Za-z0-9-]{1,15})$') { Msg 'Computer name: 1-15 letters, digits or hyphens, or * for a random name.' 'Unattend' 'Warning'; return $null }
     if ($chkRegion.Checked -and (-not $cmbTz.SelectedItem -or $locale -notmatch '^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})+$')) { Msg 'Pick a time zone and enter a locale such as en-US.' 'Unattend' 'Warning'; return $null }
 
@@ -2430,7 +2449,7 @@ $btnSafeOn.Add_Click({ Safe {
         $new = $Matches[1]
         $r2 = Invoke-Bcd $t @('/set', $new, 'safeboot', 'minimal')
         if ($r2.Rc -ne 0) { [void](Invoke-Bcd $t @('/delete', $new)); Msg 'Could not set safeboot on the copy; the copy was removed. See the activity log.' 'Error' 'Error' }
-        else { Msg "Done. Choose 'Safe Mode (minimal)' in the boot menu on next start." }
+        else { Confirm-BootMenuShown $t; Msg "Done. Choose 'Safe Mode (minimal)' in the boot menu on next start." }
     } else {
         if (-not (Ask "Enable Safe Mode (minimal) for:${NL}${NL}$($w.Text)${NL}${NL}It will boot into Safe Mode on every start until you remove the flag." 'Confirm' 'Warning' 'Button2')) { return }
         $r = Invoke-Bcd $t @('/set', $t.Id, 'safeboot', 'minimal')

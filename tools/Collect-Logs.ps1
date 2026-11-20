@@ -1,5 +1,5 @@
 #requires -Version 5.1
-# Version 1.3 (2026-11-19) - edited copy. What changed: Edited scripts\V1.3\CHANGES.md
+# Version 1.8 (2026-11-19) - edited copy. What changed: Edited scripts\V1.8\CHANGES.md
 <#
   Collect-Logs.ps1  -  Windows 11 log collector
   Copies Windows Update / DISM-CBS / Event Viewer / crash / setup logs
@@ -7,23 +7,35 @@
   Right-click > "Run with PowerShell"  (it will ask for admin rights itself)
 #>
 
-# ---------- self-elevate ----------
+# ---------- 64-bit + admin ----------
+# A 32-bit host (some file managers, old launchers) would see SysWOW64 and a redirected registry: relaunch 64-bit first.
+if ([Environment]::Is64BitOperatingSystem -and -not [Environment]::Is64BitProcess) {
+    Start-Process -FilePath (Join-Path $env:SystemRoot 'Sysnative\WindowsPowerShell\v1.0\powershell.exe') -ArgumentList "-NoProfile -ExecutionPolicy Bypass -STA -File `"$PSCommandPath`""
+    exit
+}
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
            ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $isAdmin) {
-    Start-Process powershell.exe -Verb RunAs -ArgumentList "-NoProfile -ExecutionPolicy Bypass -STA -File `"$PSCommandPath`""
+    try {
+        Start-Process powershell.exe -Verb RunAs -ArgumentList "-NoProfile -ExecutionPolicy Bypass -STA -File `"$PSCommandPath`"" -ErrorAction Stop
+    } catch {
+        Add-Type -AssemblyName System.Windows.Forms
+        [void][Windows.Forms.MessageBox]::Show("The log collector needs administrator rights, and the UAC prompt was cancelled or failed:`r`n`r`n$($_.Exception.Message)", 'Windows Log Collector', 'OK', 'Warning')
+    }
     exit
 }
 
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
 
+$W = $env:SystemDrive     # Windows drive (was hard-coded C:)
+
 # ---------- find the logged-in user's profile + desktop ----------
 function Get-InteractiveUser {
     $profilePath = $env:USERPROFILE
     $desktop     = [Environment]::GetFolderPath('Desktop')
     try {
-        $u = (Get-CimInstance Win32_ComputerSystem).UserName
+        $u = (Get-CimInstance Win32_ComputerSystem -ErrorAction Stop).UserName
         if ($u) {
             $sid  = (New-Object Security.Principal.NTAccount($u)).Translate([Security.Principal.SecurityIdentifier]).Value
             $prof = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$sid" -ErrorAction Stop).ProfileImagePath
@@ -46,58 +58,70 @@ $LogRoot = Join-Path $usr.Desktop 'logs'
 # ---------- helpers ----------
 $script:count = 0
 $script:fail  = 0
+$script:Busy  = $false
+$script:StopRequested = $false
 
 function Say([string]$m) {
     $txtOut.AppendText($m + "`r`n")
-    [System.Windows.Forms.Application]::DoEvents()
+    [System.Windows.Forms.Application]::DoEvents()     # keeps the window responsive (and lets "Stop" be clicked)
 }
+function Fmt-Size($b) { if ($b -ge 1GB) { '{0:N1} GB' -f ($b / 1GB) } else { '{0:N0} MB' -f ($b / 1MB) } }
 
 function Copy-One([string]$s, [string]$d) {
-    New-Item -ItemType Directory -Path (Split-Path $d) -Force | Out-Null
+    try { [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($d)) } catch {}
     try {
-        Copy-Item -LiteralPath $s -Destination $d -Force -ErrorAction Stop
+        [IO.File]::Copy($s, $d, $true)          # much faster than Copy-Item for thousands of small files
         $script:count++
     } catch {
         # fallback for files held open by Windows (shared read)
-        $in = $null; $out = $null
+        $in = $null; $out = $null; $ok = $false
         try {
             $in  = [IO.File]::Open($s, 'Open', 'Read', 'ReadWrite,Delete')
             $out = [IO.File]::Create($d)
             $in.CopyTo($out)
-            $script:count++
+            $script:count++; $ok = $true
         } catch {
             $script:fail++
             Say "   FAILED: $s"
         } finally {
             if ($out) { $out.Dispose() }
             if ($in)  { $in.Dispose() }
+            if (-not $ok -and $out) { try { [IO.File]::Delete($d) } catch {} }   # no half-written file in the output
         }
     }
 }
 
 # Copies a file, wildcard, or whole folder (recursively) into $dest
 function Copy-Safe([string]$src, [string]$dest) {
+    if ($script:StopRequested) { return }
     if (Test-Path -LiteralPath $src -PathType Container) {
         $root  = (Get-Item -LiteralPath $src -Force).FullName.TrimEnd('\')
         $files = @(Get-ChildItem -LiteralPath $root -Recurse -File -Force -ErrorAction SilentlyContinue)
-        if (-not $files) { Say "   (empty) $src"; return }
+        if (-not $files.Count) { Say "   (empty) $src"; return }
         $leaf = Split-Path $root -Leaf
+        $i = 0
         foreach ($f in $files) {
+            if ($script:StopRequested) { Say '   stopped.'; return }
             $rel = $f.FullName.Substring($root.Length).TrimStart('\')
             Copy-One $f.FullName (Join-Path (Join-Path $dest $leaf) $rel)
+            if ((++$i % 25) -eq 0) { Say "   ... $i / $($files.Count) files from $leaf" }
         }
     } else {
         $files = @(Get-ChildItem -Path $src -File -Force -ErrorAction SilentlyContinue)
-        if (-not $files) { Say "   (not found) $src"; return }
+        if (-not $files.Count) { Say "   (not found) $src"; return }
         foreach ($f in $files) { Copy-One $f.FullName (Join-Path $dest $f.Name) }
     }
 }
 
 function Export-Evt([string]$name, [string]$dest) {
-    New-Item -ItemType Directory -Path $dest -Force | Out-Null
+    if ($script:StopRequested) { return }
+    [void][IO.Directory]::CreateDirectory($dest)
     $file = Join-Path $dest (($name -replace '[\\/]', '%4') + '.evtx')
-    & wevtutil.exe epl $name $file /ow:true 2>&1 | Out-Null
-    if ($LASTEXITCODE -eq 0) { $script:count++ } else { Say "   skipped (channel missing/empty): $name" }
+    $o = (& wevtutil.exe epl $name $file /ow:true 2>&1 | ForEach-Object { [string]$_ }) -join ' '
+    # 15007 = channel does not exist (language-independent). Anything else is a real failure (path, access, disk full).
+    if ($LASTEXITCODE -eq 0) { $script:count++ }
+    elseif ($LASTEXITCODE -eq 15007) { Say "   skipped (channel does not exist on this Windows): $name" }
+    else { $script:fail++; Say "   FAILED (wevtutil exit code $LASTEXITCODE): $name - $($o.Trim())" }
 }
 
 # ---------- collectors ----------
@@ -105,28 +129,31 @@ $Collectors = [ordered]@{
 
 'WU' = @{ Label = 'Windows Update (ETL, ReportingEvents, USO, WaaSMedic, merged WindowsUpdate.log)'; Run = {
     $d = Join-Path $LogRoot '1_WindowsUpdate'
-    Copy-Safe 'C:\Windows\Logs\WindowsUpdate'                          $d
-    Copy-Safe 'C:\Windows\SoftwareDistribution\ReportingEvents.log'    $d
-    Copy-Safe 'C:\Windows\WindowsUpdate.log'                           $d
-    Copy-Safe 'C:\Windows\Logs\waasmedic'                              $d
-    Copy-Safe 'C:\Windows\Logs\SIH'                                    $d
-    Copy-Safe 'C:\ProgramData\USOShared\Logs'                          $d
-    Say '   Building merged WindowsUpdate.log (can take a minute)...'
-    try {
-        Get-WindowsUpdateLog -LogPath (Join-Path $d 'WindowsUpdate_merged.log') -ErrorAction Stop | Out-Null
-        $script:count++
-    } catch { Say "   Get-WindowsUpdateLog failed: $($_.Exception.Message)" }
+    Copy-Safe "$W\Windows\Logs\WindowsUpdate"                          $d
+    Copy-Safe "$W\Windows\SoftwareDistribution\ReportingEvents.log"    $d
+    Copy-Safe "$W\Windows\WindowsUpdate.log"                           $d
+    Copy-Safe "$W\Windows\Logs\waasmedic"                              $d
+    Copy-Safe "$W\Windows\Logs\SIH"                                    $d
+    Copy-Safe "$W\ProgramData\USOShared\Logs"                          $d
+    if ($script:StopRequested) { return }
+    if (Get-Command Get-WindowsUpdateLog -ErrorAction SilentlyContinue) {
+        Say '   Building merged WindowsUpdate.log (can take a minute)...'
+        try {
+            Get-WindowsUpdateLog -LogPath (Join-Path $d 'WindowsUpdate_merged.log') -ErrorAction Stop | Out-Null
+            $script:count++
+        } catch { $script:fail++; Say "   Get-WindowsUpdateLog failed: $($_.Exception.Message)" }
+    } else { Say '   Get-WindowsUpdateLog is not available here; the raw .etl traces were copied.' }
 }}
 
 'DISM' = @{ Label = 'DISM / CBS / servicing (dism.log, CBS.log, pending.xml, setupapi)'; Run = {
     $d = Join-Path $LogRoot '2_DISM_CBS'
-    Copy-Safe 'C:\Windows\Logs\DISM'                       $d
-    Copy-Safe 'C:\Windows\Logs\CBS'                        $d
-    Copy-Safe 'C:\Windows\Logs\DPX'                        $d
-    Copy-Safe 'C:\Windows\servicing\Sessions\Sessions.xml' $d
-    Copy-Safe 'C:\Windows\WinSxS\pending.xml'              $d
-    Copy-Safe 'C:\Windows\WinSxS\poqexec.log'              $d
-    Copy-Safe 'C:\Windows\inf\setupapi*.log'               $d
+    Copy-Safe "$W\Windows\Logs\DISM"                       $d
+    Copy-Safe "$W\Windows\Logs\CBS"                        $d
+    Copy-Safe "$W\Windows\Logs\DPX"                        $d
+    Copy-Safe "$W\Windows\servicing\Sessions\Sessions.xml" $d
+    Copy-Safe "$W\Windows\WinSxS\pending.xml"              $d
+    Copy-Safe "$W\Windows\WinSxS\poqexec.log"              $d
+    Copy-Safe "$W\Windows\inf\setupapi*.log"               $d
 }}
 
 'EVT' = @{ Label = 'Event Viewer - key logs exported (System, Application, Setup, WU client, etc.)'; Run = {
@@ -153,17 +180,18 @@ $Collectors = [ordered]@{
 
 'EVTALL' = @{ Label = 'Event Viewer - ALL raw .evtx files (can be hundreds of MB)'; Run = {
     $d = Join-Path $LogRoot '3b_EventViewer_AllRaw'
-    Copy-Safe 'C:\Windows\System32\winevt\Logs' $d
+    Copy-Safe "$W\Windows\System32\winevt\Logs" $d
 }}
 
 'CRASH' = @{ Label = 'Crashes (Minidumps, WER reports, user CrashDumps, reliability history, bugcheck events)'; Run = {
     $d = Join-Path $LogRoot '4_Crashes'
-    Copy-Safe 'C:\Windows\Minidump'                                     $d
-    Copy-Safe 'C:\ProgramData\Microsoft\Windows\WER\ReportArchive'      $d
-    Copy-Safe 'C:\ProgramData\Microsoft\Windows\WER\ReportQueue'        $d
+    Copy-Safe "$W\Windows\Minidump"                                     $d
+    Copy-Safe "$W\ProgramData\Microsoft\Windows\WER\ReportArchive"      $d
+    Copy-Safe "$W\ProgramData\Microsoft\Windows\WER\ReportQueue"        $d
     Copy-Safe (Join-Path $usr.Profile 'AppData\Local\CrashDumps')       $d
     Copy-Safe (Join-Path $usr.Profile 'AppData\Local\Microsoft\Windows\WER') (Join-Path $d 'UserWER')
-    New-Item -ItemType Directory -Path $d -Force | Out-Null
+    if ($script:StopRequested) { return }
+    [void][IO.Directory]::CreateDirectory($d)
     try {
         Get-CimInstance Win32_ReliabilityRecords -ErrorAction Stop |
             Select-Object TimeGenerated, SourceName, EventIdentifier, ProductName, Message |
@@ -175,35 +203,51 @@ $Collectors = [ordered]@{
             Format-List TimeCreated, Id, ProviderName, Message |
             Out-File (Join-Path $d 'Crash_Shutdown_Events.txt') -Width 250
         $script:count++
-    } catch { Say '   No crash/shutdown events found' }
+    } catch {
+        # "no events" is normal; anything else (access denied, broken log) is a real failure
+        if ($_.FullyQualifiedErrorId -like 'NoMatchingEventsFound*') { Say '   No crash/shutdown events found' }
+        else { $script:fail++; Say "   Crash/shutdown events FAILED: $($_.Exception.Message)" }
+    }
 }}
 
 'BIG' = @{ Label = 'LARGE dumps (MEMORY.DMP + LiveKernelReports) - can be several GB'; Run = {
     $d = Join-Path $LogRoot '4b_LargeDumps'
-    Copy-Safe 'C:\Windows\MEMORY.DMP'          $d
-    Copy-Safe 'C:\Windows\LiveKernelReports'   $d
+    # check free space first (only existing paths, -LiteralPath: a missing path with -Recurse would search all of Windows)
+    $need = 0
+    foreach ($bp in "$W\Windows\MEMORY.DMP", "$W\Windows\LiveKernelReports") {
+        if (Test-Path -LiteralPath $bp) { $need += [long](Get-ChildItem -LiteralPath $bp -Recurse -File -Force -ErrorAction SilentlyContinue | Measure-Object Length -Sum).Sum }
+    }
+    $free = try { (New-Object IO.DriveInfo ([IO.Path]::GetPathRoot($LogRoot))).AvailableFreeSpace } catch { [long]::MaxValue }
+    if ($need -and $need -gt ($free - 512MB)) { $script:fail++; Say ('   SKIPPED: the dumps need {0}, only {1} free on the output drive.' -f (Fmt-Size $need), (Fmt-Size $free)); return }
+    Copy-Safe "$W\Windows\MEMORY.DMP"          $d
+    Copy-Safe "$W\Windows\LiveKernelReports"   $d
 }}
 
 'SETUP' = @{ Label = 'Setup / feature-upgrade logs (Panther, $WINDOWS.~BT, Rollback, MoSetup)'; Run = {
     $d = Join-Path $LogRoot '5_SetupUpgrade'
-    Copy-Safe 'C:\Windows\Panther'                          (Join-Path $d 'Windows_Panther')
-    Copy-Safe 'C:\$WINDOWS.~BT\Sources\Panther'             (Join-Path $d 'BT_Panther')
-    Copy-Safe 'C:\$WINDOWS.~BT\Sources\Rollback'            (Join-Path $d 'BT_Rollback')
-    Copy-Safe 'C:\$Windows.~WS\Sources\Panther'             (Join-Path $d 'WS_Panther')
-    Copy-Safe 'C:\Windows\Logs\MoSetup'                     $d
-    Copy-Safe 'C:\Windows\System32\Sysprep\Panther'         (Join-Path $d 'Sysprep_Panther')
-    Copy-Safe 'C:\Windows\setupact.log'                     $d
-    Copy-Safe 'C:\Windows\setuperr.log'                     $d
+    Copy-Safe "$W\Windows\Panther"                           (Join-Path $d 'Windows_Panther')
+    Copy-Safe (Join-Path $W '$WINDOWS.~BT\Sources\Panther')  (Join-Path $d 'BT_Panther')
+    Copy-Safe (Join-Path $W '$WINDOWS.~BT\Sources\Rollback') (Join-Path $d 'BT_Rollback')
+    Copy-Safe (Join-Path $W '$Windows.~WS\Sources\Panther')  (Join-Path $d 'WS_Panther')
+    Copy-Safe "$W\Windows\Logs\MoSetup"                      $d
+    Copy-Safe "$W\Windows\System32\Sysprep\Panther"          (Join-Path $d 'Sysprep_Panther')
+    Copy-Safe "$W\Windows\setupact.log"                      $d
+    Copy-Safe "$W\Windows\setuperr.log"                      $d
 }}
 
 'INFO' = @{ Label = 'System info (systeminfo, installed hotfixes, DISM packages list)'; Run = {
     $d = Join-Path $LogRoot '6_SystemInfo'
-    New-Item -ItemType Directory -Path $d -Force | Out-Null
-    & systeminfo.exe | Out-File (Join-Path $d 'systeminfo.txt')
-    try { Get-HotFix | Sort-Object InstalledOn -Descending | Format-Table -AutoSize | Out-File (Join-Path $d 'hotfixes.txt') -Width 250 } catch {}
-    try { Get-WindowsPackage -Online -ErrorAction Stop | Format-Table PackageName, PackageState, InstallTime -AutoSize |
-          Out-File (Join-Path $d 'dism_packages.txt') -Width 300 } catch {}
-    $script:count += 2
+    [void][IO.Directory]::CreateDirectory($d)
+    # count only what really worked (it used to add 2 whatever happened)
+    & systeminfo.exe 2>&1 | Out-File (Join-Path $d 'systeminfo.txt')
+    if ($LASTEXITCODE -eq 0) { $script:count++ } else { $script:fail++; Say "   systeminfo failed (exit code $LASTEXITCODE)" }
+    try { Get-HotFix -ErrorAction Stop | Sort-Object InstalledOn -Descending | Format-Table -AutoSize | Out-File (Join-Path $d 'hotfixes.txt') -Width 250; $script:count++ }
+    catch { $script:fail++; Say "   hotfix list failed: $($_.Exception.Message)" }
+    try {
+        Get-WindowsPackage -Online -ErrorAction Stop | Format-Table PackageName, PackageState, InstallTime -AutoSize |
+            Out-File (Join-Path $d 'dism_packages.txt') -Width 300
+        $script:count++
+    } catch { $script:fail++; Say "   package list failed: $($_.Exception.Message)" }
 }}
 }
 
@@ -243,27 +287,53 @@ $btnGo = New-Object Windows.Forms.Button
 $btnGo.Text = 'Submit'; $btnGo.Location = "160,$($y+8)"; $btnGo.Size = '130,30'
 $form.Controls.Add($btnGo)
 
+$btnStop = New-Object Windows.Forms.Button
+$btnStop.Text = 'Stop'; $btnStop.Location = "304,$($y+8)"; $btnStop.Size = '90,30'; $btnStop.Enabled = $false
+$btnStop.Add_Click({ $script:StopRequested = $true; $btnStop.Enabled = $false; Say '   Stopping after the current file...' })
+$form.Controls.Add($btnStop)
+
 $txtOut = New-Object Windows.Forms.TextBox
 $txtOut.Multiline = $true; $txtOut.ScrollBars = 'Vertical'; $txtOut.ReadOnly = $true
 $txtOut.Location = "16,$($y+50)"; $txtOut.Size = "590,$(600 - ($y+50) - 40)"
 $txtOut.Font = New-Object Drawing.Font('Consolas', 9)
 $form.Controls.Add($txtOut)
 
+# The copy runs on the window's thread (Say keeps it responsive). Closing the window mid-run used to leave the
+# copy running hidden in the background; now closing is refused until it ends - use Stop first.
+$form.Add_FormClosing({
+    param($s, $e)
+    if ($script:Busy) {
+        $e.Cancel = $true
+        [void][Windows.Forms.MessageBox]::Show('Logs are still being collected. Press Stop first, then close the window.', 'Windows Log Collector')
+    }
+})
+
 $btnGo.Add_Click({
     $sel = @($Collectors.Keys | Where-Object { $boxes[$_].Checked })
     if (-not $sel) { [Windows.Forms.MessageBox]::Show('Pick at least one item.') | Out-Null; return }
-    $btnGo.Enabled = $false; $btnAll.Enabled = $false
+    $btnGo.Enabled = $false; $btnAll.Enabled = $false; $btnStop.Enabled = $true
+    $script:Busy = $true; $script:StopRequested = $false
     $script:count = 0; $script:fail = 0
-    New-Item -ItemType Directory -Path $LogRoot -Force | Out-Null
-    Say "Started $(Get-Date)  ->  $LogRoot"
-    foreach ($k in $sel) {
-        Say "`r`n[$k] $($Collectors[$k].Label)"
-        try { & $Collectors[$k].Run } catch { Say "   ERROR: $($_.Exception.Message)" }
+    $txtOut.Clear()      # the summary file used to contain every earlier run of this session too
+    try {
+        [void][IO.Directory]::CreateDirectory($LogRoot)
+        Say "Started $(Get-Date)  ->  $LogRoot"
+        foreach ($k in $sel) {
+            if ($script:StopRequested) { break }
+            Say "`r`n[$k] $($Collectors[$k].Label)"
+            try { & $Collectors[$k].Run } catch { $script:fail++; Say "   ERROR: $($_.Exception.Message)" }
+        }
+        $how = if ($script:StopRequested) { 'STOPPED by you' } else { 'Done' }
+        Say "`r`n$how. Files copied/exported: $($script:count)   Failed: $($script:fail)"
+        try { $txtOut.Text | Out-File (Join-Path $LogRoot '_collection_summary.txt') -ErrorAction Stop } catch { Say "   Could not write the summary file: $($_.Exception.Message)" }
+        Start-Process explorer.exe $LogRoot
+    } catch {
+        Say "ERROR: $($_.Exception.Message)"
+    } finally {
+        # always give the buttons back, even after an unexpected error
+        $script:Busy = $false
+        $btnGo.Enabled = $true; $btnAll.Enabled = $true; $btnStop.Enabled = $false
     }
-    Say "`r`nDone. Files copied/exported: $($script:count)   Failed: $($script:fail)"
-    $txtOut.Text | Out-File (Join-Path $LogRoot '_collection_summary.txt')
-    Start-Process explorer.exe $LogRoot
-    $btnGo.Enabled = $true; $btnAll.Enabled = $true
 })
 
 [void]$form.ShowDialog()

@@ -1,5 +1,6 @@
 @echo off
-rem Version 1.3 (2026-11-19) - edited copy. What changed: Edited scripts\V1.3\CHANGES.md
+rem Version 1.8 (2026-11-19) - edited copy. What changed: Edited scripts\V1.8\CHANGES.md
+setlocal
 rem Starts ClaudeLogAnalyzer with no console window. If the script is missing or cannot start, you now get a message.
 if not exist "%~dp0ClaudeLogAnalyzer.ps1" (
     echo ClaudeLogAnalyzer.ps1 was not found next to this launcher:

@@ -1,5 +1,5 @@
 #requires -Version 5.1
-# Version 1.3 (2026-11-19) - edited copy. What changed: Edited scripts\V1.3\CHANGES.md
+# Version 1.8 (2026-11-19) - edited copy. What changed: Edited scripts\V1.8\CHANGES.md
 <#
   Monitor-Logs.ps1  -  Live log monitor launcher for Windows 11
   Pick logs, press "Launch selected", and each log opens in its OWN PowerShell
@@ -8,16 +8,29 @@
   Right-click > "Run with PowerShell"  (asks for admin rights itself)
 #>
 
-# ---------- self-elevate ----------
+# ---------- 64-bit + admin ----------
+# A 32-bit host would see SysWOW64 and the 32-bit view of the logs: relaunch 64-bit first.
+if ([Environment]::Is64BitOperatingSystem -and -not [Environment]::Is64BitProcess) {
+    Start-Process -FilePath (Join-Path $env:SystemRoot 'Sysnative\WindowsPowerShell\v1.0\powershell.exe') -ArgumentList "-NoProfile -ExecutionPolicy Bypass -STA -File `"$PSCommandPath`""
+    exit
+}
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
            ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $isAdmin) {
-    Start-Process powershell.exe -Verb RunAs -ArgumentList "-NoProfile -ExecutionPolicy Bypass -STA -File `"$PSCommandPath`""
+    try {
+        Start-Process powershell.exe -Verb RunAs -ArgumentList "-NoProfile -ExecutionPolicy Bypass -STA -File `"$PSCommandPath`"" -ErrorAction Stop
+    } catch {
+        Add-Type -AssemblyName System.Windows.Forms
+        [void][Windows.Forms.MessageBox]::Show("The log monitor needs administrator rights, and the UAC prompt was cancelled or failed:`r`n`r`n$($_.Exception.Message)", 'Live Log Monitor', 'OK', 'Warning')
+    }
     exit
 }
 
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
+
+$W = $env:SystemDrive     # Windows drive (was hard-coded C:)
+$PsExePath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 
 # ---------- what can be monitored ----------
 # Type: File = Get-Content -Wait | Filter = same, but only lines matching Pattern
@@ -28,25 +41,25 @@ function Item($section, $name, $type, $target, $extra = $null) {
 
 $Items = @(
     # --- Windows Update ---
-    Item 'Windows Update' 'ReportingEvents.log'                          'File' 'C:\Windows\SoftwareDistribution\ReportingEvents.log'
+    Item 'Windows Update' 'ReportingEvents.log'                          'File' "$W\Windows\SoftwareDistribution\ReportingEvents.log"
     Item 'Windows Update' 'Event: WindowsUpdateClient/Operational'       'Evt'  'Microsoft-Windows-WindowsUpdateClient/Operational'
     Item 'Windows Update' 'Event: Delivery Optimization/Operational'     'Evt'  'Microsoft-Windows-DeliveryOptimization/Operational'
     Item 'Windows Update' 'Event: BITS-Client/Operational'               'Evt'  'Microsoft-Windows-Bits-Client/Operational'
 
     # --- SFC / DISM / CBS ---
-    Item 'SFC / DISM / CBS' 'dism.log'                                   'File' 'C:\Windows\Logs\DISM\dism.log'
-    Item 'SFC / DISM / CBS' 'CBS.log (full)'                             'File' 'C:\Windows\Logs\CBS\CBS.log'
-    Item 'SFC / DISM / CBS' 'CBS.log - SFC lines only ([SR])'            'Filter' 'C:\Windows\Logs\CBS\CBS.log' '\[SR\]'
-    Item 'SFC / DISM / CBS' 'DPX setupact.log'                           'File' 'C:\Windows\Logs\DPX\setupact.log'
-    Item 'SFC / DISM / CBS' 'poqexec.log (pending operations)'           'File' 'C:\Windows\WinSxS\poqexec.log'
-    Item 'SFC / DISM / CBS' 'setupapi.dev.log (drivers/devices)'         'File' 'C:\Windows\inf\setupapi.dev.log'
+    Item 'SFC / DISM / CBS' 'dism.log'                                   'File' "$W\Windows\Logs\DISM\dism.log"
+    Item 'SFC / DISM / CBS' 'CBS.log (full)'                             'File' "$W\Windows\Logs\CBS\CBS.log"
+    Item 'SFC / DISM / CBS' 'CBS.log - SFC lines only ([SR])'            'Filter' "$W\Windows\Logs\CBS\CBS.log" '\[SR\]'
+    Item 'SFC / DISM / CBS' 'DPX setupact.log'                           'File' "$W\Windows\Logs\DPX\setupact.log"
+    Item 'SFC / DISM / CBS' 'poqexec.log (pending operations)'           'File' "$W\Windows\WinSxS\poqexec.log"
+    Item 'SFC / DISM / CBS' 'setupapi.dev.log (drivers/devices)'         'File' "$W\Windows\inf\setupapi.dev.log"
 
     # --- Setup / Upgrade ---
-    Item 'Setup / Upgrade' 'Windows\Panther\setupact.log'                'File' 'C:\Windows\Panther\setupact.log'
-    Item 'Setup / Upgrade' 'Windows\Panther\setuperr.log'                'File' 'C:\Windows\Panther\setuperr.log'
-    Item 'Setup / Upgrade' '$WINDOWS.~BT Panther\setupact.log'           'File' 'C:\$WINDOWS.~BT\Sources\Panther\setupact.log'
-    Item 'Setup / Upgrade' '$WINDOWS.~BT Panther\setuperr.log'           'File' 'C:\$WINDOWS.~BT\Sources\Panther\setuperr.log'
-    Item 'Setup / Upgrade' 'MoSetup BlueBox.log'                         'File' 'C:\Windows\Logs\MoSetup\BlueBox.log'
+    Item 'Setup / Upgrade' 'Windows\Panther\setupact.log'                'File' "$W\Windows\Panther\setupact.log"
+    Item 'Setup / Upgrade' 'Windows\Panther\setuperr.log'                'File' "$W\Windows\Panther\setuperr.log"
+    Item 'Setup / Upgrade' '$WINDOWS.~BT Panther\setupact.log'           'File' (Join-Path $W '$WINDOWS.~BT\Sources\Panther\setupact.log')
+    Item 'Setup / Upgrade' '$WINDOWS.~BT Panther\setuperr.log'           'File' (Join-Path $W '$WINDOWS.~BT\Sources\Panther\setuperr.log')
+    Item 'Setup / Upgrade' 'MoSetup BlueBox.log'                         'File' "$W\Windows\Logs\MoSetup\BlueBox.log"
 
     # --- Event Viewer (live) ---
     Item 'Event Viewer (live)' 'System'                                  'Evt'  'System'
@@ -58,9 +71,9 @@ $Items = @(
     # --- Crashes ---
     Item 'Crashes' 'System: crash/shutdown events (41,1001,1074,1076,6008)' 'Evt' 'System'      '41,1001,1074,1076,6008'
     Item 'Crashes' 'Application: crashes/hangs (1000,1001,1002)'            'Evt' 'Application' '1000,1001,1002'
-    Item 'Crashes' 'Watch folder: C:\Windows\Minidump'                      'Dir' 'C:\Windows\Minidump'
-    Item 'Crashes' 'Watch folder: WER ReportQueue'                          'Dir' 'C:\ProgramData\Microsoft\Windows\WER\ReportQueue'
-    Item 'Crashes' 'Watch folder: LiveKernelReports'                        'Dir' 'C:\Windows\LiveKernelReports'
+    Item 'Crashes' 'Watch folder: Windows\Minidump'                      'Dir' "$W\Windows\Minidump"
+    Item 'Crashes' 'Watch folder: WER ReportQueue'                          'Dir' "$W\ProgramData\Microsoft\Windows\WER\ReportQueue"
+    Item 'Crashes' 'Watch folder: LiveKernelReports'                        'Dir' "$W\Windows\LiveKernelReports"
 )
 
 # ---------- child-window script templates ----------
@@ -90,20 +103,27 @@ function Show($e) {
     $col = switch ($e.Level) { 1 {'Red'} 2 {'Red'} 3 {'Yellow'} default {'Gray'} }
     Write-Host ('{0:yyyy-MM-dd HH:mm:ss} [{1}] ID {2} {3}: {4}' -f $e.TimeCreated, $e.LevelDisplayName, $e.Id, $e.ProviderName, $msg) -ForegroundColor $col
 }
+$idq = if ($ids.Count) { ' and (' + (($ids | ForEach-Object { "EventID=$_" }) -join ' or ') + ')' } else { '' }
 function Get-Ev($max) {
     $f = @{ LogName = $log }
     if ($ids.Count) { $f.Id = $ids }
     Get-WinEvent -FilterHashtable $f -MaxEvents $max -ErrorAction SilentlyContinue
 }
+function Get-Top { try { (Get-WinEvent -LogName $log -MaxEvents 1 -ErrorAction Stop).RecordId } catch { 0 } }
 Write-Host "Live event monitor: $log   (Ctrl+C to stop)" -ForegroundColor Cyan
-$last = 0
-try { $last = (Get-WinEvent -LogName $log -MaxEvents 1 -ErrorAction Stop).RecordId } catch {}
+$last = [long](Get-Top)
 Get-Ev $tail | Sort-Object RecordId | ForEach-Object { Show $_ }
 while ($true) {
     Start-Sleep 2
-    $new = @(Get-Ev 100 | Where-Object { $_.RecordId -gt $last } | Sort-Object RecordId)
-    foreach ($e in $new) { Show $e }
-    if ($new.Count) { $last = ($new | Measure-Object RecordId -Maximum).Maximum }
+    # one cheap read of the newest record; only when something new arrived, ask Windows for exactly the new records
+    # (it used to read and render the newest 100 events every 2 seconds, in every monitor window)
+    $top = [long](Get-Top)
+    if ($top -lt $last) { Write-Host '--- the log was cleared ---' -ForegroundColor Yellow; $last = 0 }
+    if ($top -gt $last) {
+        Get-WinEvent -LogName $log -FilterXPath "*[System[EventRecordID>$last$idq]]" -ErrorAction SilentlyContinue |
+            Sort-Object RecordId | ForEach-Object { Show $_ }
+        $last = $top
+    }
 }
 '@
 
@@ -144,14 +164,19 @@ function Start-Monitor($item, [int]$tail) {
         'Evt'    { $tplEvt }
         'Dir'    { $tplDir }
     }
+    # event IDs go into the child script as CODE, so only whole numbers are allowed (was pasted in as-is)
+    $ids = ''
+    if ($item.Type -eq 'Evt' -and $item.Extra) { $ids = (@("$($item.Extra)" -split ',' | ForEach-Object { [int]$_.Trim() }) -join ',') }
     $code = $tpl.Replace('__TITLE__', $title).
                  Replace('__TARGET__', (Esc $item.Target)).
-                 Replace('__TAIL__', "$tail").
                  Replace('__FILTERTAIL__', "$([Math]::Max($tail, 300))").
+                 Replace('__TAIL__', "$tail").
                  Replace('__PATTERN__', (Esc "$($item.Extra)")).
-                 Replace('__IDS__', "$($item.Extra)")
+                 Replace('__IDS__', $ids)
     $enc = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($code))
-    $p = Start-Process powershell.exe -PassThru -ArgumentList '-NoExit', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $enc
+    $p = Start-Process -FilePath $PsExePath -PassThru -ArgumentList '-NoExit', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $enc
+    # forget windows the user already closed (the list used to grow forever)
+    foreach ($old in @($script:procs)) { if ($old.HasExited) { $script:procs.Remove($old); $old.Dispose() } }
     [void]$script:procs.Add($p)
 }
 
