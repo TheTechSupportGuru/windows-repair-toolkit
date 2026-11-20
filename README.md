@@ -13,6 +13,19 @@ Get a single tool from the [latest release](../../releases/latest): each tool ha
 
 Windows marks downloaded files as blocked: right-click the zip > **Properties** > tick **Unblock** before extracting.
 
+## Beta: WinSuperTool 1.9 beta 1
+
+> [!CAUTION]
+> **Beta = test build.** It has had less testing than 1.8 and may get results wrong. Try it on a test machine, and keep using **1.8** for real repairs. Only WinSuperTool is in the beta; the other tools are unchanged.
+
+The beta adds three things to WinSuperTool's **Recovery** tab:
+
+- **A pass / fail summary.** When sfc, DISM, chkdsk, bcdboot, bootrec or a driver tool finishes, a window says whether the task **passed or failed**, and what it found, for example **NO CORRUPTION DETECTED**, **CORRUPTION DETECTED - FIX WORKED** or **FIX DID NOT WORK**. It quotes the tool's own message word for word.
+- **Live log windows per task.** For example `CBS.log` for sfc, and `dism.log` for DISM.
+- **Scan-only checks:** `sfc /verifyonly`, DISM **check health** and **scan health**.
+
+Download **`WinSuperTool-v1.9-beta.1.zip`** from the [beta pre-release](../../releases/tag/v1.9-beta.1), or use [`beta/`](beta/). What changed and what was tested: [V1.9-beta.1](docs/changes/V1.9-beta.1.md). If the summary gets something wrong, please open a [bug report](../../issues/new?template=1-bug-report.yml), choose version **1.9 beta 1**, and attach the saved output from `WinSuperTool-Data\Task-Results`.
+
 ## Bugs, ideas and questions
 
 - **Something broken?** Open a [bug report](../../issues/new?template=1-bug-report.yml).
@@ -134,13 +147,16 @@ To run the unit tests (they read the scripts' code and run no GUI or system chan
 Invoke-Pester .\tests\Suite.Tests.ps1
 ```
 
+The beta has its own unit tests (30 / 30 pass): `Invoke-Pester .\tests\Beta.Tests.ps1`.
+
 The other scripts in `tests/` are the admin and windowed test runs used on the VM. Some of them change system settings and expect the original project folder layout; read one before running it.
 
 ## Repository layout
 
 ```
 tools/            the current scripts and launchers (v1.8)
-docs/changes/     what each version fixed (V1.2 ... V1.8)
+beta/             BETA test builds (now: WinSuperTool 1.9 beta 1) - not for real repairs yet
+docs/changes/     what each version fixed (V1.2 ... V1.8, V1.9-beta.1)
 docs/testing/     the test plan, results of each phase, and the v1.6 code review
 tests/            Pester unit tests, the test harness and the VM test runs
 ```
