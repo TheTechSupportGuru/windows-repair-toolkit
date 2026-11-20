@@ -1,4 +1,4 @@
-# Version 1.5 (2026-11-19) - edited copy. What changed: Edited scripts\V1.5\CHANGES.md
+# Version 1.6 (2026-11-19) - edited copy. What changed: Edited scripts\V1.6\CHANGES.md
 <#
 .SYNOPSIS
   WinFixKit - Windows troubleshooting power tool (replacement for the retired .diagcab troubleshooters).
@@ -317,12 +317,48 @@ function Set-SvcStartup([string]$Name, [string]$Mode = 'Automatic') {
     catch { "Could not set startup for ${Name}: $($_.Exception.Message)" }
 }
 
+# Native tools write some normal messages to stderr; with 2>&1 those arrive as ErrorRecords and PowerShell would print
+# them as red NativeCommandError blocks. Turn everything into plain text lines.
+function ConvertTo-PlainText {
+    process {
+        $s = if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.Exception.Message } else { [string]$_ }
+        if ($s -and $s.Trim() -and $s -ne 'System.Management.Automation.RemoteException') { $s.TrimEnd() }
+    }
+}
+
+# netsh winsock reset, plus WHICH providers the rebuilt catalog no longer lists (e.g. RFCOMM = Bluetooth serial).
+function Invoke-WinsockReset {
+    $k = 'HKLM:\SYSTEM\CurrentControlSet\Services\Winsock\Parameters'
+    $before = @((Get-ItemProperty -LiteralPath $k -ErrorAction SilentlyContinue).'Provider List')
+    & netsh.exe winsock reset 2>&1 | ConvertTo-PlainText
+    $rc = $LASTEXITCODE
+    $after = @((Get-ItemProperty -LiteralPath $k -ErrorAction SilentlyContinue).'Provider List')
+    $gone = @($before | Where-Object { $_ -and $after -notcontains $_ })
+    if ($rc -ne 0) { "WARNING: netsh winsock reset returned exit code $rc." }
+    if ($gone.Count) { "NOTE: the rebuilt catalog no longer lists these providers: $($gone -join ', ')." + $(if ($gone -contains 'RFCOMM') { ' RFCOMM is Bluetooth serial - Bluetooth serial / COM-port apps may need the device re-paired.' } else { '' }) + ' The Registry Backups tab can put the old catalog keys back.' }
+}
+
+# netsh int ip reset, with an honest summary: recent Windows reports a few protected items as "failed. Access is denied."
+function Invoke-IpReset {
+    $log = Join-Path $script:LogDir 'netsh-ip-reset.log'
+    $out = @(& netsh.exe int ip reset $log 2>&1 | ConvertTo-PlainText)
+    $rc = $LASTEXITCODE
+    $out
+    $failed = @($out | Where-Object { $_ -match '(?i)failed' }).Count
+    if ($failed -or $rc -ne 0) {
+        "NOTE: netsh reported $failed item(s) as failed (exit code $rc). On Windows 10/11 a few 'failed. Access is denied.' items are normal - they are protected settings and do not stop the reset. Reboot, then check whether the problem is gone."
+    }
+    if (Test-Path -LiteralPath $log) { "netsh log: $log" } else { 'netsh did not write its own log on this Windows build - the output above is kept in the session log.' }
+}
+
 function Restore-RegBackup([string]$File) {
     $m = Get-Content -LiteralPath $File -Raw | ConvertFrom-Json
     if ($m.Type -eq 'Key') {
         $rf = Join-Path $script:RegKeyDir $m.RegFile
         if (-not (Test-Path -LiteralPath $rf)) { return "Backup file missing: $rf" }
-        (reg.exe import "$rf" 2>&1 | Out-String).Trim()
+        # reg.exe prints even its SUCCESS message on stderr: show plain text (no NativeCommandError block) and judge by the exit code
+        $o = @(& reg.exe import "$rf" 2>&1 | ConvertTo-PlainText)
+        if ($LASTEXITCODE -ne 0) { return "FAILED to import the original export of $($m.Key) (reg.exe exit code $LASTEXITCODE): $($o -join ' ') - nothing was marked as restored." }
         "Imported the original export of $($m.Key). (Values added after the backup are not removed.) A reboot may be needed."
     } else {
         if ($m.Existed) {
@@ -1106,33 +1142,35 @@ Runs netsh winhttp reset proxy to remove a stale system-wide proxy that breaks W
        @{ Label = 'Reset Winsock catalog (reboot needed)'; Registry = $true
           Help = @'
 Reset Winsock catalog
-Runs netsh winsock reset, which rebuilds the Winsock catalog and removes layered providers installed by old VPN/security/adware software. A reboot is required. Can break software that depends on a custom LSP (rare). Needs admin.
+Runs netsh winsock reset, which rebuilds the Winsock catalog and removes layered providers installed by old VPN/security/adware software. A reboot is required. Can break software that depends on a custom LSP (rare).
+The rebuilt catalog can also drop non-default providers such as RFCOMM (Bluetooth serial): Bluetooth serial / COM-port apps may then need the device re-paired. The tool lists any provider that disappeared. The Registry Backups tab can put the old catalog keys back. Needs admin.
 '@
-          Confirm = 'Reset the Winsock catalog? A reboot is required afterwards. VPN or security software may need reconfiguring.'
-          Run = { param($Arg); Backup-NetRegKeys; netsh winsock reset; 'Reboot required to finish.' } },
+          Confirm = 'Reset the Winsock catalog? A reboot is required afterwards. VPN or security software may need reconfiguring, and Bluetooth serial (RFCOMM) devices may need re-pairing.'
+          Run = { param($Arg); Backup-NetRegKeys; Invoke-WinsockReset; 'Reboot required to finish.' } },
        @{ Label = 'Reset TCP/IP stack (reboot needed)'; Registry = $true
           Help = @'
 Reset TCP/IP stack
-Runs netsh int ip reset <logfile>, which rewrites the TCP/IP registry keys to defaults. Static IP settings on adapters are cleared and must be re-entered. A reboot is required. The command log is saved in the logs folder. Needs admin.
+Runs netsh int ip reset, which rewrites the TCP/IP registry keys to defaults. Static IP settings on adapters are cleared and must be re-entered. A reboot is required.
+On Windows 10/11 netsh normally reports a few protected items as "failed. Access is denied." - the tool counts them and says so; they do not stop the reset. netsh's own log file is shown if it writes one (newer builds do not); the output is always kept in the session log. Needs admin.
 '@
           Confirm = 'Reset the TCP/IP stack? Static IP settings will be lost and a reboot is required.'
-          Run = { param($Arg); Backup-NetRegKeys; netsh int ip reset "$script:LogDir\netsh-ip-reset.log"; 'Reboot required to finish.' } },
+          Run = { param($Arg); Backup-NetRegKeys; Invoke-IpReset; 'Reboot required to finish.' } },
        @{ Label = 'FULL network reset (all of the above)'; Registry = $true
           Help = @'
 FULL network reset
 Runs in order: flush DNS, clear ARP, reset WinHTTP proxy, reset Winsock, reset TCP/IP, release/renew DHCP. This is what the old Network troubleshooter did behind the scenes. A BEFORE and AFTER snapshot is logged. Reboot required. Drops remote sessions. Needs admin.
 '@
-          Confirm = 'Run the FULL network reset? This drops the connection (including remote sessions), clears static IP settings, and requires a reboot.'
+          Confirm = 'Run the FULL network reset? This drops the connection (including remote sessions), clears static IP settings, may require re-pairing Bluetooth serial (RFCOMM) devices, and requires a reboot.'
           Run = {
               param($Arg)
               Backup-NetRegKeys
               'Flushing DNS...';         Clear-DnsClientCache
               'Clearing ARP cache...';   netsh interface ip delete arpcache
               'Resetting WinHTTP proxy...'; netsh winhttp reset proxy
-              'Resetting Winsock...';    netsh winsock reset
-              'Resetting TCP/IP...';     netsh int ip reset "$script:LogDir\netsh-ip-reset.log"
+              'Resetting Winsock...';    Invoke-WinsockReset
+              'Resetting TCP/IP...';     Invoke-IpReset
               'Renewing DHCP...';        ipconfig /release; ipconfig /renew
-              'DONE - restart the PC to finish the Winsock and TCP/IP resets.'
+              'DONE - restart the PC to finish the Winsock and TCP/IP resets (see any NOTE lines above).'
           } }
    )
 },
