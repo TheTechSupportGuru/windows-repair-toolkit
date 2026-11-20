@@ -1,5 +1,12 @@
 #requires -Version 5.1
-# Version 1.8 (2026-11-19) - edited copy. What changed: Edited scripts\V1.8\CHANGES.md
+# Version 1.8.1 (2026-11-20). What changed: docs/changes/V1.8.1.md
+# Windows Repair Toolkit - https://github.com/TheTechSupportGuru/windows-repair-toolkit
+# Copyright (C) 2026 TheTechSupportGuru
+# SPDX-License-Identifier: GPL-3.0-only
+# This program is free software: you can redistribute it and/or modify it under the terms of the GNU General
+# Public License version 3 as published by the Free Software Foundation. It is distributed WITHOUT ANY WARRANTY;
+# without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the LICENSE file
+# or https://www.gnu.org/licenses/gpl-3.0.html for details.
 <#
     WinSuperTool.ps1  -  all-in-one Windows tech toolkit (one file, no extra libraries)
     Runs on Windows 10 / 11 and in WinPE (built for Hiren's BootCD PE 11).
@@ -12,8 +19,8 @@
                         Works on the running Windows OR an offline install (WinPE / second drive).
       2  Live Monitor   one window per log (Get-Content <log> -Tail <N> -Wait), live Event Viewer
                         channels, folder watchers, paste-any-path section.
-      3  AI Analyze     logs + screenshots to Claude or Gemini. Phone QR login (key encrypted with a
-                        one-time pad, memory only), 1-hour session.
+      3  AI Analyze     logs + screenshots to Claude or Gemini. Phone QR login (key encrypted with a # [AI]
+                        one-time pad, memory only), 1-hour session. # [AI]
       4  Mount          mount / unmount partitions with diskpart or Storage cmdlets
                         (whitelisted, non-destructive commands only), remembered between runs.
       5  Safe Mode      safeboot minimal: edit the boot entry or add a separate boot-menu clone.
@@ -53,6 +60,81 @@ if ($PSCommandPath) {
 
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 [Windows.Forms.Application]::EnableVisualStyles()
+
+# ---------------------------------------------------------------------------------------------
+#  Window helpers - the same block in every Windows Repair Toolkit tool (since 1.8.1):
+#  display scaling, splash screen, fit to screen, scrolling instead of squeezing.
+# ---------------------------------------------------------------------------------------------
+# Sharp, unclipped text on 125 % / 150 % / 200 % displays: this process scales its own windows
+# (AutoScaleMode Dpi on every form) instead of Windows stretching a blurry bitmap of them.
+try { Add-Type -Namespace WrtUi -Name Dpi -MemberDefinition '[DllImport("user32.dll")] public static extern bool SetProcessDPIAware();' -ErrorAction Stop; [void][WrtUi.Dpi]::SetProcessDPIAware() } catch {}
+# The scaling is switched on when the form LOADS: WinForms only scales what exists at that moment, so this way the
+# finished window and every control in it scale together (setting it at creation scaled nothing inside the window).
+function Set-WrtScaling($f) {
+    $f.Add_Load({
+        $this.AutoScaleDimensions = New-Object Drawing.SizeF(96, 96); $this.AutoScaleMode = [Windows.Forms.AutoScaleMode]::Dpi
+        $k = Get-WrtScale $this
+        if ($k -gt 1.01) { Resize-WrtColumns $this $k }
+    })
+}
+# list view column widths are not scaled by WinForms
+function Resize-WrtColumns($parent, [double]$k) {
+    foreach ($c in $parent.Controls) {
+        if ($c -is [Windows.Forms.ListView]) { foreach ($col in $c.Columns) { $col.Width = [int]($col.Width * $k) } }
+        if ($c.Controls.Count) { Resize-WrtColumns $c $k }
+    }
+}
+function Get-WrtScale($f) { try { $s = [double]$f.CurrentAutoScaleDimensions.Width / 96; if ($s -gt 0) { return $s } } catch {}; return 1.0 }
+function Show-WrtSplash([string]$what) {
+    try {
+        $s = New-Object Windows.Forms.Form; Set-WrtScaling $s
+        $s.FormBorderStyle = 'None'; $s.StartPosition = 'CenterScreen'; $s.ShowInTaskbar = $false; $s.TopMost = $true
+        $s.ClientSize = New-Object Drawing.Size(480, 220); $s.BackColor = [Drawing.Color]::FromArgb(22, 50, 88); $s.Text = 'Windows Repair Toolkit'
+        $rows = @(
+            @('Windows Repair Toolkit', 22, 'Bold', 34, 48, 'White'),
+            @('Brought to you by TheTechSupportGuru', 11, 'Regular', 96, 26, 'White'),
+            @('Licensed under GNU GPL v3.0', 10, 'Regular', 124, 24, 'LightSteelBlue'),
+            @("Loading $what ...", 9, 'Italic', 182, 22, 'Silver'))
+        foreach ($r in $rows) {
+            $l = New-Object Windows.Forms.Label
+            $l.AutoSize = $false; $l.TextAlign = 'MiddleCenter'; $l.Text = $r[0]
+            $l.Font = New-Object Drawing.Font('Segoe UI', [single]$r[1], [Drawing.FontStyle]$r[2])
+            $l.ForeColor = [Drawing.Color]::FromName($r[5]); $l.BackColor = [Drawing.Color]::Transparent
+            $l.Location = New-Object Drawing.Point(0, $r[3]); $l.Size = New-Object Drawing.Size(480, $r[4])
+            $s.Controls.Add($l)
+        }
+        $s.Show(); $s.Refresh(); [Windows.Forms.Application]::DoEvents()
+        $script:WrtSplash = $s; $script:WrtSplashAt = Get-Date
+    } catch { $script:WrtSplash = $null }
+}
+function Close-WrtSplash {
+    if (-not $script:WrtSplash) { return }
+    try { $left = 1.2 - ((Get-Date) - $script:WrtSplashAt).TotalSeconds; if ($left -gt 0) { Start-Sleep -Milliseconds ([int]($left * 1000)) } } catch {}   # readable for at least ~1 s
+    try { $script:WrtSplash.Close(); $script:WrtSplash.Dispose() } catch {}
+    $script:WrtSplash = $null
+}
+# Call right before ShowDialog. Records how much room each scrollable area ($scroll: tab pages, panels) needs at its
+# design size, so a small window scrolls instead of squeezing the controls together; sets the minimum size; opens
+# maximized when the scaled window does not fit on the screen; then closes the splash screen.
+function Initialize-WrtWindow($f, $scroll = @(), [int]$minW = 640, [int]$minH = 460) {
+    $script:WrtForm = $f; $script:WrtMinWH = @($minW, $minH); $script:WrtExt = New-Object Collections.ArrayList
+    foreach ($c in @($scroll)) {
+        if (-not $c) { continue }
+        $w = 0; $h = 0
+        foreach ($k in $c.Controls) { if ($k.Dock -eq 'None') { $w = [Math]::Max($w, $k.Right); $h = [Math]::Max($h, $k.Bottom) } }
+        [void]$script:WrtExt.Add(@($c, $w, $h))
+    }
+    $f.Add_Shown({ Complete-WrtWindow })
+}
+function Complete-WrtWindow {
+    $f = $script:WrtForm; $k = Get-WrtScale $f
+    foreach ($e in $script:WrtExt) { try { if ($e[1] -gt 0) { $e[0].AutoScroll = $true; $e[0].AutoScrollMinSize = New-Object Drawing.Size([int](($e[1] + 8) * $k), [int](($e[2] + 8) * $k)) } } catch {} }
+    try { $f.MinimumSize = New-Object Drawing.Size([int]($script:WrtMinWH[0] * $k), [int]($script:WrtMinWH[1] * $k)) } catch {}
+    try { $wa = [Windows.Forms.Screen]::FromControl($f).WorkingArea; if ($f.Width -gt $wa.Width -or $f.Height -gt $wa.Height) { $f.WindowState = 'Maximized' } } catch {}
+    Close-WrtSplash
+    try { $f.Activate() } catch {}
+}
+Show-WrtSplash $AppName
 try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12 } catch {}
 $PsExePath = Join-Path $PSHOME 'powershell.exe'
 $script:Consoles = New-Object Collections.ArrayList     # repair console windows started from the Recovery tab
@@ -151,7 +233,7 @@ function Add-Help($parent, $x, $y, $title, $text) {
     $b.Add_Click({ [void][Windows.Forms.MessageBox]::Show([string]$this.Tag[1], [string]$this.Tag[0], 'OK', 'Information') })
 }
 function Read-Text($prompt, $title = 'Input') {
-    $f = New-Object Windows.Forms.Form
+    $f = New-Object Windows.Forms.Form; Set-WrtScaling $f
     $f.Text = $title; $f.ClientSize = New-Object Drawing.Size(390, 110); $f.StartPosition = 'CenterParent'
     $f.FormBorderStyle = 'FixedDialog'; $f.MaximizeBox = $false; $f.MinimizeBox = $false; $f.Font = $form.Font
     [void](New-Ctl 'Label' $f 10 10 370 20 $prompt)
@@ -165,7 +247,7 @@ function Read-Text($prompt, $title = 'Input') {
     return $r
 }
 function Show-Report($title, $text, [bool]$AskContinue = $false) {
-    $f = New-Object Windows.Forms.Form
+    $f = New-Object Windows.Forms.Form; Set-WrtScaling $f
     $f.Text = $title; $f.Size = New-Object Drawing.Size(700, 520); $f.StartPosition = 'CenterParent'; $f.Font = $form.Font
     $t = New-Ctl 'TextBox' $f 10 10 665 420
     $t.Multiline = $true; $t.ReadOnly = $true; $t.ScrollBars = 'Both'; $t.WordWrap = $false
@@ -522,6 +604,9 @@ $MonItems = @(
     New-MonItem 'Crashes' 'Watch folder: LiveKernelReports'                        'Dir' "$WinDir\LiveKernelReports"
 )
 
+# event logs that exist on this Windows (some channels differ between versions, e.g. Delivery Optimization)
+$EvtLogNames = @(); try { $EvtLogNames = @([System.Diagnostics.Eventing.Reader.EventLogSession]::GlobalSession.GetLogNames()) } catch {}
+
 # ---- child-window script templates ----
 $tplFile = @'
 $Host.UI.RawUI.WindowTitle = '__TITLE__'
@@ -543,7 +628,13 @@ $tplEvt = @'
 $Host.UI.RawUI.WindowTitle = '__TITLE__'
 $log = '__TARGET__'; $ids = @(__IDS__); $tail = __TAIL__
 try { Get-WinEvent -ListLog $log -ErrorAction Stop | Out-Null }
-catch { Write-Host "Cannot open event log '$log': $($_.Exception.Message)" -ForegroundColor Red; return }
+catch {
+    # a log that is simply not on this Windows (they differ between versions) gets a plain message, not an error
+    $names = @(); try { $names = @([System.Diagnostics.Eventing.Reader.EventLogSession]::GlobalSession.GetLogNames()) } catch {}
+    if ($names.Count -and $names -notcontains $log) { Write-Host "The event log '$log' does not exist on this PC. Event logs differ between Windows versions and editions, so there is nothing to monitor here." -ForegroundColor Yellow }
+    else { Write-Host "Cannot open event log '$log': $($_.Exception.Message)" -ForegroundColor Red }
+    return
+}
 function Show($e) {
     $msg = ($e.Message -split "`r?`n")[0]
     $col = switch ($e.Level) { 1 {'Red'} 2 {'Red'} 3 {'Yellow'} default {'Gray'} }
@@ -623,6 +714,7 @@ function Update-MonStatus([string]$msg) {
     $lblMonStatus.Text = "$msg   Open monitor windows: $open"
 }
 
+#region AI-ANALYZE
 # =====================================================================
 #  3. AI ANALYZE  (Claude or Gemini, phone QR login, 1-hour session)
 # =====================================================================
@@ -1220,6 +1312,8 @@ function Exit-Session([string]$msg) {
     Log "AI: $msg"
     if ($tabs.SelectedTab -eq $tpAI) { Show-NewQr } else { Clear-Qr; $lblCount.Text = '' }
 }
+
+#endregion AI-ANALYZE
 
 # =====================================================================
 #  4. MOUNT  (diskpart OR Storage cmdlets - whitelisted, non-destructive)
@@ -1880,7 +1974,7 @@ $Tools = @(
 #  Run any .ps1 elevated (replaces the old Run-PS-As-Admin.bat paste mode)
 # =====================================================================
 function Show-ScriptRunner {
-    $f = New-Object Windows.Forms.Form
+    $f = New-Object Windows.Forms.Form; Set-WrtScaling $f
     $f.Text = 'Run a PowerShell script as administrator'; $f.ClientSize = New-Object Drawing.Size(620, 150)
     $f.StartPosition = 'CenterParent'; $f.FormBorderStyle = 'FixedDialog'; $f.MaximizeBox = $false; $f.MinimizeBox = $false; $f.Font = $form.Font
     [void](New-Ctl 'Label' $f 10 10 600 36 'Paste the full path of a .ps1 file (quotes and %variables% are OK) or browse. It starts in its own window with admin rights, -ExecutionPolicy Bypass and -STA.')
@@ -1912,14 +2006,14 @@ function Show-ScriptRunner {
 # =====================================================================
 #  GUI
 # =====================================================================
-$form = New-Object Windows.Forms.Form
+$form = New-Object Windows.Forms.Form; Set-WrtScaling $form
 $form.Text = $AppName
 if ($IsWinPE) { $form.Text = "$AppName  -  WinPE mode" }
 $form.ClientSize    = New-Object Drawing.Size(980, 680)
 $form.MinimumSize   = New-Object Drawing.Size(940, 560)
 $form.StartPosition = 'CenterScreen'
 $form.Font          = New-Object Drawing.Font('Segoe UI', 9)
-try { if ([Windows.Forms.Screen]::PrimaryScreen.WorkingArea.Height -lt 740) { $form.WindowState = 'Maximized' } } catch {}
+# (opens maximized when the scaled window does not fit the screen: see Initialize-WrtWindow before ShowDialog)
 
 # ---------- Target Windows bar ----------
 [void](New-Ctl 'Label' $form 10 13 106 20 'Target Windows:')
@@ -1947,7 +2041,7 @@ function New-Page($text) {
 }
 $tpCol  = New-Page '1. Collect Logs'
 $tpMon  = New-Page '2. Live Monitor'
-$tpAI   = New-Page '3. AI Analyze'
+$tpAI   = New-Page '3. AI Analyze' # [AI]
 $tpMnt  = New-Page '4. Mount'
 $tpSafe = New-Page '5. Safe Mode'
 $tpSys  = New-Page '6. Sysprep'
@@ -1981,8 +2075,8 @@ $btnColAll  = New-Ctl 'Button' $tpCol 12 274 120 30 'Select / clear all'
 $btnColGo   = New-Ctl 'Button' $tpCol 138 274 150 30 'Collect selected'
 $btnColGo.Font = New-Object Drawing.Font('Segoe UI', 9, [Drawing.FontStyle]::Bold)
 $btnColOpen = New-Ctl 'Button' $tpCol 294 274 110 30 'Open folder'
-$btnColToAi = New-Ctl 'Button' $tpCol 410 274 200 30 'Send key logs to AI Analyze'
-Add-Help $tpCol 616 277 'Send key logs to AI Analyze' ("Adds the most useful files from the last collection to the AI Analyze tab: the summary, crash/shutdown events, CBS.log, dism.log, setup logs, ReportingEvents.log, the merged WindowsUpdate.log, and the System / Application / Setup / Windows Update event logs (errors and warnings only).${NL}${NL}Large logs are trimmed to their newest part, and the total is capped so the request stays fast.")
+$btnColToAi = New-Ctl 'Button' $tpCol 410 274 200 30 'Send key logs to AI Analyze' # [AI]
+Add-Help $tpCol 616 277 'Send key logs to AI Analyze' ("Adds the most useful files from the last collection to the AI Analyze tab: the summary, crash/shutdown events, CBS.log, dism.log, setup logs, ReportingEvents.log, the merged WindowsUpdate.log, and the System / Application / Setup / Windows Update event logs (errors and warnings only).${NL}${NL}Large logs are trimmed to their newest part, and the total is capped so the request stays fast.") # [AI]
 $txtCol = New-Ctl 'TextBox' $tpCol 12 312 930 128
 $txtCol.Multiline = $true; $txtCol.ReadOnly = $true; $txtCol.ScrollBars = 'Vertical'; $txtCol.Font = New-Object Drawing.Font('Consolas', 9)
 $txtColOut.Text = Get-DefaultLogRoot
@@ -2007,6 +2101,8 @@ foreach ($sec in @($MonItems | Select-Object -ExpandProperty Section -Unique)) {
     foreach ($it in @($MonItems | Where-Object { $_.Section -eq $sec })) {
         $cb = New-Ctl 'CheckBox' $monPanel 22 $y 600 22 $it.Name
         $cb.Tag = $it
+        # an event log that is not on this Windows (they differ between versions) is shown greyed out
+        if ($it.Type -eq 'Evt' -and $EvtLogNames.Count -and $EvtLogNames -notcontains $it.Target) { $cb.Enabled = $false; $cb.Text += '   (not on this PC)' }
         $tip.SetToolTip($cb, [string]$it.Target)
         [void]$secBoxes.Add($cb); [void]$monChecks.Add($cb)
         $y += 24
@@ -2041,6 +2137,7 @@ $btnMonClear  = New-Ctl 'Button' $tpMon 428 334 100 30 'Uncheck all'
 $btnMonClose  = New-Ctl 'Button' $tpMon 534 334 150 30 'Close all monitors'
 $lblMonStatus = New-Ctl 'Label' $tpMon 12 372 930 40 'Ready.'
 
+#region AI-ANALYZE
 # ---------- 3. AI Analyze ----------
 $pnlLogin = New-Object Windows.Forms.Panel; $pnlLogin.Dock = 'Fill'; $tpAI.Controls.Add($pnlLogin)
 $picQr = New-Ctl 'PictureBox' $pnlLogin 12 8 366 366
@@ -2085,6 +2182,7 @@ $btnAiSave = New-Ctl 'Button' $pnlMain 860 274 80 26 'Save...'
 $txtAiOut = New-Ctl 'TextBox' $pnlMain 12 304 928 134
 $txtAiOut.Multiline = $true; $txtAiOut.ReadOnly = $true; $txtAiOut.ScrollBars = 'Vertical'; $txtAiOut.BackColor = [Drawing.Color]::White
 
+#endregion AI-ANALYZE
 # ---------- 4. Mount ----------
 [void](New-Ctl 'Label' $tpMnt 12 15 60 20 'Engine')
 $rbDp   = New-Ctl 'RadioButton' $tpMnt 75 12 110 22 'diskpart'; $rbDp.Checked = $true
@@ -2186,6 +2284,36 @@ $lblToolNote = New-Ctl 'Label' $tpRec 12 190 920 36 'Tools use the Target Window
 $lblToolNote.ForeColor = 'DimGray'
 $btnTool = New-Ctl 'Button' $tpRec 12 236 240 30 'Run selected tool...'
 
+# ---------- resizing (1.8.1): what grows with the window and what stays at the right edge ----------
+function Set-Anchor([string]$a, [object[]]$ctls) { foreach ($c in $ctls) { if ($c) { $c.Anchor = $a } } }
+function Get-HelpBtn($parent, [int]$maxTop) { @($parent.Controls | Where-Object { $_ -is [Windows.Forms.Button] -and $_.Text -eq '?' -and $_.Top -le $maxTop }) }
+Set-Anchor 'Top,Left,Right'        @($cmbWin, $lblWarn)
+Set-Anchor 'Top,Right'             (@($btnRescan, $btnRunPs, $btnData) + (Get-HelpBtn $form 20))
+Set-Anchor 'Top,Left,Right'        @($txtColOut, $lblColInfo)
+Set-Anchor 'Top,Right'             (@($btnColBrowse, $btnColDefault) + (Get-HelpBtn $tpCol 20))
+Set-Anchor 'Top,Bottom,Left,Right' @($txtCol, $monPanel)
+Set-Anchor 'Top,Right'             (Get-HelpBtn $tpMon 20)
+Set-Anchor 'Bottom,Left'           (@($lblPaste, $numTail, $btnMonLaunch, $btnMonBrowse, $btnMonClear, $btnMonClose) + @($tpMon.Controls | Where-Object { $_.Text -eq 'Tail lines:' }))
+Set-Anchor 'Bottom,Left,Right'     @($txtPaste, $lblMonStatus)
+Set-Anchor 'Bottom,Right'          @($btnPaste, $btnPasteClear)
+#region AI-ANALYZE
+Set-Anchor 'Top,Right'             @($btnLogout, $btnAiCancel, $btnAiCopy, $btnAiSave)
+Set-Anchor 'Top,Left,Right'        @($lstAi, $txtPrompt, $btnAiGo, $lblAiStatus)
+Set-Anchor 'Top,Bottom,Left,Right' @($txtAiOut)
+#endregion AI-ANALYZE
+Set-Anchor 'Top,Left,Right'        @($cmbDisk, $cmbPart, $lstMounts, $lblBcd, $lblSafeInfo, $lblDep, $lblExp, $cmbEsp, $cmbTool, $lblToolDesc, $lblToolNote)
+Set-Anchor 'Top,Right'             @($btnRefresh, $btnUnmount, $btnUnmountAll, $btnEspRefresh, $btnToolHelp)
+# Widen the top-right buttons when their text does not fit (large fonts or display scaling), keeping them right-aligned.
+function Update-TopBar {
+    $k = Get-WrtScale $form; $right = $form.ClientSize.Width - [int](8 * $k); $gap = [int](4 * $k)
+    foreach ($b in @($btnData, $btnRunPs, (Get-HelpBtn $form 20)[0], $btnRescan)) {
+        if (-not $b) { continue }
+        $need = [Windows.Forms.TextRenderer]::MeasureText($b.Text, $b.Font).Width + [int](18 * $k)
+        if ($b.Width -lt $need) { $b.Width = $need }
+        $b.Left = $right - $b.Width; $right = $b.Left - $gap
+    }
+    $cmbWin.Width = [Math]::Max([int](150 * $k), $right - $cmbWin.Left - $gap)
+}
 $timer = New-Object Windows.Forms.Timer
 $timer.Interval = 250
 
@@ -2197,9 +2325,11 @@ $btnRescan.Add_Click({ Safe { Update-Windows $true; Update-Esp } })
 $cmbWin.Add_SelectedIndexChanged({ Safe { Update-SafeStatus } })
 $btnRunPs.Add_Click({ Safe { Show-ScriptRunner } })
 $btnData.Add_Click({ Open-Folder $DataDir })
+#region AI-ANALYZE
 $tabs.Add_SelectedIndexChanged({
     if ($tabs.SelectedTab -eq $tpAI -and -not $script:ApiKey -and -not $script:Listener) { Safe { Show-NewQr } }
 })
+#endregion AI-ANALYZE
 
 # ---- 1. Collect Logs ----
 $btnColBrowse.Add_Click({
@@ -2250,6 +2380,7 @@ $btnColGo.Add_Click({ Safe {
     Log "Logs collected from $($t.Drive) to $root ($($script:ColCount) files, $($script:ColFail) failed)."
     Open-Folder $root
 } })
+#region AI-ANALYZE
 $btnColToAi.Add_Click({ Safe {
     $root = $script:LastCollect
     if (-not $root) { $root = [Environment]::ExpandEnvironmentVariables($txtColOut.Text.Trim().Trim('"')) }
@@ -2260,6 +2391,7 @@ $btnColToAi.Add_Click({ Safe {
     Log "Added $n key log file(s) from $root to the AI Analyze tab."
     $tabs.SelectedTab = $tpAI
 } })
+#endregion AI-ANALYZE
 
 # ---- 2. Live Monitor ----
 $btnMonLaunch.Add_Click({ Safe {
@@ -2304,6 +2436,7 @@ $btnMonClose.Add_Click({
     Update-MonStatus 'All monitor windows closed.'
 })
 
+#region AI-ANALYZE
 # ---- 3. AI Analyze ----
 $btnNewQr.Add_Click({ $lblNotice.Text = ''; Safe { Show-NewQr } })
 $btnLogout.Add_Click({ Exit-Session 'Logged out. Key and files cleared from this PC.' })
@@ -2407,6 +2540,8 @@ $timer.Add_Tick({
         if (-not $script:TickErr) { $script:TickErr = $true; Log "Timer error: $($_.Exception.Message)" }
     }
 })
+
+#endregion AI-ANALYZE
 
 # ---- 4. Mount ----
 $cmbDisk.Add_SelectedIndexChanged({ Safe { Update-Parts } })
@@ -2598,7 +2733,10 @@ $btnTool.Add_Click({ Safe {
 } })
 
 # ---- form ----
-$form.Add_Shown({ Safe {
+$form.Add_Shown({
+    # start the shared timer FIRST: if a startup step below fails, the AI login must still work
+    $timer.Start()
+    Safe {
     $where = 'Windows'; if ($IsWinPE) { $where = 'WinPE' }
     Log "$AppName started in $where. Data folder: $DataDir"
     if ($DataOnRam) { Log 'NOTE: the data folder is on the WinPE RAM disk - copy backups and logs somewhere permanent before rebooting.' }
@@ -2608,13 +2746,14 @@ $form.Add_Shown({ Safe {
     if ($cmbTool.Items.Count) { $cmbTool.SelectedIndex = 0 }
     Update-Disks; Update-Letters; Load-Mounts; Update-MountList; Update-Esp
     Update-Windows $true
-    $timer.Start()
-} })
+    Update-TopBar
+    }
+})
 $tabs.Add_Selecting({ if ($script:Busy) { $_.Cancel = $true } })    # no Mount / Rescan etc. while a collection runs
 $form.Add_FormClosing({
     if ($script:Busy) { $_.Cancel = $true; Msg "$($script:Busy) is still running. Wait until it has finished, then close." 'Busy' 'Warning'; return }
     try { $timer.Stop() } catch {}
-    Stop-AiRequest; Stop-Pairing; $script:ApiKey = $null
+    Stop-AiRequest; Stop-Pairing; $script:ApiKey = $null # [AI]
     if ($chkAuto.Checked -and $script:Mounts.Count -gt 0) {
         # a repair console started from the Recovery tab may still be working on a mounted drive
         $live = @($script:Consoles | Where-Object { $_ -and -not $_.HasExited })
@@ -2626,5 +2765,6 @@ $form.Add_FormClosing({
     Log 'Closed.'
 })
 
+Initialize-WrtWindow $form (@($tabs.TabPages | ForEach-Object { $_ }) + @($tabs.TabPages | ForEach-Object { $_.Controls } | Where-Object { $_ -is [Windows.Forms.Panel] -and $_.Dock -eq 'Fill' })) 700 520
 [void]$form.ShowDialog()
 $form.Dispose()

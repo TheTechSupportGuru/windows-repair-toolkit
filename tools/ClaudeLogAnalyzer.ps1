@@ -1,5 +1,12 @@
 #requires -Version 5.1
-# Version 1.8 (2026-11-19) - edited copy. What changed: Edited scripts\V1.8\CHANGES.md
+# Version 1.8.1 (2026-11-20). What changed: docs/changes/V1.8.1.md
+# Windows Repair Toolkit - https://github.com/TheTechSupportGuru/windows-repair-toolkit
+# Copyright (C) 2026 TheTechSupportGuru
+# SPDX-License-Identifier: GPL-3.0-only
+# This program is free software: you can redistribute it and/or modify it under the terms of the GNU General
+# Public License version 3 as published by the Free Software Foundation. It is distributed WITHOUT ANY WARRANTY;
+# without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the LICENSE file
+# or https://www.gnu.org/licenses/gpl-3.0.html for details.
 # Claude Log & Screenshot Analyzer - Windows 11, no extra libraries.
 # Works with Claude (Anthropic) or Gemini (Google, has a free tier) - pick in the dropdown.
 # Login: the PC shows a QR code, you scan it with your phone, type/paste your API key on the phone.
@@ -9,6 +16,81 @@ Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 Add-Type -TypeDefinition 'using System.Runtime.InteropServices; public class Dpi { [DllImport("user32.dll")] public static extern bool SetProcessDPIAware(); }'
 [void][Dpi]::SetProcessDPIAware()
 [System.Windows.Forms.Application]::EnableVisualStyles()
+
+# ---------------------------------------------------------------------------------------------
+#  Window helpers - the same block in every Windows Repair Toolkit tool (since 1.8.1):
+#  display scaling, splash screen, fit to screen, scrolling instead of squeezing.
+# ---------------------------------------------------------------------------------------------
+# Sharp, unclipped text on 125 % / 150 % / 200 % displays: this process scales its own windows
+# (AutoScaleMode Dpi on every form) instead of Windows stretching a blurry bitmap of them.
+try { Add-Type -Namespace WrtUi -Name Dpi -MemberDefinition '[DllImport("user32.dll")] public static extern bool SetProcessDPIAware();' -ErrorAction Stop; [void][WrtUi.Dpi]::SetProcessDPIAware() } catch {}
+# The scaling is switched on when the form LOADS: WinForms only scales what exists at that moment, so this way the
+# finished window and every control in it scale together (setting it at creation scaled nothing inside the window).
+function Set-WrtScaling($f) {
+    $f.Add_Load({
+        $this.AutoScaleDimensions = New-Object Drawing.SizeF(96, 96); $this.AutoScaleMode = [Windows.Forms.AutoScaleMode]::Dpi
+        $k = Get-WrtScale $this
+        if ($k -gt 1.01) { Resize-WrtColumns $this $k }
+    })
+}
+# list view column widths are not scaled by WinForms
+function Resize-WrtColumns($parent, [double]$k) {
+    foreach ($c in $parent.Controls) {
+        if ($c -is [Windows.Forms.ListView]) { foreach ($col in $c.Columns) { $col.Width = [int]($col.Width * $k) } }
+        if ($c.Controls.Count) { Resize-WrtColumns $c $k }
+    }
+}
+function Get-WrtScale($f) { try { $s = [double]$f.CurrentAutoScaleDimensions.Width / 96; if ($s -gt 0) { return $s } } catch {}; return 1.0 }
+function Show-WrtSplash([string]$what) {
+    try {
+        $s = New-Object Windows.Forms.Form; Set-WrtScaling $s
+        $s.FormBorderStyle = 'None'; $s.StartPosition = 'CenterScreen'; $s.ShowInTaskbar = $false; $s.TopMost = $true
+        $s.ClientSize = New-Object Drawing.Size(480, 220); $s.BackColor = [Drawing.Color]::FromArgb(22, 50, 88); $s.Text = 'Windows Repair Toolkit'
+        $rows = @(
+            @('Windows Repair Toolkit', 22, 'Bold', 34, 48, 'White'),
+            @('Brought to you by TheTechSupportGuru', 11, 'Regular', 96, 26, 'White'),
+            @('Licensed under GNU GPL v3.0', 10, 'Regular', 124, 24, 'LightSteelBlue'),
+            @("Loading $what ...", 9, 'Italic', 182, 22, 'Silver'))
+        foreach ($r in $rows) {
+            $l = New-Object Windows.Forms.Label
+            $l.AutoSize = $false; $l.TextAlign = 'MiddleCenter'; $l.Text = $r[0]
+            $l.Font = New-Object Drawing.Font('Segoe UI', [single]$r[1], [Drawing.FontStyle]$r[2])
+            $l.ForeColor = [Drawing.Color]::FromName($r[5]); $l.BackColor = [Drawing.Color]::Transparent
+            $l.Location = New-Object Drawing.Point(0, $r[3]); $l.Size = New-Object Drawing.Size(480, $r[4])
+            $s.Controls.Add($l)
+        }
+        $s.Show(); $s.Refresh(); [Windows.Forms.Application]::DoEvents()
+        $script:WrtSplash = $s; $script:WrtSplashAt = Get-Date
+    } catch { $script:WrtSplash = $null }
+}
+function Close-WrtSplash {
+    if (-not $script:WrtSplash) { return }
+    try { $left = 1.2 - ((Get-Date) - $script:WrtSplashAt).TotalSeconds; if ($left -gt 0) { Start-Sleep -Milliseconds ([int]($left * 1000)) } } catch {}   # readable for at least ~1 s
+    try { $script:WrtSplash.Close(); $script:WrtSplash.Dispose() } catch {}
+    $script:WrtSplash = $null
+}
+# Call right before ShowDialog. Records how much room each scrollable area ($scroll: tab pages, panels) needs at its
+# design size, so a small window scrolls instead of squeezing the controls together; sets the minimum size; opens
+# maximized when the scaled window does not fit on the screen; then closes the splash screen.
+function Initialize-WrtWindow($f, $scroll = @(), [int]$minW = 640, [int]$minH = 460) {
+    $script:WrtForm = $f; $script:WrtMinWH = @($minW, $minH); $script:WrtExt = New-Object Collections.ArrayList
+    foreach ($c in @($scroll)) {
+        if (-not $c) { continue }
+        $w = 0; $h = 0
+        foreach ($k in $c.Controls) { if ($k.Dock -eq 'None') { $w = [Math]::Max($w, $k.Right); $h = [Math]::Max($h, $k.Bottom) } }
+        [void]$script:WrtExt.Add(@($c, $w, $h))
+    }
+    $f.Add_Shown({ Complete-WrtWindow })
+}
+function Complete-WrtWindow {
+    $f = $script:WrtForm; $k = Get-WrtScale $f
+    foreach ($e in $script:WrtExt) { try { if ($e[1] -gt 0) { $e[0].AutoScroll = $true; $e[0].AutoScrollMinSize = New-Object Drawing.Size([int](($e[1] + 8) * $k), [int](($e[2] + 8) * $k)) } } catch {} }
+    try { $f.MinimumSize = New-Object Drawing.Size([int]($script:WrtMinWH[0] * $k), [int]($script:WrtMinWH[1] * $k)) } catch {}
+    try { $wa = [Windows.Forms.Screen]::FromControl($f).WorkingArea; if ($f.Width -gt $wa.Width -or $f.Height -gt $wa.Height) { $f.WindowState = 'Maximized' } } catch {}
+    Close-WrtSplash
+    try { $f.Activate() } catch {}
+}
+Show-WrtSplash 'Claude Log Analyzer'
 
 $Model       = 'claude-sonnet-5-5'
 $GeminiModel = 'gemini-flash-latest'   # if Google retires it, try 'gemini-2.5-flash' or another current Flash model
@@ -367,7 +449,7 @@ function New-Ctl($parent, $type, $x, $y, $w, $h, $text) {
     return $c
 }
 
-$form = New-Object System.Windows.Forms.Form
+$form = New-Object System.Windows.Forms.Form; Set-WrtScaling $form
 $form.Text = 'Claude Log & Screenshot Analyzer'
 $form.Size = New-Object System.Drawing.Size(900, 780)
 $form.StartPosition = 'CenterScreen'
@@ -768,4 +850,5 @@ $btnGo.Add_Click({
 })
 $btnCancel.Add_Click({ Stop-AiRequest; $btnCancel.Enabled = $false; $status.Text = 'Cancelling...' })
 
+Initialize-WrtWindow $form @($pnlLogin, $pnlMain) 700 560
 [void]$form.ShowDialog()

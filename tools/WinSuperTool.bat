@@ -1,5 +1,7 @@
 @echo off
-rem Version 1.8 (2026-11-19) - edited copy. What changed: Edited scripts\V1.8\CHANGES.md
+rem Version 1.8.1 (2026-11-20). What changed: docs/changes/V1.8.1.md
+rem Windows Repair Toolkit - Copyright (C) 2026 TheTechSupportGuru - SPDX-License-Identifier: GPL-3.0-only
+rem Free software under the GNU General Public License v3, WITHOUT ANY WARRANTY. See LICENSE or https://www.gnu.org/licenses/gpl-3.0.html
 setlocal EnableExtensions
 title Windows Super Tool launcher
 

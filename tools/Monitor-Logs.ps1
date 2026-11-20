@@ -1,5 +1,12 @@
 #requires -Version 5.1
-# Version 1.8 (2026-11-19) - edited copy. What changed: Edited scripts\V1.8\CHANGES.md
+# Version 1.8.1 (2026-11-20). What changed: docs/changes/V1.8.1.md
+# Windows Repair Toolkit - https://github.com/TheTechSupportGuru/windows-repair-toolkit
+# Copyright (C) 2026 TheTechSupportGuru
+# SPDX-License-Identifier: GPL-3.0-only
+# This program is free software: you can redistribute it and/or modify it under the terms of the GNU General
+# Public License version 3 as published by the Free Software Foundation. It is distributed WITHOUT ANY WARRANTY;
+# without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the LICENSE file
+# or https://www.gnu.org/licenses/gpl-3.0.html for details.
 <#
   Monitor-Logs.ps1  -  Live log monitor launcher for Windows 11
   Pick logs, press "Launch selected", and each log opens in its OWN PowerShell
@@ -28,6 +35,81 @@ if (-not $isAdmin) {
 
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 [System.Windows.Forms.Application]::EnableVisualStyles()
+
+# ---------------------------------------------------------------------------------------------
+#  Window helpers - the same block in every Windows Repair Toolkit tool (since 1.8.1):
+#  display scaling, splash screen, fit to screen, scrolling instead of squeezing.
+# ---------------------------------------------------------------------------------------------
+# Sharp, unclipped text on 125 % / 150 % / 200 % displays: this process scales its own windows
+# (AutoScaleMode Dpi on every form) instead of Windows stretching a blurry bitmap of them.
+try { Add-Type -Namespace WrtUi -Name Dpi -MemberDefinition '[DllImport("user32.dll")] public static extern bool SetProcessDPIAware();' -ErrorAction Stop; [void][WrtUi.Dpi]::SetProcessDPIAware() } catch {}
+# The scaling is switched on when the form LOADS: WinForms only scales what exists at that moment, so this way the
+# finished window and every control in it scale together (setting it at creation scaled nothing inside the window).
+function Set-WrtScaling($f) {
+    $f.Add_Load({
+        $this.AutoScaleDimensions = New-Object Drawing.SizeF(96, 96); $this.AutoScaleMode = [Windows.Forms.AutoScaleMode]::Dpi
+        $k = Get-WrtScale $this
+        if ($k -gt 1.01) { Resize-WrtColumns $this $k }
+    })
+}
+# list view column widths are not scaled by WinForms
+function Resize-WrtColumns($parent, [double]$k) {
+    foreach ($c in $parent.Controls) {
+        if ($c -is [Windows.Forms.ListView]) { foreach ($col in $c.Columns) { $col.Width = [int]($col.Width * $k) } }
+        if ($c.Controls.Count) { Resize-WrtColumns $c $k }
+    }
+}
+function Get-WrtScale($f) { try { $s = [double]$f.CurrentAutoScaleDimensions.Width / 96; if ($s -gt 0) { return $s } } catch {}; return 1.0 }
+function Show-WrtSplash([string]$what) {
+    try {
+        $s = New-Object Windows.Forms.Form; Set-WrtScaling $s
+        $s.FormBorderStyle = 'None'; $s.StartPosition = 'CenterScreen'; $s.ShowInTaskbar = $false; $s.TopMost = $true
+        $s.ClientSize = New-Object Drawing.Size(480, 220); $s.BackColor = [Drawing.Color]::FromArgb(22, 50, 88); $s.Text = 'Windows Repair Toolkit'
+        $rows = @(
+            @('Windows Repair Toolkit', 22, 'Bold', 34, 48, 'White'),
+            @('Brought to you by TheTechSupportGuru', 11, 'Regular', 96, 26, 'White'),
+            @('Licensed under GNU GPL v3.0', 10, 'Regular', 124, 24, 'LightSteelBlue'),
+            @("Loading $what ...", 9, 'Italic', 182, 22, 'Silver'))
+        foreach ($r in $rows) {
+            $l = New-Object Windows.Forms.Label
+            $l.AutoSize = $false; $l.TextAlign = 'MiddleCenter'; $l.Text = $r[0]
+            $l.Font = New-Object Drawing.Font('Segoe UI', [single]$r[1], [Drawing.FontStyle]$r[2])
+            $l.ForeColor = [Drawing.Color]::FromName($r[5]); $l.BackColor = [Drawing.Color]::Transparent
+            $l.Location = New-Object Drawing.Point(0, $r[3]); $l.Size = New-Object Drawing.Size(480, $r[4])
+            $s.Controls.Add($l)
+        }
+        $s.Show(); $s.Refresh(); [Windows.Forms.Application]::DoEvents()
+        $script:WrtSplash = $s; $script:WrtSplashAt = Get-Date
+    } catch { $script:WrtSplash = $null }
+}
+function Close-WrtSplash {
+    if (-not $script:WrtSplash) { return }
+    try { $left = 1.2 - ((Get-Date) - $script:WrtSplashAt).TotalSeconds; if ($left -gt 0) { Start-Sleep -Milliseconds ([int]($left * 1000)) } } catch {}   # readable for at least ~1 s
+    try { $script:WrtSplash.Close(); $script:WrtSplash.Dispose() } catch {}
+    $script:WrtSplash = $null
+}
+# Call right before ShowDialog. Records how much room each scrollable area ($scroll: tab pages, panels) needs at its
+# design size, so a small window scrolls instead of squeezing the controls together; sets the minimum size; opens
+# maximized when the scaled window does not fit on the screen; then closes the splash screen.
+function Initialize-WrtWindow($f, $scroll = @(), [int]$minW = 640, [int]$minH = 460) {
+    $script:WrtForm = $f; $script:WrtMinWH = @($minW, $minH); $script:WrtExt = New-Object Collections.ArrayList
+    foreach ($c in @($scroll)) {
+        if (-not $c) { continue }
+        $w = 0; $h = 0
+        foreach ($k in $c.Controls) { if ($k.Dock -eq 'None') { $w = [Math]::Max($w, $k.Right); $h = [Math]::Max($h, $k.Bottom) } }
+        [void]$script:WrtExt.Add(@($c, $w, $h))
+    }
+    $f.Add_Shown({ Complete-WrtWindow })
+}
+function Complete-WrtWindow {
+    $f = $script:WrtForm; $k = Get-WrtScale $f
+    foreach ($e in $script:WrtExt) { try { if ($e[1] -gt 0) { $e[0].AutoScroll = $true; $e[0].AutoScrollMinSize = New-Object Drawing.Size([int](($e[1] + 8) * $k), [int](($e[2] + 8) * $k)) } } catch {} }
+    try { $f.MinimumSize = New-Object Drawing.Size([int]($script:WrtMinWH[0] * $k), [int]($script:WrtMinWH[1] * $k)) } catch {}
+    try { $wa = [Windows.Forms.Screen]::FromControl($f).WorkingArea; if ($f.Width -gt $wa.Width -or $f.Height -gt $wa.Height) { $f.WindowState = 'Maximized' } } catch {}
+    Close-WrtSplash
+    try { $f.Activate() } catch {}
+}
+Show-WrtSplash 'Monitor-Logs'
 
 $W = $env:SystemDrive     # Windows drive (was hard-coded C:)
 $PsExePath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
@@ -97,7 +179,13 @@ $tplEvt = @'
 $Host.UI.RawUI.WindowTitle = '__TITLE__'
 $log = '__TARGET__'; $ids = @(__IDS__); $tail = __TAIL__
 try { Get-WinEvent -ListLog $log -ErrorAction Stop | Out-Null }
-catch { Write-Host "Cannot open event log '$log': $($_.Exception.Message)" -ForegroundColor Red; return }
+catch {
+    # a log that is simply not on this Windows (they differ between versions) gets a plain message, not an error
+    $names = @(); try { $names = @([System.Diagnostics.Eventing.Reader.EventLogSession]::GlobalSession.GetLogNames()) } catch {}
+    if ($names.Count -and $names -notcontains $log) { Write-Host "The event log '$log' does not exist on this PC. Event logs differ between Windows versions and editions, so there is nothing to monitor here." -ForegroundColor Yellow }
+    else { Write-Host "Cannot open event log '$log': $($_.Exception.Message)" -ForegroundColor Red }
+    return
+}
 function Show($e) {
     $msg = ($e.Message -split "`r?`n")[0]
     $col = switch ($e.Level) { 1 {'Red'} 2 {'Red'} 3 {'Yellow'} default {'Gray'} }
@@ -180,8 +268,11 @@ function Start-Monitor($item, [int]$tail) {
     [void]$script:procs.Add($p)
 }
 
+# event logs that exist on this Windows (some channels differ between versions)
+$EvtLogNames = @(); try { $EvtLogNames = @([System.Diagnostics.Eventing.Reader.EventLogSession]::GlobalSession.GetLogNames()) } catch {}
+
 # ---------- GUI ----------
-$form = New-Object Windows.Forms.Form
+$form = New-Object Windows.Forms.Form; Set-WrtScaling $form
 $form.Text = 'Live Log Monitor'
 $form.Size = New-Object Drawing.Size(660, 680)
 $form.StartPosition = 'CenterScreen'
@@ -221,6 +312,7 @@ foreach ($sec in ($Items | Select-Object -ExpandProperty Section -Unique)) {
         $cb = New-Object Windows.Forms.CheckBox
         $cb.Text = $it.Name
         $cb.Tag = $it
+        if ($it.Type -eq 'Evt' -and $EvtLogNames.Count -and $EvtLogNames -notcontains $it.Target) { $cb.Enabled = $false; $cb.Text += '   (not on this PC)' }
         $cb.Location = "22,$y"; $cb.Size = '570,22'
         $panel.Controls.Add($cb)
         [void]$secBoxes.Add($cb)
@@ -326,4 +418,12 @@ $btnClose.Add_Click({
     $status.Text = 'All monitor windows closed.'
 })
 
+# resizing (1.8.1): the log list grows with the window, the controls under it stay at the bottom
+function Set-Anchor([string]$a, [object[]]$ctls) { foreach ($c in $ctls) { if ($c) { $c.Anchor = $a } } }
+Set-Anchor 'Top,Left,Right'        @($lbl)
+Set-Anchor 'Top,Bottom,Left,Right' @($panel)
+Set-Anchor 'Bottom,Left'           @($lblPaste, $lblTail, $numTail, $btnLaunch, $btnCustom, $btnClear, $btnClose)
+Set-Anchor 'Bottom,Left,Right'     @($txtPaste, $status)
+Set-Anchor 'Bottom,Right'          @($btnPaste, $btnPasteClear)
+Initialize-WrtWindow $form @() 560 560
 [void]$form.ShowDialog()

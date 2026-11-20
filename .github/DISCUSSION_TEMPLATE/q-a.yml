@@ -14,6 +14,7 @@ body:
       description: "Which tool is this about?"
       options:
         - "WinSuperTool"
+        - "WinSuperTool (no-AI edition)"
         - "WinFixKit"
         - "WinRepairTool"
         - "Collect-Logs"
@@ -91,8 +92,10 @@ body:
         - "ClaudeLogAnalyzer: Startup or launcher"
         - "Run-PS-As-Admin: Dragging a script onto it"
         - "Run-PS-As-Admin: Pasting a script path"
+        - "General: Window size, scaling or splash screen"
         - "General: Documentation or README"
         - "General: Releases and downloads"
+        - "General: License"
         - "General: Whole toolkit"
         - "Not sure"
     validations:
@@ -117,9 +120,11 @@ body:
       label: "Tool version"
       description: "Optional."
       options:
-        - "1.8 (latest)"
+        - "1.8.1 (latest)"
+        - "1.9 beta 3 (WinSuperTool beta)"
         - "1.9 beta 2 (WinSuperTool beta)"
         - "1.9 beta 1 (WinSuperTool beta)"
+        - "1.8"
         - "1.7"
         - "1.6 or older"
         - "Not sure"

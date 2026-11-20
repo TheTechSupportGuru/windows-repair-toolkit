@@ -1,5 +1,12 @@
 #requires -Version 5.1
-# Version 1.9 BETA 2 (2026-11-20) - BETA build, not the stable release. What changed: docs/changes/V1.9-beta.2.md
+# Version 1.9 BETA 3 (2026-11-20) - BETA build, not the stable release. What changed: docs/changes/V1.9-beta.3.md
+# Windows Repair Toolkit - https://github.com/TheTechSupportGuru/windows-repair-toolkit
+# Copyright (C) 2026 TheTechSupportGuru
+# SPDX-License-Identifier: GPL-3.0-only
+# This program is free software: you can redistribute it and/or modify it under the terms of the GNU General
+# Public License version 3 as published by the Free Software Foundation. It is distributed WITHOUT ANY WARRANTY;
+# without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the LICENSE file
+# or https://www.gnu.org/licenses/gpl-3.0.html for details.
 # BETA: Recovery task summaries, per-task log monitors, the System Info tab and the Automation tab are new and only lightly
 # tested. Stable version: tools\ (1.8).
 <#
@@ -14,8 +21,8 @@
                         Works on the running Windows OR an offline install (WinPE / second drive).
       2  Live Monitor   one window per log (Get-Content <log> -Tail <N> -Wait), live Event Viewer
                         channels, folder watchers, paste-any-path section.
-      3  AI Analyze     logs + screenshots to Claude or Gemini. Phone QR login (key encrypted with a
-                        one-time pad, memory only), 1-hour session.
+      3  AI Analyze     logs + screenshots to Claude or Gemini. Phone QR login (key encrypted with a # [AI]
+                        one-time pad, memory only), 1-hour session. # [AI]
       4  Mount          mount / unmount partitions with diskpart or Storage cmdlets
                         (whitelisted, non-destructive commands only), remembered between runs.
       5  Safe Mode      safeboot minimal: edit the boot entry or add a separate boot-menu clone.
@@ -33,7 +40,7 @@
 #>
 
 $ErrorActionPreference = 'Continue'
-$AppName = 'Windows Super Tool 1.9 BETA 2'
+$AppName = 'Windows Super Tool 1.9 BETA 3'
 $NL      = "`r`n"
 $IsWinPE = Test-Path 'HKLM:\SYSTEM\CurrentControlSet\Control\MiniNT'
 
@@ -59,6 +66,81 @@ if ($PSCommandPath) {
 
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 [Windows.Forms.Application]::EnableVisualStyles()
+
+# ---------------------------------------------------------------------------------------------
+#  Window helpers - the same block in every Windows Repair Toolkit tool (since 1.8.1):
+#  display scaling, splash screen, fit to screen, scrolling instead of squeezing.
+# ---------------------------------------------------------------------------------------------
+# Sharp, unclipped text on 125 % / 150 % / 200 % displays: this process scales its own windows
+# (AutoScaleMode Dpi on every form) instead of Windows stretching a blurry bitmap of them.
+try { Add-Type -Namespace WrtUi -Name Dpi -MemberDefinition '[DllImport("user32.dll")] public static extern bool SetProcessDPIAware();' -ErrorAction Stop; [void][WrtUi.Dpi]::SetProcessDPIAware() } catch {}
+# The scaling is switched on when the form LOADS: WinForms only scales what exists at that moment, so this way the
+# finished window and every control in it scale together (setting it at creation scaled nothing inside the window).
+function Set-WrtScaling($f) {
+    $f.Add_Load({
+        $this.AutoScaleDimensions = New-Object Drawing.SizeF(96, 96); $this.AutoScaleMode = [Windows.Forms.AutoScaleMode]::Dpi
+        $k = Get-WrtScale $this
+        if ($k -gt 1.01) { Resize-WrtColumns $this $k }
+    })
+}
+# list view column widths are not scaled by WinForms
+function Resize-WrtColumns($parent, [double]$k) {
+    foreach ($c in $parent.Controls) {
+        if ($c -is [Windows.Forms.ListView]) { foreach ($col in $c.Columns) { $col.Width = [int]($col.Width * $k) } }
+        if ($c.Controls.Count) { Resize-WrtColumns $c $k }
+    }
+}
+function Get-WrtScale($f) { try { $s = [double]$f.CurrentAutoScaleDimensions.Width / 96; if ($s -gt 0) { return $s } } catch {}; return 1.0 }
+function Show-WrtSplash([string]$what) {
+    try {
+        $s = New-Object Windows.Forms.Form; Set-WrtScaling $s
+        $s.FormBorderStyle = 'None'; $s.StartPosition = 'CenterScreen'; $s.ShowInTaskbar = $false; $s.TopMost = $true
+        $s.ClientSize = New-Object Drawing.Size(480, 220); $s.BackColor = [Drawing.Color]::FromArgb(22, 50, 88); $s.Text = 'Windows Repair Toolkit'
+        $rows = @(
+            @('Windows Repair Toolkit', 22, 'Bold', 34, 48, 'White'),
+            @('Brought to you by TheTechSupportGuru', 11, 'Regular', 96, 26, 'White'),
+            @('Licensed under GNU GPL v3.0', 10, 'Regular', 124, 24, 'LightSteelBlue'),
+            @("Loading $what ...", 9, 'Italic', 182, 22, 'Silver'))
+        foreach ($r in $rows) {
+            $l = New-Object Windows.Forms.Label
+            $l.AutoSize = $false; $l.TextAlign = 'MiddleCenter'; $l.Text = $r[0]
+            $l.Font = New-Object Drawing.Font('Segoe UI', [single]$r[1], [Drawing.FontStyle]$r[2])
+            $l.ForeColor = [Drawing.Color]::FromName($r[5]); $l.BackColor = [Drawing.Color]::Transparent
+            $l.Location = New-Object Drawing.Point(0, $r[3]); $l.Size = New-Object Drawing.Size(480, $r[4])
+            $s.Controls.Add($l)
+        }
+        $s.Show(); $s.Refresh(); [Windows.Forms.Application]::DoEvents()
+        $script:WrtSplash = $s; $script:WrtSplashAt = Get-Date
+    } catch { $script:WrtSplash = $null }
+}
+function Close-WrtSplash {
+    if (-not $script:WrtSplash) { return }
+    try { $left = 1.2 - ((Get-Date) - $script:WrtSplashAt).TotalSeconds; if ($left -gt 0) { Start-Sleep -Milliseconds ([int]($left * 1000)) } } catch {}   # readable for at least ~1 s
+    try { $script:WrtSplash.Close(); $script:WrtSplash.Dispose() } catch {}
+    $script:WrtSplash = $null
+}
+# Call right before ShowDialog. Records how much room each scrollable area ($scroll: tab pages, panels) needs at its
+# design size, so a small window scrolls instead of squeezing the controls together; sets the minimum size; opens
+# maximized when the scaled window does not fit on the screen; then closes the splash screen.
+function Initialize-WrtWindow($f, $scroll = @(), [int]$minW = 640, [int]$minH = 460) {
+    $script:WrtForm = $f; $script:WrtMinWH = @($minW, $minH); $script:WrtExt = New-Object Collections.ArrayList
+    foreach ($c in @($scroll)) {
+        if (-not $c) { continue }
+        $w = 0; $h = 0
+        foreach ($k in $c.Controls) { if ($k.Dock -eq 'None') { $w = [Math]::Max($w, $k.Right); $h = [Math]::Max($h, $k.Bottom) } }
+        [void]$script:WrtExt.Add(@($c, $w, $h))
+    }
+    $f.Add_Shown({ Complete-WrtWindow })
+}
+function Complete-WrtWindow {
+    $f = $script:WrtForm; $k = Get-WrtScale $f
+    foreach ($e in $script:WrtExt) { try { if ($e[1] -gt 0) { $e[0].AutoScroll = $true; $e[0].AutoScrollMinSize = New-Object Drawing.Size([int](($e[1] + 8) * $k), [int](($e[2] + 8) * $k)) } } catch {} }
+    try { $f.MinimumSize = New-Object Drawing.Size([int]($script:WrtMinWH[0] * $k), [int]($script:WrtMinWH[1] * $k)) } catch {}
+    try { $wa = [Windows.Forms.Screen]::FromControl($f).WorkingArea; if ($f.Width -gt $wa.Width -or $f.Height -gt $wa.Height) { $f.WindowState = 'Maximized' } } catch {}
+    Close-WrtSplash
+    try { $f.Activate() } catch {}
+}
+Show-WrtSplash $AppName
 try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12 } catch {}
 $PsExePath = Join-Path $PSHOME 'powershell.exe'
 $script:Consoles = New-Object Collections.ArrayList     # repair console windows started from the Recovery tab
@@ -157,7 +239,7 @@ function Add-Help($parent, $x, $y, $title, $text) {
     $b.Add_Click({ [void][Windows.Forms.MessageBox]::Show([string]$this.Tag[1], [string]$this.Tag[0], 'OK', 'Information') })
 }
 function Read-Text($prompt, $title = 'Input') {
-    $f = New-Object Windows.Forms.Form
+    $f = New-Object Windows.Forms.Form; Set-WrtScaling $f
     $f.Text = $title; $f.ClientSize = New-Object Drawing.Size(390, 110); $f.StartPosition = 'CenterParent'
     $f.FormBorderStyle = 'FixedDialog'; $f.MaximizeBox = $false; $f.MinimizeBox = $false; $f.Font = $form.Font
     [void](New-Ctl 'Label' $f 10 10 370 20 $prompt)
@@ -171,7 +253,7 @@ function Read-Text($prompt, $title = 'Input') {
     return $r
 }
 function Show-Report($title, $text, [bool]$AskContinue = $false) {
-    $f = New-Object Windows.Forms.Form
+    $f = New-Object Windows.Forms.Form; Set-WrtScaling $f
     $f.Text = $title; $f.Size = New-Object Drawing.Size(700, 520); $f.StartPosition = 'CenterParent'; $f.Font = $form.Font
     $t = New-Ctl 'TextBox' $f 10 10 665 420
     $t.Multiline = $true; $t.ReadOnly = $true; $t.ScrollBars = 'Both'; $t.WordWrap = $false
@@ -639,6 +721,7 @@ function Update-MonStatus([string]$msg) {
     $lblMonStatus.Text = "$msg   Open monitor windows: $open"
 }
 
+#region AI-ANALYZE
 # =====================================================================
 #  3. AI ANALYZE  (Claude or Gemini, phone QR login, 1-hour session)
 # =====================================================================
@@ -1236,6 +1319,8 @@ function Exit-Session([string]$msg) {
     Log "AI: $msg"
     if ($tabs.SelectedTab -eq $tpAI) { Show-NewQr } else { Clear-Qr; $lblCount.Text = '' }
 }
+
+#endregion AI-ANALYZE
 
 # =====================================================================
 #  4. MOUNT  (diskpart OR Storage cmdlets - whitelisted, non-destructive)
@@ -2138,7 +2223,7 @@ function Read-TaskResult([string]$path) {
 }
 function Show-TaskSummary($task, $res, $v, [bool]$Modeless = $false) {
     $green = [Drawing.Color]::FromArgb(30, 130, 60); $red = [Drawing.Color]::FromArgb(190, 35, 35); $orange = [Drawing.Color]::FromArgb(200, 110, 0)
-    $f = New-Object Windows.Forms.Form
+    $f = New-Object Windows.Forms.Form; Set-WrtScaling $f
     $f.Text = "Task summary - $($task.Name)"; $f.Size = New-Object Drawing.Size(760, 540); $f.StartPosition = 'CenterScreen'; $f.Font = $form.Font
     $f.TopMost = $true; $f.MinimizeBox = $false
     $ban = New-Ctl 'Label' $f 0 0 760 46
@@ -2252,7 +2337,7 @@ function Format-InfoText($blocks, [string]$title = '', [string]$note = '') {
 function Show-Info([string]$title, $blocks, [string]$note = '', [bool]$OnTop = $false) {
     $blocks = @($blocks | Where-Object { $_ })
     $green = [Drawing.Color]::FromArgb(30, 130, 60); $red = [Drawing.Color]::FromArgb(190, 35, 35); $orange = [Drawing.Color]::FromArgb(190, 100, 0)
-    $f = New-Object Windows.Forms.Form
+    $f = New-Object Windows.Forms.Form; Set-WrtScaling $f
     $f.Text = $title; $f.Size = New-Object Drawing.Size(900, 660); $f.StartPosition = 'CenterParent'; $f.Font = $form.Font; $f.MinimumSize = New-Object Drawing.Size(600, 400)
     $rt = New-Object Windows.Forms.RichTextBox
     $rt.Location = New-Object Drawing.Point(10, 10); $rt.Size = New-Object Drawing.Size(864, 562); $rt.Anchor = 'Top,Bottom,Left,Right'
@@ -2839,7 +2924,7 @@ $script:Auto = @{ Running = $false; StopReq = $false; Index = -1; Started = $nul
 function Get-AutoCat([string]$id) { $AutoCatalog | Where-Object { $_.Id -eq $id } | Select-Object -First 1 }
 function Save-AutoState {
     try {
-        $s = [ordered]@{ Queue = @($script:AutoQueue); Popups = $chkAutoPop.Checked; StopOnFail = $chkAutoStop.Checked; Monitor = $chkAutoMon.Checked; EnableSR = $chkAutoSR.Checked }
+        $s = [ordered]@{ Queue = @($script:AutoQueue); Popups = $chkAutoPop.Checked; StopOnFail = $chkAutoStop.Checked; Monitor = $chkAutoMon.Checked; EnableSR = $chkAutoSR.Checked; Html = $chkAutoHtml.Checked }
         [IO.File]::WriteAllText($AutoStateFile, ($s | ConvertTo-Json -Depth 3))
     } catch {}
 }
@@ -2850,6 +2935,7 @@ function Load-AutoState {
         $script:AutoQueue.Clear()
         foreach ($id in @($s.Queue)) { if ((Get-AutoCat $id) -and $script:AutoQueue.Count -lt $AutoMax) { [void]$script:AutoQueue.Add([string]$id) } }
         $chkAutoPop.Checked = [bool]$s.Popups; $chkAutoStop.Checked = [bool]$s.StopOnFail; $chkAutoMon.Checked = [bool]$s.Monitor; $chkAutoSR.Checked = [bool]$s.EnableSR
+        if ($null -ne $s.Html) { $chkAutoHtml.Checked = [bool]$s.Html }
     } catch {}
 }
 function Format-Dur($a, $b) { if (-not $a -or -not $b) { return '' }; $d = $b - $a; if ($d.TotalHours -ge 1) { $d.ToString('h\:mm\:ss') } else { $d.ToString('m\:ss') } }
@@ -2879,7 +2965,7 @@ function Update-AutoList {
     $lblAutoCount.Text = '{0} of {1} tasks queued' -f $script:AutoQueue.Count, $AutoMax
 }
 function Set-AutoEditing([bool]$on) {
-    foreach ($c in @($btnAutoAdd, $btnAutoUp, $btnAutoDown, $btnAutoRemove, $btnAutoClear, $btnAutoPreset, $cmbAutoPreset, $lstAutoCat, $chkAutoPop, $chkAutoStop, $chkAutoMon, $chkAutoSR)) { $c.Enabled = $on }
+    foreach ($c in @($btnAutoAdd, $btnAutoUp, $btnAutoDown, $btnAutoRemove, $btnAutoClear, $btnAutoPreset, $cmbAutoPreset, $lstAutoCat, $chkAutoPop, $chkAutoStop, $chkAutoMon, $chkAutoSR, $chkAutoHtml)) { $c.Enabled = $on }
     $btnAutoStart.Enabled = $on -and -not $IsWinPE; $btnAutoStopReq.Enabled = -not $on
 }
 function Start-AutoRun {
@@ -2888,7 +2974,7 @@ function Start-AutoRun {
     $names = (@($script:AutoQueue) | ForEach-Object { '  ' + (Get-AutoCat $_).Name }) -join $NL
     if (-not (Ask "Run these $($script:AutoQueue.Count) task(s) on THIS PC ($env:COMPUTERNAME), one after another?${NL}${NL}$names${NL}${NL}Each task opens its own window. Some tasks change the system (repairs, updates, app upgrades). BETA feature." 'Start automation' 'Question' 'Button2')) { return }
     $script:AutoRun = New-Object Collections.ArrayList
-    foreach ($id in $script:AutoQueue) { $c = Get-AutoCat $id; [void]$script:AutoRun.Add([pscustomobject]@{ Id = $id; Name = $c.Name; Auto = $false; Why = ''; Status = 'Waiting'; Find = ''; Ok = $null; Tone = ''; Rc = $null; Started = $null; Ended = $null; OutFile = ''; Quote = @(); Line = '' }) }
+    foreach ($id in $script:AutoQueue) { $c = Get-AutoCat $id; [void]$script:AutoRun.Add([pscustomobject]@{ Id = $id; Name = $c.Name; Auto = $false; Why = ''; Status = 'Waiting'; Find = ''; Ok = $null; Tone = ''; Rc = $null; Started = $null; Ended = $null; OutFile = ''; Quote = @(); Line = ''; Next = '' }) }
     $script:Auto = @{ Running = $true; StopReq = $false; Index = -1; Started = (Get-Date); StopWhy = ''
         Opt = @{ Popups = $chkAutoPop.Checked; StopOnFail = $chkAutoStop.Checked; Monitor = $chkAutoMon.Checked; EnableSR = $chkAutoSR.Checked } }
     Save-AutoState
@@ -2924,14 +3010,14 @@ function Start-AutoNext {
 }
 function Complete-AutoTask($t, $res, $v) {
     $A = $script:Auto; $r = $t.AutoItem
-    $r.Ended = Get-Date; $r.Rc = $res.Rc; $r.Ok = $v.Ok; $r.Tone = $v.Tone; $r.Find = $v.Find; $r.Quote = @($v.Quote); $r.OutFile = $t.ResultFile
+    $r.Ended = Get-Date; $r.Rc = $res.Rc; $r.Ok = $v.Ok; $r.Tone = $v.Tone; $r.Find = $v.Find; $r.Quote = @($v.Quote); $r.OutFile = $t.ResultFile; $r.Next = [string]$v.Next
     $r.Status = if ($v.Ok) { 'PASSED' } elseif ($v.Tone -eq 'Warn') { 'NOT RUN' } else { 'FAILED' }
     if ($A.Opt -and $A.Opt.Popups) { try { Show-TaskSummary $t $res $v $true } catch { Log "Summary window error: $($_.Exception.Message)" } }
     # "repair only if needed": queue the repair right after this task
     $c = Get-AutoCat $r.Id
     if ($c.Then -and $v.Find -match $c.Then.If) {
         $add = Get-AutoCat $c.Then.Add
-        $script:AutoRun.Insert($A.Index + 1, [pscustomobject]@{ Id = $add.Id; Name = $add.Name; Auto = $true; Why = $c.Then.Why; Status = 'Waiting'; Find = ''; Ok = $null; Tone = ''; Rc = $null; Started = $null; Ended = $null; OutFile = ''; Quote = @(); Line = '' })
+        $script:AutoRun.Insert($A.Index + 1, [pscustomobject]@{ Id = $add.Id; Name = $add.Name; Auto = $true; Why = $c.Then.Why; Status = 'Waiting'; Find = ''; Ok = $null; Tone = ''; Rc = $null; Started = $null; Ended = $null; OutFile = ''; Quote = @(); Line = ''; Next = '' })
         Log "AUTOMATION: $($add.Name) $($c.Then.Why)."
     }
     if ($r.Status -ne 'PASSED' -and $A.Opt.StopOnFail) { $A.StopReq = $true; $A.StopWhy = 'stopped because a task did not pass' }
@@ -2972,13 +3058,106 @@ function Get-AutoSummaryBlocks {
     }
     return $b
 }
+# ---- BETA 3: the Automation report as one self-contained HTML page (no scripts, works offline, prints well) ----
+function ConvertTo-HtmlText($s) { [System.Net.WebUtility]::HtmlEncode([string]$s) }
+function Export-AutoHtml([string]$path) {
+    $A = $script:Auto; $rows = @($script:AutoRun); $now = Get-Date
+    $pass = @($rows | Where-Object { $_.Status -eq 'PASSED' }).Count; $fail = @($rows | Where-Object { $_.Status -eq 'FAILED' }).Count
+    $nr = @($rows | Where-Object { $_.Status -eq 'NOT RUN' }).Count; $skip = @($rows | Where-Object { $_.Status -eq 'Skipped' }).Count
+    $attn = @($rows | Where-Object { $_.Status -eq 'PASSED' -and $_.Tone -ne 'Good' }).Count
+    $rb = @(Get-RebootPending)
+    # (parentheses: in @(a, b + c) the comma binds tighter than +, which split the text into separate items)
+    $overall = if ($fail -or $nr) { @('bad', ("$fail FAILED" + $(if ($nr) { ", $nr DID NOT RUN" } else { '' }) + ", $pass passed - see the red rows")) }
+               elseif ($attn) { @('warn', "ALL $pass TASKS RAN - $attn result(s) need attention (orange / red results)") }
+               else { @('good', "ALL $pass TASKS PASSED") }
+    $cls = { param($r) switch ($r.Status) { 'PASSED' { if ($r.Tone -eq 'Bad') { 'bad' } elseif ($r.Tone -eq 'Warn') { 'warn' } else { 'good' } } 'FAILED' { 'bad' } 'NOT RUN' { 'warn' } default { 'skip' } } }
+    $sb = New-Object Text.StringBuilder
+    [void]$sb.Append(@'
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Automation report - Windows Repair Toolkit</title>
+<style>
+:root { --good:#1e7e3c; --good-bg:#e6f4ea; --bad:#b42318; --bad-bg:#fdecea; --warn:#a15c00; --warn-bg:#fff4e0; --skip:#667085; --skip-bg:#f2f4f7; --ink:#1d2939; --mute:#475467; --line:#d0d5dd; }
+* { box-sizing:border-box } body { font:15px/1.5 "Segoe UI",Arial,sans-serif; color:var(--ink); margin:0; background:#f8fafc }
+main { max-width:1100px; margin:0 auto; padding:24px 16px 48px }
+h1 { font-size:24px; margin:0 0 4px } h2 { font-size:19px; margin:32px 0 10px; border-bottom:2px solid var(--line); padding-bottom:4px }
+.sub { color:var(--mute); margin:0 0 18px } .beta { color:var(--warn); font-weight:600 }
+.banner { border-radius:10px; padding:16px 20px; font-size:20px; font-weight:700; margin:0 0 14px }
+.banner.good { background:var(--good-bg); color:var(--good); border:1px solid var(--good) } .banner.bad { background:var(--bad-bg); color:var(--bad); border:1px solid var(--bad) } .banner.warn { background:var(--warn-bg); color:var(--warn); border:1px solid var(--warn) }
+.facts { display:flex; flex-wrap:wrap; gap:8px 28px; margin:0 0 18px; color:var(--mute) } .facts b { color:var(--ink) }
+table { width:100%; border-collapse:collapse; background:#fff; border:1px solid var(--line); border-radius:8px; overflow:hidden }
+th, td { text-align:left; padding:9px 10px; border-bottom:1px solid var(--line); vertical-align:top } th { background:#eef2f6; font-size:13px; text-transform:uppercase; letter-spacing:.03em; color:var(--mute) }
+tr.good td:first-child { border-left:5px solid var(--good) } tr.bad td:first-child { border-left:5px solid var(--bad) } tr.warn td:first-child { border-left:5px solid var(--warn) } tr.skip td:first-child { border-left:5px solid var(--skip) }
+.badge { display:inline-block; padding:2px 10px; border-radius:999px; font-size:12px; font-weight:700; white-space:nowrap }
+.badge.good { background:var(--good-bg); color:var(--good) } .badge.bad { background:var(--bad-bg); color:var(--bad) } .badge.warn { background:var(--warn-bg); color:var(--warn) } .badge.skip { background:var(--skip-bg); color:var(--skip) }
+.res.good { color:var(--good) } .res.bad { color:var(--bad) } .res.warn { color:var(--warn) } .res { font-weight:600 }
+.task { background:#fff; border:1px solid var(--line); border-radius:8px; padding:14px 16px; margin:0 0 14px }
+.task.good { border-left:6px solid var(--good) } .task.bad { border-left:6px solid var(--bad) } .task.warn { border-left:6px solid var(--warn) } .task.skip { border-left:6px solid var(--skip) }
+.task h3 { margin:0 0 6px; font-size:17px } .auto { color:var(--mute); font-style:italic; font-weight:400 }
+blockquote { margin:8px 0; padding:6px 12px; border-left:3px solid var(--line); background:#f8fafc; font-family:Consolas,monospace; font-size:13.5px }
+dl { display:grid; grid-template-columns:max-content 1fr; gap:3px 14px; margin:8px 0 } dt { color:var(--mute) } dd { margin:0; word-break:break-word }
+code { font-family:Consolas,monospace; font-size:13px; background:#eef2f6; padding:1px 5px; border-radius:4px }
+details { margin-top:8px } summary { cursor:pointer; color:#175cd3 } pre { background:#0f172a; color:#e2e8f0; padding:12px; border-radius:6px; overflow:auto; font:12.5px/1.45 Consolas,monospace; max-height:520px; white-space:pre-wrap }
+footer { color:var(--mute); font-size:13px; margin-top:28px }
+@media print { body { background:#fff } details { display:none } .task, table { break-inside:avoid } }
+</style></head><body><main>
+'@)
+    [void]$sb.Append("<h1>Automation report</h1><p class=""sub"">Windows Repair Toolkit - $(ConvertTo-HtmlText $AppName) &nbsp;|&nbsp; <span class=""beta"">BETA</span></p>")
+    [void]$sb.Append("<div class=""banner $($overall[0])"">$(ConvertTo-HtmlText $overall[1])</div>")
+    $took = Format-Dur $A.Started $now
+    [void]$sb.Append('<div class="facts">')
+    [void]$sb.Append("<span>PC: <b>$(ConvertTo-HtmlText $env:COMPUTERNAME)</b></span><span>Started: <b>$('{0:yyyy-MM-dd HH:mm:ss}' -f $A.Started)</b></span><span>Finished: <b>$('{0:yyyy-MM-dd HH:mm:ss}' -f $now)</b> ($took)</span>")
+    [void]$sb.Append("<span>Tasks: <b>$($rows.Count)</b> - $pass passed, $fail failed$(if ($nr) { ", $nr did not run" })$(if ($skip) { ", $skip skipped" })</span>")
+    [void]$sb.Append("<span>Restart needed: <b class=""res $(if ($rb.Count) { 'warn' } else { 'good' })"">$(if ($rb.Count) { 'YES - ' + (ConvertTo-HtmlText ($rb -join ', ')) } else { 'no' })</b></span>")
+    if ($A.StopWhy) { [void]$sb.Append("<span class=""res warn"">The queue $(ConvertTo-HtmlText $A.StopWhy).</span>") }
+    [void]$sb.Append('</div>')
+    # ---- the summary table: one line per task ----
+    [void]$sb.Append('<h2>Summary</h2><table><thead><tr><th>#</th><th>Task</th><th>Status</th><th>Result</th><th>Time</th></tr></thead><tbody>')
+    $i = 0
+    foreach ($r in $rows) {
+        $i++; $c = & $cls $r
+        $name = (ConvertTo-HtmlText $r.Name) + $(if ($r.Auto) { " <span class=""auto"">($(ConvertTo-HtmlText $r.Why))</span>" } else { '' })
+        [void]$sb.Append("<tr class=""$c""><td>$i</td><td>$name</td><td><span class=""badge $c"">$(ConvertTo-HtmlText $r.Status)</span></td><td class=""res $c"">$(ConvertTo-HtmlText $r.Find)</td><td>$(Format-Dur $r.Started $r.Ended)</td></tr>")
+    }
+    [void]$sb.Append('</tbody></table>')
+    # ---- details: everything about each task, full output last ----
+    [void]$sb.Append('<h2>Details</h2>')
+    $i = 0
+    foreach ($r in $rows) {
+        $i++; $c = & $cls $r
+        $autoTag = if ($r.Auto) { ' <span class="auto">' + (ConvertTo-HtmlText $r.Why) + '</span>' } else { '' }
+        [void]$sb.Append("<section class=""task $c""><h3>$i. $(ConvertTo-HtmlText $r.Name) <span class=""badge $c"">$(ConvertTo-HtmlText $r.Status)</span>$autoTag</h3>")
+        if ($r.Find) { [void]$sb.Append("<div class=""res $c"">$(ConvertTo-HtmlText $r.Find)</div>") }
+        foreach ($q in @($r.Quote)) { if ($q) { [void]$sb.Append("<blockquote>""$(ConvertTo-HtmlText $q)""</blockquote>") } }
+        [void]$sb.Append('<dl>')
+        if ($r.Next) { [void]$sb.Append("<dt>Next step</dt><dd>$(ConvertTo-HtmlText $r.Next)</dd>") }
+        if ($r.Line) { [void]$sb.Append("<dt>Command</dt><dd><code>$(ConvertTo-HtmlText $r.Line)</code></dd>") }
+        if ($r.Started) { [void]$sb.Append("<dt>Ran</dt><dd>$('{0:HH:mm:ss}' -f $r.Started)$(if ($r.Ended) { ' - ' + ('{0:HH:mm:ss}' -f $r.Ended) + ' (' + (Format-Dur $r.Started $r.Ended) + ')' })</dd>") }
+        if ($null -ne $r.Rc) { $rcs = "$($r.Rc)"; if ($r.Rc -is [int] -and ($r.Rc -lt 0 -or $r.Rc -gt 65535)) { $rcs += ('  (0x{0:X8})' -f $r.Rc) }; [void]$sb.Append("<dt>Exit code</dt><dd>$rcs</dd>") }
+        if ($r.OutFile) { [void]$sb.Append("<dt>Output file</dt><dd><code>$(ConvertTo-HtmlText $r.OutFile)</code></dd>") }
+        [void]$sb.Append('</dl>')
+        $out = ''; if ($r.OutFile -and [IO.File]::Exists($r.OutFile)) { try { $out = (Read-TaskResult $r.OutFile).Output } catch {} }
+        if ($out) { [void]$sb.Append("<details><summary>Full output</summary><pre>$(ConvertTo-HtmlText $out.Trim())</pre></details>") }
+        elseif ($r.Status -eq 'Skipped') { [void]$sb.Append('<div class="auto">Not run (the queue stopped before this task).</div>') }
+        [void]$sb.Append('</section>')
+    }
+    [void]$sb.Append("<footer>Created by the Windows Repair Toolkit (BETA) - licensed under GNU GPL v3.0. Result messages are matched in English; on another display language the result comes from the exit code.</footer></main></body></html>")
+    [IO.File]::WriteAllText($path, $sb.ToString(), (New-Object Text.UTF8Encoding $false))
+    $script:LastAutoHtml = $path
+    return $path
+}
 function Complete-AutoRun {
     $A = $script:Auto; $A.Running = $false
     Set-AutoEditing $true
     $blocks = New-Object Collections.ArrayList; $blocks.AddRange(@(Get-AutoSummaryBlocks))
     $rep = (Get-TaskFileBase 'Automation-summary') + '.txt'
     try { [IO.File]::WriteAllText($rep, (Format-InfoText $blocks 'Automation summary')) } catch { $rep = '' }
-    if ($rep) { [void]$blocks.Add((InfoH 'Saved')); [void]$blocks.Add((InfoKV 'This summary' $rep)); [void]$blocks.Add((InfoKV 'Each task''s output' $TaskDir)) }
+    $html = ''
+    if ($chkAutoHtml.Checked) {
+        try { $html = Export-AutoHtml ((Get-TaskFileBase 'Automation-report') + '.html'); Start-Process -FilePath $html; Log "AUTOMATION: HTML report: $html" }
+        catch { Log "AUTOMATION: the HTML report could not be written: $($_.Exception.Message)"; $html = '' }
+    }
+    if ($rep) { [void]$blocks.Add((InfoH 'Saved')); [void]$blocks.Add((InfoKV 'This summary' $rep)); if ($html) { [void]$blocks.Add((InfoKV 'HTML report' $html)) }; [void]$blocks.Add((InfoKV 'Each task''s output' $TaskDir)) }
     $lblAutoStatus.Text = 'Finished at {0:HH:mm}. {1}' -f (Get-Date), $(if ($A.StopWhy) { "The queue $($A.StopWhy)." } else { '' })
     Update-AutoList
     Log "AUTOMATION: finished. Summary: $rep"
@@ -2990,7 +3169,7 @@ function Complete-AutoRun {
 #  Run any .ps1 elevated (replaces the old Run-PS-As-Admin.bat paste mode)
 # =====================================================================
 function Show-ScriptRunner {
-    $f = New-Object Windows.Forms.Form
+    $f = New-Object Windows.Forms.Form; Set-WrtScaling $f
     $f.Text = 'Run a PowerShell script as administrator'; $f.ClientSize = New-Object Drawing.Size(620, 150)
     $f.StartPosition = 'CenterParent'; $f.FormBorderStyle = 'FixedDialog'; $f.MaximizeBox = $false; $f.MinimizeBox = $false; $f.Font = $form.Font
     [void](New-Ctl 'Label' $f 10 10 600 36 'Paste the full path of a .ps1 file (quotes and %variables% are OK) or browse. It starts in its own window with admin rights, -ExecutionPolicy Bypass and -STA.')
@@ -3022,14 +3201,14 @@ function Show-ScriptRunner {
 # =====================================================================
 #  GUI
 # =====================================================================
-$form = New-Object Windows.Forms.Form
+$form = New-Object Windows.Forms.Form; Set-WrtScaling $form
 $form.Text = $AppName
 if ($IsWinPE) { $form.Text = "$AppName  -  WinPE mode" }
 $form.ClientSize    = New-Object Drawing.Size(980, 680)
 $form.MinimumSize   = New-Object Drawing.Size(940, 560)
 $form.StartPosition = 'CenterScreen'
 $form.Font          = New-Object Drawing.Font('Segoe UI', 9)
-try { if ([Windows.Forms.Screen]::PrimaryScreen.WorkingArea.Height -lt 740) { $form.WindowState = 'Maximized' } } catch {}
+# (opens maximized when the scaled window does not fit the screen: see Initialize-WrtWindow before ShowDialog)
 
 # ---------- Target Windows bar ----------
 [void](New-Ctl 'Label' $form 10 13 106 20 'Target Windows:')
@@ -3057,7 +3236,7 @@ function New-Page($text) {
 }
 $tpCol  = New-Page '1. Collect Logs'
 $tpMon  = New-Page '2. Live Monitor'
-$tpAI   = New-Page '3. AI Analyze'
+$tpAI   = New-Page '3. AI Analyze' # [AI]
 $tpMnt  = New-Page '4. Mount'
 $tpSafe = New-Page '5. Safe Mode'
 $tpSys  = New-Page '6. Sysprep'
@@ -3093,8 +3272,8 @@ $btnColAll  = New-Ctl 'Button' $tpCol 12 274 120 30 'Select / clear all'
 $btnColGo   = New-Ctl 'Button' $tpCol 138 274 150 30 'Collect selected'
 $btnColGo.Font = New-Object Drawing.Font('Segoe UI', 9, [Drawing.FontStyle]::Bold)
 $btnColOpen = New-Ctl 'Button' $tpCol 294 274 110 30 'Open folder'
-$btnColToAi = New-Ctl 'Button' $tpCol 410 274 200 30 'Send key logs to AI Analyze'
-Add-Help $tpCol 616 277 'Send key logs to AI Analyze' ("Adds the most useful files from the last collection to the AI Analyze tab: the summary, crash/shutdown events, CBS.log, dism.log, setup logs, ReportingEvents.log, the merged WindowsUpdate.log, and the System / Application / Setup / Windows Update event logs (errors and warnings only).${NL}${NL}Large logs are trimmed to their newest part, and the total is capped so the request stays fast.")
+$btnColToAi = New-Ctl 'Button' $tpCol 410 274 200 30 'Send key logs to AI Analyze' # [AI]
+Add-Help $tpCol 616 277 'Send key logs to AI Analyze' ("Adds the most useful files from the last collection to the AI Analyze tab: the summary, crash/shutdown events, CBS.log, dism.log, setup logs, ReportingEvents.log, the merged WindowsUpdate.log, and the System / Application / Setup / Windows Update event logs (errors and warnings only).${NL}${NL}Large logs are trimmed to their newest part, and the total is capped so the request stays fast.") # [AI]
 $txtCol = New-Ctl 'TextBox' $tpCol 12 312 930 128
 $txtCol.Multiline = $true; $txtCol.ReadOnly = $true; $txtCol.ScrollBars = 'Vertical'; $txtCol.Font = New-Object Drawing.Font('Consolas', 9)
 $txtColOut.Text = Get-DefaultLogRoot
@@ -3155,6 +3334,7 @@ $btnMonClear  = New-Ctl 'Button' $tpMon 428 334 100 30 'Uncheck all'
 $btnMonClose  = New-Ctl 'Button' $tpMon 534 334 150 30 'Close all monitors'
 $lblMonStatus = New-Ctl 'Label' $tpMon 12 372 930 40 'Ready.'
 
+#region AI-ANALYZE
 # ---------- 3. AI Analyze ----------
 $pnlLogin = New-Object Windows.Forms.Panel; $pnlLogin.Dock = 'Fill'; $tpAI.Controls.Add($pnlLogin)
 $picQr = New-Ctl 'PictureBox' $pnlLogin 12 8 366 366
@@ -3199,6 +3379,7 @@ $btnAiSave = New-Ctl 'Button' $pnlMain 860 274 80 26 'Save...'
 $txtAiOut = New-Ctl 'TextBox' $pnlMain 12 304 928 134
 $txtAiOut.Multiline = $true; $txtAiOut.ReadOnly = $true; $txtAiOut.ScrollBars = 'Vertical'; $txtAiOut.BackColor = [Drawing.Color]::White
 
+#endregion AI-ANALYZE
 # ---------- 4. Mount ----------
 [void](New-Ctl 'Label' $tpMnt 12 15 60 20 'Engine')
 $rbDp   = New-Ctl 'RadioButton' $tpMnt 75 12 110 22 'diskpart'; $rbDp.Checked = $true
@@ -3369,12 +3550,52 @@ $chkAutoStop = New-Ctl 'CheckBox' $tpAuto 672 338 270 22 'Stop the queue if a ta
 $chkAutoMon  = New-Ctl 'CheckBox' $tpAuto 398 362 270 22 'Open live log windows for each task'
 $chkAutoSR   = New-Ctl 'CheckBox' $tpAuto 672 362 270 22 'Turn on System Protection if it is off'
 $tip.SetToolTip($chkAutoSR, 'For "Create a system restore point": turns System Protection on for the system drive first (Enable-ComputerRestore).')
+$chkAutoHtml = New-Ctl 'CheckBox' $tpAuto 12 408 300 22 'Save an HTML report and open it at the end'; $chkAutoHtml.Checked = $true
+$tip.SetToolTip($chkAutoHtml, 'An easy-to-read report: overall result and a colour-coded summary table at the top, every task''s details and full output below. Saved in WinSuperTool-Data\Task-Results.')
+$btnAutoHtml = New-Ctl 'Button' $tpAuto 12 432 180 26 'Open last HTML report'
+$chkAutoHtml.Anchor = 'Bottom,Left'; $btnAutoHtml.Anchor = 'Bottom,Left'
 $btnAutoStart   = New-Ctl 'Button' $tpAuto 398 394 170 34 'Start queue'
 $btnAutoStart.Font = New-Object Drawing.Font('Segoe UI', 9, [Drawing.FontStyle]::Bold)
 $btnAutoStopReq = New-Ctl 'Button' $tpAuto 574 394 170 34 'Stop after this task'; $btnAutoStopReq.Enabled = $false
 $lblAutoStatus  = New-Ctl 'Label' $tpAuto 750 392 192 44 ''
 if ($IsWinPE) { $lblAutoStatus.Text = 'Automation needs a running Windows - not available in WinPE.'; $lblAutoStatus.ForeColor = 'Red' }
 
+# ---------- resizing (1.8.1): what grows with the window and what stays at the right edge ----------
+function Set-Anchor([string]$a, [object[]]$ctls) { foreach ($c in $ctls) { if ($c) { $c.Anchor = $a } } }
+function Get-HelpBtn($parent, [int]$maxTop) { @($parent.Controls | Where-Object { $_ -is [Windows.Forms.Button] -and $_.Text -eq '?' -and $_.Top -le $maxTop }) }
+Set-Anchor 'Top,Left,Right'        @($cmbWin, $lblWarn)
+Set-Anchor 'Top,Right'             (@($btnRescan, $btnRunPs, $btnData) + (Get-HelpBtn $form 20))
+Set-Anchor 'Top,Left,Right'        @($txtColOut, $lblColInfo)
+Set-Anchor 'Top,Right'             (@($btnColBrowse, $btnColDefault) + (Get-HelpBtn $tpCol 20))
+Set-Anchor 'Top,Bottom,Left,Right' @($txtCol, $monPanel)
+Set-Anchor 'Top,Right'             (Get-HelpBtn $tpMon 20)
+Set-Anchor 'Bottom,Left'           (@($lblPaste, $numTail, $btnMonLaunch, $btnMonBrowse, $btnMonClear, $btnMonClose) + @($tpMon.Controls | Where-Object { $_.Text -eq 'Tail lines:' }))
+Set-Anchor 'Bottom,Left,Right'     @($txtPaste, $lblMonStatus)
+Set-Anchor 'Bottom,Right'          @($btnPaste, $btnPasteClear)
+#region AI-ANALYZE
+Set-Anchor 'Top,Right'             @($btnLogout, $btnAiCancel, $btnAiCopy, $btnAiSave)
+Set-Anchor 'Top,Left,Right'        @($lstAi, $txtPrompt, $btnAiGo, $lblAiStatus)
+Set-Anchor 'Top,Bottom,Left,Right' @($txtAiOut)
+#endregion AI-ANALYZE
+Set-Anchor 'Top,Left,Right'        @($cmbDisk, $cmbPart, $lstMounts, $lblBcd, $lblSafeInfo, $lblDep, $lblExp, $cmbEsp, $cmbTool, $lblToolDesc, $lblToolNote)
+Set-Anchor 'Top,Right'             @($btnRefresh, $btnUnmount, $btnUnmountAll, $btnEspRefresh, $btnToolHelp)
+Set-Anchor 'Top,Left,Right'        @($lblBeta, $lblAutoHead)
+Set-Anchor 'Top,Bottom,Left'       @($lstAutoCat)
+Set-Anchor 'Top,Bottom,Left,Right' @($lvAuto)
+Set-Anchor 'Top,Right'             @($lblAutoCount)
+Set-Anchor 'Bottom,Left'           (@($lblAutoHelp, $cmbAutoPreset, $btnAutoPreset, $btnAutoUp, $btnAutoDown, $btnAutoRemove, $btnAutoClear, $chkAutoPop, $chkAutoStop, $chkAutoMon, $chkAutoSR, $btnAutoStart, $btnAutoStopReq) + @($tpAuto.Controls | Where-Object { $_.Text -eq 'Preset:' }))
+Set-Anchor 'Bottom,Left,Right'     @($lblAutoStatus)
+# Widen the top-right buttons when their text does not fit (large fonts or display scaling), keeping them right-aligned.
+function Update-TopBar {
+    $k = Get-WrtScale $form; $right = $form.ClientSize.Width - [int](8 * $k); $gap = [int](4 * $k)
+    foreach ($b in @($btnData, $btnRunPs, (Get-HelpBtn $form 20)[0], $btnRescan)) {
+        if (-not $b) { continue }
+        $need = [Windows.Forms.TextRenderer]::MeasureText($b.Text, $b.Font).Width + [int](18 * $k)
+        if ($b.Width -lt $need) { $b.Width = $need }
+        $b.Left = $right - $b.Width; $right = $b.Left - $gap
+    }
+    $cmbWin.Width = [Math]::Max([int](150 * $k), $right - $cmbWin.Left - $gap)
+}
 $timer = New-Object Windows.Forms.Timer
 $timer.Interval = 250
 
@@ -3386,9 +3607,11 @@ $btnRescan.Add_Click({ Safe { Update-Windows $true; Update-Esp } })
 $cmbWin.Add_SelectedIndexChanged({ Safe { Update-SafeStatus } })
 $btnRunPs.Add_Click({ Safe { Show-ScriptRunner } })
 $btnData.Add_Click({ Open-Folder $DataDir })
+#region AI-ANALYZE
 $tabs.Add_SelectedIndexChanged({
     if ($tabs.SelectedTab -eq $tpAI -and -not $script:ApiKey -and -not $script:Listener) { Safe { Show-NewQr } }
 })
+#endregion AI-ANALYZE
 
 # ---- 1. Collect Logs ----
 $btnColBrowse.Add_Click({
@@ -3439,6 +3662,7 @@ $btnColGo.Add_Click({ Safe {
     Log "Logs collected from $($t.Drive) to $root ($($script:ColCount) files, $($script:ColFail) failed)."
     Open-Folder $root
 } })
+#region AI-ANALYZE
 $btnColToAi.Add_Click({ Safe {
     $root = $script:LastCollect
     if (-not $root) { $root = [Environment]::ExpandEnvironmentVariables($txtColOut.Text.Trim().Trim('"')) }
@@ -3449,6 +3673,7 @@ $btnColToAi.Add_Click({ Safe {
     Log "Added $n key log file(s) from $root to the AI Analyze tab."
     $tabs.SelectedTab = $tpAI
 } })
+#endregion AI-ANALYZE
 
 # ---- 2. Live Monitor ----
 $btnMonLaunch.Add_Click({ Safe {
@@ -3493,6 +3718,7 @@ $btnMonClose.Add_Click({
     Update-MonStatus 'All monitor windows closed.'
 })
 
+#region AI-ANALYZE
 # ---- 3. AI Analyze ----
 $btnNewQr.Add_Click({ $lblNotice.Text = ''; Safe { Show-NewQr } })
 $btnLogout.Add_Click({ Exit-Session 'Logged out. Key and files cleared from this PC.' })
@@ -3567,7 +3793,6 @@ $btnAiSave.Add_Click({ Safe {
 $timer.Add_Tick({
     try {
         $now = Get-Date
-        if ($script:TaskWatch.Count -and -not $script:InSummary) { Update-TaskWatch }    # BETA: finished Recovery tasks
         if ($script:AiJob -and $script:AiJob.Handle.IsCompleted) { Complete-AiRequest }
         if (-not $script:ApiKey) {
             if ($script:Listener) {
@@ -3596,6 +3821,14 @@ $timer.Add_Tick({
     } catch {
         if (-not $script:TickErr) { $script:TickErr = $true; Log "Timer error: $($_.Exception.Message)" }
     }
+})
+
+#endregion AI-ANALYZE
+
+# ---- shared timer: finished task windows (Recovery summaries, Automation) ----
+$timer.Add_Tick({
+    try { if ($script:TaskWatch.Count -and -not $script:InSummary) { Update-TaskWatch } }
+    catch { if (-not $script:TickErr2) { $script:TickErr2 = $true; Log "Timer error (task windows): $($_.Exception.Message)" } }
 })
 
 # ---- 4. Mount ----
@@ -3859,6 +4092,11 @@ $btnAutoRemove.Add_Click({ Safe {
 $btnAutoClear.Add_Click({ Safe { if ($script:AutoQueue.Count -and (Ask 'Remove every task from the queue?' 'Automation')) { Edit-AutoQueue { $script:AutoQueue.Clear() } } } })
 foreach ($cb in @($chkAutoPop, $chkAutoStop, $chkAutoMon, $chkAutoSR)) { $cb.Add_CheckedChanged({ if (-not $script:Auto.Running) { Save-AutoState } }) }
 $btnAutoStart.Add_Click({ Safe { Start-AutoRun } })
+$btnAutoHtml.Add_Click({ Safe {
+    $p = $script:LastAutoHtml
+    if (-not $p -or -not [IO.File]::Exists($p)) { $p = @(Get-ChildItem -LiteralPath $TaskDir -Filter '*Automation-report.html' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime | Select-Object -Last 1 | ForEach-Object { $_.FullName })[0] }
+    if ($p -and [IO.File]::Exists($p)) { Start-Process -FilePath $p } else { Msg 'There is no HTML report yet. Run the queue with "Save an HTML report" ticked.' 'Automation' }
+} })
 $btnAutoStopReq.Add_Click({
     if ($script:Auto.Running) { $script:Auto.StopReq = $true; $script:Auto.StopWhy = 'was stopped by you'; $lblAutoStatus.Text = 'Stopping after the current task...'; Log 'AUTOMATION: stop requested - stops after the current task.' }
 })
@@ -3879,6 +4117,7 @@ $form.Add_Shown({
     if ($cmbTool.Items.Count) { $cmbTool.SelectedIndex = 0 }
     Update-Disks; Update-Letters; Load-Mounts; Update-MountList; Update-Esp
     Update-Windows $true
+    Update-TopBar
     }
 })
 $tabs.Add_Selecting({ if ($script:Busy) { $_.Cancel = $true } })    # no Mount / Rescan etc. while a collection runs
@@ -3886,7 +4125,7 @@ $form.Add_FormClosing({
     if ($script:Busy) { $_.Cancel = $true; Msg "$($script:Busy) is still running. Wait until it has finished, then close." 'Busy' 'Warning'; return }
     if ($script:Auto.Running -and -not (Ask "The automation queue is still running (task $($script:Auto.Index + 1) of $(@($script:AutoRun).Count)).${NL}${NL}Close anyway? The current task's window keeps running, but the rest of the queue does not run and there is no final summary." 'Automation running' 'Warning' 'Button2')) { $_.Cancel = $true; return }
     try { $timer.Stop() } catch {}
-    Stop-AiRequest; Stop-Pairing; $script:ApiKey = $null
+    Stop-AiRequest; Stop-Pairing; $script:ApiKey = $null # [AI]
     if ($chkAuto.Checked -and $script:Mounts.Count -gt 0) {
         # a repair console started from the Recovery tab may still be working on a mounted drive
         $live = @($script:Consoles | Where-Object { $_ -and -not $_.HasExited })
@@ -3898,5 +4137,6 @@ $form.Add_FormClosing({
     Log 'Closed.'
 })
 
+Initialize-WrtWindow $form (@($tabs.TabPages | ForEach-Object { $_ }) + @($tabs.TabPages | ForEach-Object { $_.Controls } | Where-Object { $_ -is [Windows.Forms.Panel] -and $_.Dock -eq 'Fill' })) 700 520
 [void]$form.ShowDialog()
 $form.Dispose()
