@@ -1,4 +1,5 @@
 #requires -Version 5.1
+# Version 1.2 (2026-11-19) - edited copy. What changed: Edited scripts\V1.2\CHANGES.md
 <#
     WinSuperTool.ps1  -  all-in-one Windows tech toolkit (one file, no extra libraries)
     Runs on Windows 10 / 11 and in WinPE (built for Hiren's BootCD PE 11).
@@ -1156,14 +1157,24 @@ function Invoke-Diskpart([string[]]$Cmds) {
     Log ('diskpart: ' + ($Cmds -join ' > '))
     return $out
 }
+# Data rows of a diskpart table = the lines between the "---  ---" underline and the next blank line.
+# Works in any display language ("Disk 0", "Datenträger 0", "Disque 0" ...), because it never looks for the English word.
+function Get-DiskpartRows([string]$Text) {
+    $in = $false
+    foreach ($ln in ($Text -split "`r?`n")) {
+        if ($ln -match '^\s*-{2,}(\s+-{2,})+\s*$') { $in = $true; continue }
+        if ($in -and -not $ln.Trim()) { $in = $false; continue }
+        if ($in) { $ln }
+    }
+}
 function Get-DiskList {
     if ($rbStor.Checked) {
         foreach ($d in (Get-Disk | Sort-Object Number)) {
             [pscustomobject]@{ Num = [int]$d.Number; Text = ('Disk {0}  -  {1}  -  {2}  -  {3}' -f $d.Number, $d.FriendlyName, (Fmt-Size $d.Size), $d.PartitionStyle) }
         }
     } else {
-        foreach ($ln in ((Invoke-Diskpart 'list disk') -split "`r?`n")) {
-            if ($ln -match '^\s*Disk (\d+)\s+(.*\S)\s*$') {
+        foreach ($ln in (Get-DiskpartRows (Invoke-Diskpart 'list disk'))) {
+            if ($ln -match '^\s*\*?\s*\S+\s+(\d+)\s+(.*\S)\s*$') {
                 [pscustomobject]@{ Num = [int]$Matches[1]; Text = ('Disk {0}  -  {1}' -f $Matches[1], ($Matches[2] -replace '\s{2,}', '  ')) }
             }
         }
@@ -1176,8 +1187,8 @@ function Get-PartList($disk) {
             [pscustomobject]@{ Num = [int]$p.PartitionNumber; Text = ('Partition {0}  -  {1}  -  {2}{3}' -f $p.PartitionNumber, $p.Type, (Fmt-Size $p.Size), $l) }
         }
     } else {
-        foreach ($ln in ((Invoke-Diskpart @("select disk $disk", 'list partition')) -split "`r?`n")) {
-            if ($ln -match '^\s*Partition (\d+)\s+(.*\S)\s*$') {
+        foreach ($ln in (Get-DiskpartRows (Invoke-Diskpart @("select disk $disk", 'list partition')))) {
+            if ($ln -match '^\s*\*?\s*\S+\s+(\d+)\s+(.*\S)\s*$') {
                 [pscustomobject]@{ Num = [int]$Matches[1]; Text = ('Partition {0}  -  {1}' -f $Matches[1], ($Matches[2] -replace '\s{2,}', '  ')) }
             }
         }
@@ -1214,15 +1225,32 @@ function Unmount-Letter($L) {
     }
 }
 $script:Mounts = New-Object Collections.ArrayList
-function Save-Mounts { try { Set-Content -Path $StateFile -Value (ConvertTo-Json -InputObject @($script:Mounts)) -Encoding UTF8 } catch {} }
+function Save-Mounts { try { Set-Content -Path $StateFile -Value (ConvertTo-Json -InputObject @($script:Mounts)) -Encoding UTF8 -ErrorAction Stop } catch { Log "WARNING: could not save the mount memory (${StateFile}): $($_.Exception.Message). These mounts will not be remembered." } }
 function Load-Mounts {
     $script:Mounts = New-Object Collections.ArrayList
     if (Test-Path $StateFile) {
         try {
             $j = Get-Content $StateFile -Raw
-            if ($j -and $j.Trim()) { foreach ($m in @(ConvertFrom-Json $j)) { if ($m.Letter -and (Test-LetterUsed $m.Letter)) { [void]$script:Mounts.Add($m) } } }
-        } catch {}
+            if ($j -and $j.Trim()) {
+                # PS 5.1 returns a JSON array as ONE object: foreach (not @(...)) enumerates it correctly.
+                $parsed = ConvertFrom-Json $j
+                foreach ($m in $parsed) {
+                    if (-not $m -or -not $m.Letter) { continue }
+                    if (Test-MountStillOurs $m) { [void]$script:Mounts.Add($m) }
+                    else { Log "Forgot remembered mount $($m.Letter): - it no longer points at Disk $($m.Disk), Partition $($m.Partition)." }
+                }
+            }
+        } catch { Log "Could not read the mount memory file ${StateFile}: $($_.Exception.Message)" }
     }
+}
+# A remembered mount is trusted only if its letter STILL belongs to the same disk + partition.
+# Otherwise "Unmount" could remove the letter of a different drive that took that letter since.
+function Test-MountStillOurs($m) {
+    $L = ([string]$m.Letter).ToUpper()
+    if (-not (Test-LetterUsed $L)) { return $false }
+    if (-not (Get-Command Get-Partition -ErrorAction SilentlyContinue)) { return $false }   # cannot verify -> do not trust
+    try { $p = Get-Partition -DriveLetter $L -ErrorAction Stop } catch { return $false }
+    return ([int]$p.DiskNumber -eq [int]$m.Disk -and [int]$p.PartitionNumber -eq [int]$m.Partition)
 }
 function Update-MountList {
     $lstMounts.Items.Clear()
@@ -1259,7 +1287,9 @@ function Update-AfterMountChange { Save-Mounts; Update-MountList; Update-Letters
 # =====================================================================
 function ConvertFrom-BcdText([string]$text) {
     foreach ($blk in [regex]::Split($text, '(?:\r?\n){2,}')) {
-        if ($blk -match '(?m)^identifier\s+(\{[^}]+\})') {
+        # The identifier is the first line under the ----- underline. Its label is translated on non-English Windows
+        # (identifier / Bezeichner / identificateur ...), so match the position + {...} value, not the word.
+        if ($blk -match '(?m)^-{3,}[ \t]*\r?\n[^{\r\n]*?\s(\{[^}\r\n]+\})[ \t]*\r?$' -or $blk -match '(?m)^identifier\s+(\{[^}]+\})') {
             $id = $Matches[1]; $dev = ''; $sb = ''; $desc = ''
             if ($blk -match '(?m)^osdevice\s+partition=([A-Za-z]:)') { $dev = $Matches[1].ToUpper() }
             if ($blk -match '(?m)^safeboot\s+(\S+)') { $sb = $Matches[1] }
@@ -1301,15 +1331,23 @@ function Backup-Bcd($t) {
         $f = Join-Path $BcdBackupDir ('BCD_{0}.bak' -f (Get-Date -Format yyyyMMdd_HHmmss))
         $a = @(); if ($t.Store) { $a += '/store'; $a += $t.Store }; $a += '/export'; $a += $f
         $o = (& bcdedit.exe @a 2>&1) | Out-String
-        if ($LASTEXITCODE -eq 0) {
+        if ($LASTEXITCODE -eq 0 -and [IO.File]::Exists($f)) {
             Log "BCD backup saved: $f"
             if ($DataOnRam) { Log 'NOTE: that is the WinPE RAM disk - copy the backup somewhere permanent.' }
-        } else { Log "BCD backup FAILED: $($o.Trim())" }
+            return $true
+        }
+        Log "BCD backup FAILED: $($o.Trim())"
     } catch { Log "BCD backup error: $($_.Exception.Message)" }
+    return $false
 }
-# every BCD-changing command is preceded by an automatic backup
+# every BCD-changing command is preceded by an automatic backup - and is NOT run if that backup fails
 function Invoke-Bcd($t, [string[]]$BcdArgs) {
-    if ($BcdArgs[0] -in '/set', '/copy', '/delete', '/deletevalue', '/import') { Backup-Bcd $t }
+    if ($BcdArgs[0] -in '/set', '/copy', '/delete', '/deletevalue', '/import') {
+        if (-not (Backup-Bcd $t)) {
+            Log ('NOT RUN (no backup): bcdedit ' + ($BcdArgs -join ' '))
+            return [pscustomobject]@{ Rc = 1; Out = 'The BCD backup failed, so the change was NOT made. See the activity log.' }
+        }
+    }
     $a = @(); if ($t.Store) { $a += '/store'; $a += $t.Store }; $a += $BcdArgs
     Log ('bcdedit ' + ($a -join ' '))
     $o = (& bcdedit.exe @a 2>&1) | Out-String
@@ -1556,7 +1594,7 @@ $Tools = @(
         Build = { param($c, $tool)
             $t = Resolve-BcdTarget $c.Win
             if (-not $t) { Msg 'No boot entry found for that install. Mount the EFI partition first.' 'Recovery' 'Warning'; return $null }
-            return @{ Summary = 'bcdedit /export <timestamped file>'; Run = { param($a) Backup-Bcd $a }; RunArg = $t } } },
+            return @{ Summary = 'bcdedit /export <timestamped file>'; Run = { param($a) if (-not (Backup-Bcd $a)) { Msg 'The BCD backup failed. See the activity log.' 'Error' 'Error' } }; RunArg = $t } } },
     [pscustomobject]@{ Name = 'BCD: restore from backup (import)'; Needs = 'install'
         Help = "Replaces the boot configuration store with a backup file made earlier (bcdedit /import).${NL}${NL}Use cases:${NL}- Undo a failed repair or rebuild.${NL}- Recover after a bad BCD edit.${NL}${NL}A fresh backup of the current store is taken first. This replaces the WHOLE store."
         Build = { param($c, $tool)

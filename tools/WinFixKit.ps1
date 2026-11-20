@@ -1,3 +1,4 @@
+# Version 1.2 (2026-11-19) - edited copy. What changed: Edited scripts\V1.2\CHANGES.md
 <#
 .SYNOPSIS
   WinFixKit - Windows troubleshooting power tool (replacement for the retired .diagcab troubleshooters).
@@ -104,6 +105,62 @@ function Rename-WithStamp([string]$path) {
             "Renamed: $path  ->  $newName"
         } catch { "Could not rename ${path}: $($_.Exception.Message)" }
     } else { "Not found (skipped): $path" }
+}
+
+# Real on-disk path: follows junctions/symlinks (C:\Documents and Settings -> C:\Users) and expands 8.3 names (C:\PROGRA~1).
+function Resolve-RealPath([string]$Path) {
+    if (-not ('WfkPath' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System; using System.Text; using System.Runtime.InteropServices; using Microsoft.Win32.SafeHandles;
+public static class WfkPath {
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    static extern SafeFileHandle CreateFileW(string name, uint access, uint share, IntPtr sa, uint disposition, uint flags, IntPtr template);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    static extern uint GetFinalPathNameByHandleW(SafeFileHandle h, StringBuilder buf, uint len, uint flags);
+    public static string Final(string path) {
+        using (SafeFileHandle h = CreateFileW(path, 0, 7, IntPtr.Zero, 3, 0x02000000, IntPtr.Zero)) {
+            if (h.IsInvalid) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+            StringBuilder sb = new StringBuilder(32768);
+            uint n = GetFinalPathNameByHandleW(h, sb, (uint)sb.Capacity, 0);
+            if (n == 0 || n >= sb.Capacity) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+            string s = sb.ToString();
+            if (s.StartsWith(@"\\?\UNC\")) return @"\\" + s.Substring(8);
+            if (s.StartsWith(@"\\?\")) return s.Substring(4);
+            return s;
+        }
+    }
+}
+'@
+    }
+    if ($Path -match '^[A-Za-z]:$') { $Path += '\' }   # bare "C:" means "current folder on C:", not the root
+    [WfkPath]::Final($Path).TrimEnd('\')
+}
+
+# Returns a reason string if a folder must NOT get recursive takeown + icacls /reset, otherwise $null.
+# Works on the REAL path, so junctions and 8.3 short names cannot sneak past the list.
+function Test-ProtectedFolder([string]$Path) {
+    if ($Path -match '^[A-Za-z]:\\?$') { return "$Path is a drive root" }
+    try { $p = Resolve-RealPath $Path } catch { return "cannot resolve the real path ($($_.Exception.Message))" }
+    $under = { param($child, $parent) $parent -and ($child -eq $parent -or $child.StartsWith($parent + '\', [StringComparison]::OrdinalIgnoreCase)) }
+    $norm  = { param($x) if ($x) { try { Resolve-RealPath $x } catch { $x.TrimEnd('\') } } }
+    if ($p -match '^[A-Za-z]:$' -or $p -match '^\\\\[^\\]+\\[^\\]+$') { return "$p is a drive or share root" }
+    # Hidden system folders at the root of ANY drive
+    if ($p -match '^(?:[A-Za-z]:|\\\\[^\\]+\\[^\\]+)\\(\$Recycle\.Bin|System Volume Information|Recovery|Boot|EFI|Config\.Msi|\$WinREAgent|\$WINDOWS\.~BT|\$Windows\.~WS|\$SysReset)(\\|$)') { return "$p is a Windows system folder" }
+    foreach ($sys in $env:SystemRoot, $env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:ProgramW6432, $env:ProgramData) {
+        $s = & $norm $sys
+        if (& $under $p $s) { return "$p is inside protected system folder $s" }
+    }
+    $plKey = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList'
+    $usersDir = & $norm ((Get-ItemProperty -LiteralPath $plKey -ErrorAction SilentlyContinue).ProfilesDirectory)
+    if (-not $usersDir) { $usersDir = & $norm (Join-Path $env:SystemDrive 'Users') }
+    if ($p -eq $usersDir) { return "$p is the Users folder" }
+    foreach ($leaf in 'Default', 'Public') { if (& $under $p (Join-Path $usersDir $leaf)) { return "$p is inside the shared $leaf profile" } }
+    $profiles = @(Get-ChildItem -LiteralPath $plKey -ErrorAction SilentlyContinue | ForEach-Object { & $norm ((Get-ItemProperty -LiteralPath $_.PSPath -ErrorAction SilentlyContinue).ProfileImagePath) } | Where-Object { $_ })
+    foreach ($pr in $profiles) {
+        if ($p -eq $pr) { return "$p is a whole user profile - pick a folder inside it instead" }
+        if (& $under $p (Join-Path $pr 'AppData')) { return "$p is inside AppData (app and system data)" }
+    }
+    return $null
 }
 
 function Get-FolderSizeMB([string]$p) {
@@ -525,7 +582,7 @@ Pick a folder and see its owner and full permission list (icacls). Read-only. Us
           Help = @'
 Take ownership + reset permissions
 Pick a folder. The tool (1) saves its current permissions to an acl-backup file in the logs folder (restore later with: icacls <parent> /restore <file>), (2) takes ownership recursively (takeown), (3) resets permissions back to inherited defaults (icacls /reset).
-Refuses drive roots, C:\Windows, Program Files and C:\Users itself. Use only on user data folders. Needs admin.
+Refuses drive roots, C:\Windows, Program Files, ProgramData, C:\Users itself, the Default and Public profiles, whole user profiles, AppData and hidden system folders (Recovery, System Volume Information, ...). Junctions and short 8.3 names are resolved first, so they cannot bypass this list. Note: the backup restores permissions but NOT the previous owner. Use only on user data folders. Needs admin.
 '@
           Prompt = 'Folder'; PromptText = 'Choose the folder to take ownership of and reset'
           Confirm = 'This takes ownership of the chosen folder and everything inside it and resets its permissions to inherited defaults. A backup of the old permissions is saved to the logs folder. Continue?'
@@ -533,10 +590,9 @@ Refuses drive roots, C:\Windows, Program Files and C:\Users itself. Use only on 
               param($Arg)
               if (-not $Arg) { 'No folder chosen.'; return }
               $p = (Resolve-Path -LiteralPath $Arg).ProviderPath.TrimEnd('\')
-              $pf86 = ${env:ProgramFiles(x86)}
-              if ($p -match '^[A-Za-z]:$' -or $p -eq "$env:SystemDrive\Users" -or $p -like "$env:SystemRoot*" -or $p -like "$env:ProgramFiles*" -or ($pf86 -and $p -like "$pf86*")) {
-                  "REFUSED: $p is a protected location."; return
-              }
+              $why = Test-ProtectedFolder $p
+              if ($why) { "REFUSED: $why."; return }
+              $p = Resolve-RealPath $p
               $bk = Join-Path $script:ReportDir ("acl-backup-{0}-{1}.txt" -f ((Split-Path $p -Leaf) -replace '[^A-Za-z0-9]', '_'), (Get-Date -Format 'yyyyMMdd-HHmmss'))
               "Owner before: $((Get-Acl -LiteralPath $p).Owner)"
               "Saving current permissions to $bk"
@@ -1705,7 +1761,17 @@ foreach ($sec in $Sections) {
 $script:KillBoxes = @(); $script:KillLabels = @()
 $script:KillCounts = @(0, 0, 0, 0, 0, 0, 0)
 $script:KillRunning = $false
-$script:KillCritical = @('RpcSs', 'RpcEptMapper', 'DcomLaunch', 'LSM', 'SamSs', 'BrokerInfrastructure', 'CoreMessagingRegistrar', 'SystemEventsBroker', 'Power', 'PlugPlay', 'ProfSvc', 'EventLog')
+$script:KillCritical = @('RpcSs', 'RpcEptMapper', 'DcomLaunch', 'LSM', 'SamSs', 'BrokerInfrastructure', 'CoreMessagingRegistrar', 'SystemEventsBroker', 'Power', 'PlugPlay', 'ProfSvc', 'EventLog', 'mpssvc', 'BFE')
+
+# $true if the service's recovery settings REBOOT Windows when it dies (SC_ACTION_REBOOT = 2).
+# Reads the FailureActions registry value directly, so it does not depend on the Windows display language.
+function Test-RebootOnFailure([string]$Name) {
+    $b = (Get-ItemProperty -LiteralPath "HKLM:\SYSTEM\CurrentControlSet\Services\$Name" -Name FailureActions -ErrorAction SilentlyContinue).FailureActions
+    if (-not $b -or $b.Length -lt 20) { return $false }
+    $n = [BitConverter]::ToInt32($b, 12)
+    for ($i = 0; $i -lt $n -and (24 + 8 * $i) -le $b.Length; $i++) { if ([BitConverter]::ToInt32($b, 20 + 8 * $i) -eq 2) { return $true } }
+    return $false
+}
 $script:KillBlockedProcs = @('lsass', 'csrss', 'wininit', 'winlogon', 'services', 'smss', 'System', 'Registry', 'Memory Compression')
 $script:KillTimer = New-Object System.Windows.Forms.Timer
 $script:KillTimer.Interval = 1000
@@ -1725,6 +1791,8 @@ function Invoke-KillTick {
             $proc = Get-Process -Id $svcPid -ErrorAction SilentlyContinue
             if ($proc -and ($script:KillBlockedProcs -contains $proc.ProcessName)) { $lbl.Text = "REFUSED: PID $svcPid is $($proc.ProcessName)"; continue }
             $shared = @(Get-CimInstance Win32_Service -Filter "ProcessId=$svcPid" -ErrorAction SilentlyContinue)
+            $rebooters = @(@($name) + @($shared | ForEach-Object { $_.Name }) | Select-Object -Unique | Where-Object { $script:KillCritical -contains $_ -or (Test-RebootOnFailure $_) })
+            if ($rebooters.Count) { $lbl.Text = "REFUSED: PID $svcPid hosts $($rebooters -join ', ') - Windows restarts or breaks if that dies"; continue }
             if ($shared.Count -gt 1 -and -not $script:KillAllowShared.Checked) {
                 $others = (($shared | Where-Object { $_.Name -ne $name } | Select-Object -First 4).Name) -join ', '
                 $lbl.Text = "SKIPPED: PID $svcPid is shared with $($shared.Count - 1) other service(s) ($others). Tick the box above to allow."
@@ -1793,7 +1861,7 @@ For each service name the tool repeats this every tick (default 1000 ms):
 Use the SHORT service name (for example CryptSvc, Spooler, wuauserv), shown in Services > Properties > "Service name".
 
 Safety rails:
-  - Critical services (RpcSs, DcomLaunch, LSM, SamSs, EventLog, ...) and core processes (lsass, csrss, wininit, winlogon, services, smss) are refused.
+  - Critical services (RpcSs, DcomLaunch, LSM, SamSs, EventLog, Windows Firewall, ...), any service whose recovery action is "Restart the computer", any process that hosts one of those, and core processes (lsass, csrss, wininit, winlogon, services, smss) are refused.
   - If the PID is shared by several services (a shared svchost), killing it would take the others down too, so it is SKIPPED unless you tick "Allow killing shared processes".
   - Every kill is written to the session log. Closing the window stops the killer.
   - "Start the services again when I click STOP" tries Start-Service on each name afterwards.
