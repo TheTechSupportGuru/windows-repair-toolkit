@@ -1,5 +1,5 @@
 #requires -Version 5.1
-# Version 1.8.1 (2026-11-20). What changed: docs/changes/V1.8.1.md
+# Version 1.8.2 (2026-11-20). What changed: docs/changes/V1.8.2.md
 # Windows Repair Toolkit - https://github.com/TheTechSupportGuru/windows-repair-toolkit
 # Copyright (C) 2026 TheTechSupportGuru
 # SPDX-License-Identifier: GPL-3.0-or-later
@@ -49,7 +49,23 @@ function Set-WrtScaling($f) {
         $this.AutoScaleDimensions = New-Object Drawing.SizeF(96, 96); $this.AutoScaleMode = [Windows.Forms.AutoScaleMode]::Dpi
         $k = Get-WrtScale $this
         if ($k -gt 1.01) { Resize-WrtColumns $this $k }
+        Move-WrtIntoView $this
     })
+}
+# WinForms centres a window using its size BEFORE scaling, so a scaled window grew past the right and bottom edge
+# of the screen: centre it again with its final size and keep it inside the screen's working area.
+function Move-WrtIntoView($f) {
+    try {
+        $wa = [Windows.Forms.Screen]::FromControl($f).WorkingArea
+        if ($f.Width -gt $wa.Width) { $f.Width = $wa.Width }
+        if ($f.Height -gt $wa.Height) { $f.Height = $wa.Height }
+        $sp = [string]$f.StartPosition; $r = $null
+        if ($sp -eq 'CenterParent' -and $f.Owner) { $r = $f.Owner.Bounds } elseif ($sp -eq 'CenterScreen' -or $sp -eq 'CenterParent') { $r = $wa }
+        $x = $f.Left; $y = $f.Top
+        if ($r) { $x = $r.Left + [int](($r.Width - $f.Width) / 2); $y = $r.Top + [int](($r.Height - $f.Height) / 2) }
+        $x = [Math]::Max($wa.Left, [Math]::Min($x, $wa.Right - $f.Width)); $y = [Math]::Max($wa.Top, [Math]::Min($y, $wa.Bottom - $f.Height))
+        $f.Location = New-Object Drawing.Point($x, $y)
+    } catch {}
 }
 # list view column widths are not scaled by WinForms
 function Resize-WrtColumns($parent, [double]$k) {

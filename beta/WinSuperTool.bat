@@ -1,5 +1,5 @@
 @echo off
-rem Version 1.9 BETA 3 (2026-11-20) - launcher for the beta WinSuperTool.ps1 in this folder. What changed: docs/changes/V1.9-beta.3.md
+rem Version 1.9 BETA 4 (2026-11-20) - launcher for the beta WinSuperTool.ps1 in this folder. What changed: docs/changes/V1.9-beta.4.md
 rem Windows Repair Toolkit - Copyright (C) 2026 TheTechSupportGuru - SPDX-License-Identifier: GPL-3.0-or-later
 rem Free software under the GNU General Public License v3 or (at your option) any later version, WITHOUT ANY WARRANTY. See LICENSE
 setlocal EnableExtensions

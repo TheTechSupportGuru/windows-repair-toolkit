@@ -1,5 +1,5 @@
 #requires -Version 5.1
-# Version 1.8.1 (2026-11-20). What changed: docs/changes/V1.8.1.md
+# Version 1.8.2 (2026-11-20). What changed: docs/changes/V1.8.2.md
 # NO-AI EDITION - generated from WinSuperTool.ps1 by build/Build-NoAIEdition.ps1; do not edit by hand.
 # The AI Analyze tab, the phone QR login, the "Send key logs to AI" button and all code that talks to an AI service
 # or listens on the network are left out. Everything else is identical to WinSuperTool.ps1 of the same version.
@@ -76,7 +76,23 @@ function Set-WrtScaling($f) {
         $this.AutoScaleDimensions = New-Object Drawing.SizeF(96, 96); $this.AutoScaleMode = [Windows.Forms.AutoScaleMode]::Dpi
         $k = Get-WrtScale $this
         if ($k -gt 1.01) { Resize-WrtColumns $this $k }
+        Move-WrtIntoView $this
     })
+}
+# WinForms centres a window using its size BEFORE scaling, so a scaled window grew past the right and bottom edge
+# of the screen: centre it again with its final size and keep it inside the screen's working area.
+function Move-WrtIntoView($f) {
+    try {
+        $wa = [Windows.Forms.Screen]::FromControl($f).WorkingArea
+        if ($f.Width -gt $wa.Width) { $f.Width = $wa.Width }
+        if ($f.Height -gt $wa.Height) { $f.Height = $wa.Height }
+        $sp = [string]$f.StartPosition; $r = $null
+        if ($sp -eq 'CenterParent' -and $f.Owner) { $r = $f.Owner.Bounds } elseif ($sp -eq 'CenterScreen' -or $sp -eq 'CenterParent') { $r = $wa }
+        $x = $f.Left; $y = $f.Top
+        if ($r) { $x = $r.Left + [int](($r.Width - $f.Width) / 2); $y = $r.Top + [int](($r.Height - $f.Height) / 2) }
+        $x = [Math]::Max($wa.Left, [Math]::Min($x, $wa.Right - $f.Width)); $y = [Math]::Max($wa.Top, [Math]::Min($y, $wa.Bottom - $f.Height))
+        $f.Location = New-Object Drawing.Point($x, $y)
+    } catch {}
 }
 # list view column widths are not scaled by WinForms
 function Resize-WrtColumns($parent, [double]$k) {
@@ -1447,6 +1463,8 @@ $tpSafe = New-Page '4. Safe Mode'
 $tpSys  = New-Page '5. Sysprep'
 $tpUna  = New-Page '6. Unattend'
 $tpRec  = New-Page '7. Recovery (experimental)'
+# create the tab control now (1.8.2): until it exists every tab page is a 200 x 100 placeholder, and controls anchored to the bottom or right of a page would be measured against that and end up in the wrong place
+[void]$tabs.Handle      # (reading .Handle creates it; CreateControl() does nothing while the window is not shown yet)
 
 # ---------- activity log ----------
 $lblLog = New-Ctl 'Label' $form 10 556 600 18 'Activity log (also saved as activity.log in the data folder):'

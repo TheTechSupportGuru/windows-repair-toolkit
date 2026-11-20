@@ -57,6 +57,16 @@ Describe 'T2 window helpers: display scaling, splash, resizing (all GUI tools)' 
             if ($t -notmatch '(?m)^Initialize-WrtWindow [^\r\n]+\r?\n\[void\]\$(script:)?[Ff]orm\.ShowDialog\(\)') { throw "$($f.Name): Initialize-WrtWindow not right before ShowDialog" }
         }
     }
+    It 'tabbed tools create the tab control right after their last page (else pages are 200 x 100 while controls are anchored)' {
+        foreach ($f in $GuiTools) {
+            $lines = [IO.File]::ReadAllLines($f.FullName)
+            $pages = @(for ($i = 0; $i -lt $lines.Count; $i++) { if ($lines[$i] -match "^\`$\w+\s*= New-Page '|^\`$g1 = New-Page") { $i } })
+            if (-not $pages.Count) { continue }
+            $cc = @(for ($i = 0; $i -lt $lines.Count; $i++) { if ($lines[$i] -match '^\[void\]\$tabs\.Handle\b') { $i } })
+            if ($cc.Count -ne 1) { throw "$($f.Name): [void]`$tabs.Handle found $($cc.Count) times" }
+            if ($cc[0] -lt $pages[-1] -or $cc[0] - $pages[-1] -gt 3) { throw "$($f.Name): the tab control is not created right after the last New-Page" }
+        }
+    }
     It 'the splash says exactly what it should' {
         $t = [IO.File]::ReadAllText($GuiTools[0].FullName)
         $t | Should Match "@\('Windows Repair Toolkit', 22"
@@ -66,7 +76,7 @@ Describe 'T2 window helpers: display scaling, splash, resizing (all GUI tools)' 
     It 'Get-WrtScale reads the display scale (1.0 at 96 DPI)' {
         Add-Type -AssemblyName System.Windows.Forms, System.Drawing
         $tk = $null; $pe = $null; $ast = [Management.Automation.Language.Parser]::ParseFile($GuiTools[0].FullName, [ref]$tk, [ref]$pe)
-        foreach ($n in 'Set-WrtScaling', 'Get-WrtScale', 'Resize-WrtColumns') { . ([scriptblock]::Create($ast.Find({ param($x) $x -is [Management.Automation.Language.FunctionDefinitionAst] -and $x.Name -eq $n }, $true).Extent.Text)) }
+        foreach ($n in 'Set-WrtScaling', 'Get-WrtScale', 'Resize-WrtColumns', 'Move-WrtIntoView') { . ([scriptblock]::Create($ast.Find({ param($x) $x -is [Management.Automation.Language.FunctionDefinitionAst] -and $x.Name -eq $n }, $true).Extent.Text)) }
         $f = New-Object Windows.Forms.Form; Set-WrtScaling $f
         $f.AutoScaleMode | Should Not Be 'Dpi'          # not yet: it is switched on when the finished window loads
         $f.Add_Shown({ $script:modeAtShown = $f.AutoScaleMode; $f.Close() })
@@ -85,6 +95,18 @@ Describe 'T2 window helpers: display scaling, splash, resizing (all GUI tools)' 
         $f.Add_Shown({ $script:sz = @($f.ClientSize.Width, $b.Width); $f.Close() })
         [void]$f.ShowDialog(); $f.Dispose()
         $script:sz[0] | Should Be 600; $script:sz[1] | Should Be 120
+    }
+    It 'a centred window that grows when it scales ends up centred and fully on the screen (found at simulated 150 %)' {
+        $tk = $null; $pe = $null; $ast = [Management.Automation.Language.Parser]::ParseFile($GuiTools[0].FullName, [ref]$tk, [ref]$pe)
+        . ([scriptblock]::Create($ast.Find({ param($x) $x -is [Management.Automation.Language.FunctionDefinitionAst] -and $x.Name -eq 'Move-WrtIntoView' }, $true).Extent.Text))
+        $wa = [Windows.Forms.Screen]::PrimaryScreen.WorkingArea
+        $f = New-Object Windows.Forms.Form; $f.StartPosition = 'CenterScreen'
+        $f.ClientSize = New-Object Drawing.Size([int]($wa.Width * 0.5), [int]($wa.Height * 0.6))       # x1.5 -> 75 % wide, 90 % high
+        $f.Add_Load({ $this.AutoScaleDimensions = New-Object Drawing.SizeF(64, 64); $this.AutoScaleMode = 'Dpi'; Move-WrtIntoView $this })
+        $f.Add_Shown({ $script:b = $f.Bounds; $f.Close() })
+        [void]$f.ShowDialog(); $f.Dispose()
+        $wa.Contains($script:b) | Should Be $true
+        [Math]::Abs(($script:b.Left - $wa.Left) - ($wa.Right - $script:b.Right)) | Should BeLessThan 3        # centred left / right
     }
 }
 

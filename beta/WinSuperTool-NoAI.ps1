@@ -1,5 +1,5 @@
 #requires -Version 5.1
-# Version 1.9 BETA 3 (2026-11-20) - BETA build, not the stable release. What changed: docs/changes/V1.9-beta.3.md
+# Version 1.9 BETA 4 (2026-11-20) - BETA build, not the stable release. What changed: docs/changes/V1.9-beta.4.md
 # NO-AI EDITION - generated from WinSuperTool.ps1 by build/Build-NoAIEdition.ps1; do not edit by hand.
 # The AI Analyze tab, the phone QR login, the "Send key logs to AI" button and all code that talks to an AI service
 # or listens on the network are left out. Everything else is identical to WinSuperTool.ps1 of the same version.
@@ -41,7 +41,7 @@
 #>
 
 $ErrorActionPreference = 'Continue'
-$AppName = 'Windows Super Tool 1.9 BETA 3 (no-AI edition)'
+$AppName = 'Windows Super Tool 1.9 BETA 4 (no-AI edition)'
 $NL      = "`r`n"
 $IsWinPE = Test-Path 'HKLM:\SYSTEM\CurrentControlSet\Control\MiniNT'
 
@@ -82,7 +82,23 @@ function Set-WrtScaling($f) {
         $this.AutoScaleDimensions = New-Object Drawing.SizeF(96, 96); $this.AutoScaleMode = [Windows.Forms.AutoScaleMode]::Dpi
         $k = Get-WrtScale $this
         if ($k -gt 1.01) { Resize-WrtColumns $this $k }
+        Move-WrtIntoView $this
     })
+}
+# WinForms centres a window using its size BEFORE scaling, so a scaled window grew past the right and bottom edge
+# of the screen: centre it again with its final size and keep it inside the screen's working area.
+function Move-WrtIntoView($f) {
+    try {
+        $wa = [Windows.Forms.Screen]::FromControl($f).WorkingArea
+        if ($f.Width -gt $wa.Width) { $f.Width = $wa.Width }
+        if ($f.Height -gt $wa.Height) { $f.Height = $wa.Height }
+        $sp = [string]$f.StartPosition; $r = $null
+        if ($sp -eq 'CenterParent' -and $f.Owner) { $r = $f.Owner.Bounds } elseif ($sp -eq 'CenterScreen' -or $sp -eq 'CenterParent') { $r = $wa }
+        $x = $f.Left; $y = $f.Top
+        if ($r) { $x = $r.Left + [int](($r.Width - $f.Width) / 2); $y = $r.Top + [int](($r.Height - $f.Height) / 2) }
+        $x = [Math]::Max($wa.Left, [Math]::Min($x, $wa.Right - $f.Width)); $y = [Math]::Max($wa.Top, [Math]::Min($y, $wa.Bottom - $f.Height))
+        $f.Location = New-Object Drawing.Point($x, $y)
+    } catch {}
 }
 # list view column widths are not scaled by WinForms
 function Resize-WrtColumns($parent, [double]$k) {
@@ -1665,8 +1681,15 @@ function Show-TaskSummary($task, $res, $v, [bool]$Modeless = $false) {
         # console opens top-left), staggered so several stay readable.
         $f.TopMost = $true; $f.StartPosition = 'Manual'
         $script:SumOffset = ([int]$script:SumOffset + 30) % 240
+        $f.Tag = $script:SumOffset
         $wa = [Windows.Forms.Screen]::PrimaryScreen.WorkingArea
         $f.Location = New-Object Drawing.Point(([Math]::Max($wa.Left, $wa.Right - $f.Width - 8 - $script:SumOffset)), ([Math]::Max($wa.Top, $wa.Bottom - $f.Height - 8 - $script:SumOffset)))
+        # placed again once shown: on a scaled display the window only reaches its final size when it loads, so the
+        # position worked out above would push a 150 % window partly off the screen
+        $f.Add_Shown({
+            $wa2 = [Windows.Forms.Screen]::FromControl($this).WorkingArea; $off = [int]$this.Tag
+            $this.Location = New-Object Drawing.Point(([Math]::Max($wa2.Left, $wa2.Right - $this.Width - 8 - $off)), ([Math]::Max($wa2.Top, $wa2.Bottom - $this.Height - 8 - $off)))
+        })
         $f.Show($form); $f.Activate()
         return
     }
@@ -2644,6 +2667,8 @@ $tpUna  = New-Page '6. Unattend'
 $tpRec  = New-Page '7. Recovery'
 $tpInfo = New-Page '8. System Info'
 $tpAuto = New-Page '9. Automation'
+# create the tab control now (1.8.2): until it exists every tab page is a 200 x 100 placeholder, and controls anchored to the bottom or right of a page would be measured against that and end up in the wrong place
+[void]$tabs.Handle      # (reading .Handle creates it; CreateControl() does nothing while the window is not shown yet)
 
 # ---------- activity log ----------
 $lblLog = New-Ctl 'Label' $form 10 556 600 18 'Activity log (also saved as activity.log in the data folder):'
