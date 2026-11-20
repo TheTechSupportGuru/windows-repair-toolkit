@@ -1,0 +1,189 @@
+name: Bug report
+description: Something in one of the tools doesn't work or gives a wrong result.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Pick the tool and the part of it where the problem happens, so it can be found and fixed quickly.
+        
+        **Before posting logs or screenshots, remove personal details: PC name, user name, IP addresses, serial numbers and any API key. Never post your Claude or Gemini API key.**
+  - type: dropdown
+    id: tool
+    attributes:
+      label: "Tool"
+      description: "Which tool is this about?"
+      options:
+        - "WinSuperTool"
+        - "WinFixKit"
+        - "WinRepairTool"
+        - "Collect-Logs"
+        - "Monitor-Logs"
+        - "ClaudeLogAnalyzer"
+        - "Run-PS-As-Admin"
+        - "Several tools"
+        - "Not about a specific tool"
+    validations:
+      required: true
+  - type: dropdown
+    id: part
+    attributes:
+      label: "Part of the tool"
+      description: "Which tab or part of that tool? Options start with the tool name."
+      options:
+        - "WinSuperTool: Target Windows bar"
+        - "WinSuperTool: Collect Logs tab"
+        - "WinSuperTool: Live Monitor tab"
+        - "WinSuperTool: AI Analyze tab"
+        - "WinSuperTool: Mount tab"
+        - "WinSuperTool: Safe Mode tab"
+        - "WinSuperTool: Sysprep tab"
+        - "WinSuperTool: Unattend tab"
+        - "WinSuperTool: Recovery tab"
+        - "WinSuperTool: Startup, admin rights or launcher"
+        - "WinFixKit: Overview"
+        - "WinFixKit: Windows Update"
+        - "WinFixKit: Files and Folders"
+        - "WinFixKit: Start Menu"
+        - "WinFixKit: Microsoft Account"
+        - "WinFixKit: Store Apps"
+        - "WinFixKit: Printer"
+        - "WinFixKit: Printer Share Fixes"
+        - "WinFixKit: Network"
+        - "WinFixKit: Audio"
+        - "WinFixKit: Hardware and Devices"
+        - "WinFixKit: Power"
+        - "WinFixKit: Search and Indexing"
+        - "WinFixKit: Network Sharing"
+        - "WinFixKit: SMB 24H2 Fix"
+        - "WinFixKit: Service Killer"
+        - "WinFixKit: Registry Backups"
+        - "WinFixKit: Startup, admin rights or launcher"
+        - "WinRepairTool: Mount tab"
+        - "WinRepairTool: Safe Mode tab"
+        - "WinRepairTool: Sysprep tab"
+        - "WinRepairTool: Unattend tab"
+        - "WinRepairTool: Recovery tab"
+        - "WinRepairTool: Startup or admin rights"
+        - "Collect-Logs: Windows Update logs"
+        - "Collect-Logs: SFC / DISM / CBS logs"
+        - "Collect-Logs: Event Viewer export"
+        - "Collect-Logs: Crashes"
+        - "Collect-Logs: Large dumps"
+        - "Collect-Logs: Setup / upgrade logs"
+        - "Collect-Logs: System info"
+        - "Collect-Logs: Output folder or summary"
+        - "Collect-Logs: Startup or admin rights"
+        - "Monitor-Logs: Windows Update logs"
+        - "Monitor-Logs: SFC / DISM / CBS logs"
+        - "Monitor-Logs: Setup / upgrade logs"
+        - "Monitor-Logs: Event Viewer (live)"
+        - "Monitor-Logs: Crashes"
+        - "Monitor-Logs: Custom or pasted paths"
+        - "Monitor-Logs: Monitor windows"
+        - "Monitor-Logs: Startup or admin rights"
+        - "ClaudeLogAnalyzer: Phone QR login"
+        - "ClaudeLogAnalyzer: Adding files"
+        - "ClaudeLogAnalyzer: Claude answers"
+        - "ClaudeLogAnalyzer: Gemini answers"
+        - "ClaudeLogAnalyzer: Startup or launcher"
+        - "Run-PS-As-Admin: Dragging a script onto it"
+        - "Run-PS-As-Admin: Pasting a script path"
+        - "General: Documentation or README"
+        - "General: Releases and downloads"
+        - "General: Whole toolkit"
+        - "Not sure"
+    validations:
+      required: true
+  - type: dropdown
+    id: version
+    attributes:
+      label: "Tool version"
+      description: "The version line is near the top of the script, for example \"# Version 1.8\"."
+      options:
+        - "1.8 (latest)"
+        - "1.7"
+        - "1.6 or older"
+        - "Not sure"
+    validations:
+      required: true
+  - type: dropdown
+    id: windows
+    attributes:
+      label: "Windows edition"
+      description: "Where did you run the tool?"
+      options:
+        - "Windows 11"
+        - "Windows 10"
+        - "WinPE / Hiren's BootCD PE"
+        - "Windows Server"
+        - "Other"
+    validations:
+      required: true
+  - type: input
+    id: build
+    attributes:
+      label: "Windows version and language"
+      description: "Optional. Several bugs only show up on some builds or display languages."
+      placeholder: "for example 24H2, German"
+    validations:
+      required: false
+  - type: dropdown
+    id: severity
+    attributes:
+      label: "How bad is it?"
+      description: "Pick the closest."
+      options:
+        - "PC would not boot, or data was lost"
+        - "A feature does not work at all"
+        - "Wrong or misleading result"
+        - "Minor or cosmetic"
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: "What happened"
+      description: "Describe the problem. Include any error message shown in the window."
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: "Steps to reproduce"
+      description: "What did you click or choose, in order?"
+      placeholder: "1. Open ...\n2. Click ...\n3. See ..."
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: "What you expected"
+      description: "What should have happened instead?"
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: "Logs or error messages"
+      description: "Optional. Paste the relevant lines from the tool's log or output box. Remove personal details first."
+      render: text
+    validations:
+      required: false
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: "Screenshots"
+      description: "Optional. Drag images here. Crop out personal details first."
+    validations:
+      required: false
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: "Before you submit"
+      options:
+        - label: "I searched the existing issues and this is not a duplicate"
+          required: false
+        - label: "I removed personal details (PC name, user name, IP addresses, keys) from what I posted"
+          required: true

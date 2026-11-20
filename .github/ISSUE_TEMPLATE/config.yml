@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Ask a question
+    url: https://github.com/TheTechSupportGuru/windows-repair-toolkit/discussions/new?category=q-a
+    about: How do I...? Questions go to the Q&A discussions.
+  - name: Discuss an idea
+    url: https://github.com/TheTechSupportGuru/windows-repair-toolkit/discussions/new?category=ideas
+    about: Open-ended ideas and suggestions go to the Ideas discussions.

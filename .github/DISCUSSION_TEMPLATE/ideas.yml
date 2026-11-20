@@ -1,0 +1,108 @@
+title: "[Idea]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Share an idea for the toolkit. Pick the tool and part it's about, or **Not about a specific tool** for something new.
+  - type: dropdown
+    id: tool
+    attributes:
+      label: "Tool"
+      description: "Which tool is this about?"
+      options:
+        - "WinSuperTool"
+        - "WinFixKit"
+        - "WinRepairTool"
+        - "Collect-Logs"
+        - "Monitor-Logs"
+        - "ClaudeLogAnalyzer"
+        - "Run-PS-As-Admin"
+        - "Several tools"
+        - "Not about a specific tool"
+    validations:
+      required: true
+  - type: dropdown
+    id: part
+    attributes:
+      label: "Part of the tool"
+      description: "Which tab or part of that tool? Options start with the tool name."
+      options:
+        - "WinSuperTool: Target Windows bar"
+        - "WinSuperTool: Collect Logs tab"
+        - "WinSuperTool: Live Monitor tab"
+        - "WinSuperTool: AI Analyze tab"
+        - "WinSuperTool: Mount tab"
+        - "WinSuperTool: Safe Mode tab"
+        - "WinSuperTool: Sysprep tab"
+        - "WinSuperTool: Unattend tab"
+        - "WinSuperTool: Recovery tab"
+        - "WinSuperTool: Startup, admin rights or launcher"
+        - "WinFixKit: Overview"
+        - "WinFixKit: Windows Update"
+        - "WinFixKit: Files and Folders"
+        - "WinFixKit: Start Menu"
+        - "WinFixKit: Microsoft Account"
+        - "WinFixKit: Store Apps"
+        - "WinFixKit: Printer"
+        - "WinFixKit: Printer Share Fixes"
+        - "WinFixKit: Network"
+        - "WinFixKit: Audio"
+        - "WinFixKit: Hardware and Devices"
+        - "WinFixKit: Power"
+        - "WinFixKit: Search and Indexing"
+        - "WinFixKit: Network Sharing"
+        - "WinFixKit: SMB 24H2 Fix"
+        - "WinFixKit: Service Killer"
+        - "WinFixKit: Registry Backups"
+        - "WinFixKit: Startup, admin rights or launcher"
+        - "WinRepairTool: Mount tab"
+        - "WinRepairTool: Safe Mode tab"
+        - "WinRepairTool: Sysprep tab"
+        - "WinRepairTool: Unattend tab"
+        - "WinRepairTool: Recovery tab"
+        - "WinRepairTool: Startup or admin rights"
+        - "Collect-Logs: Windows Update logs"
+        - "Collect-Logs: SFC / DISM / CBS logs"
+        - "Collect-Logs: Event Viewer export"
+        - "Collect-Logs: Crashes"
+        - "Collect-Logs: Large dumps"
+        - "Collect-Logs: Setup / upgrade logs"
+        - "Collect-Logs: System info"
+        - "Collect-Logs: Output folder or summary"
+        - "Collect-Logs: Startup or admin rights"
+        - "Monitor-Logs: Windows Update logs"
+        - "Monitor-Logs: SFC / DISM / CBS logs"
+        - "Monitor-Logs: Setup / upgrade logs"
+        - "Monitor-Logs: Event Viewer (live)"
+        - "Monitor-Logs: Crashes"
+        - "Monitor-Logs: Custom or pasted paths"
+        - "Monitor-Logs: Monitor windows"
+        - "Monitor-Logs: Startup or admin rights"
+        - "ClaudeLogAnalyzer: Phone QR login"
+        - "ClaudeLogAnalyzer: Adding files"
+        - "ClaudeLogAnalyzer: Claude answers"
+        - "ClaudeLogAnalyzer: Gemini answers"
+        - "ClaudeLogAnalyzer: Startup or launcher"
+        - "Run-PS-As-Admin: Dragging a script onto it"
+        - "Run-PS-As-Admin: Pasting a script path"
+        - "General: Documentation or README"
+        - "General: Releases and downloads"
+        - "General: Whole toolkit"
+        - "Not sure"
+    validations:
+      required: false
+  - type: textarea
+    id: idea
+    attributes:
+      label: "Your idea"
+      description: "What would you like the tool to do?"
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: "Why it would help"
+      description: "What problem does it solve, or what would it make easier?"
+    validations:
+      required: true

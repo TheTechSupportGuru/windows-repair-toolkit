@@ -13,6 +13,15 @@ Get a single tool from the [latest release](../../releases/latest): each tool ha
 
 Windows marks downloaded files as blocked: right-click the zip > **Properties** > tick **Unblock** before extracting.
 
+## Bugs, ideas and questions
+
+- **Something broken?** Open a [bug report](../../issues/new?template=1-bug-report.yml).
+- **A specific change you want?** Open a [feature request](../../issues/new?template=2-feature-request.yml).
+- **An idea to talk through?** Start a discussion in [Ideas](../../discussions/new?category=ideas).
+- **A how-to question?** Ask in [Q&A](../../discussions/new?category=q-a).
+
+Each form asks which tool and which part of it (tab or section) you mean, so reports reach the right place. Before posting logs or screenshots, remove your PC name, user name, IP addresses and any API key.
+
 ## The tools
 
 All scripts are in [`tools/`](tools/). Start each one with its launcher, or right-click it and choose **Run with PowerShell**. Each tool asks for administrator rights itself.
