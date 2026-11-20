@@ -7,6 +7,12 @@ A set of PowerShell tools for repairing and troubleshooting Windows 10/11 PCs, i
 
 **Current version: 1.8** (2026-11-19). Every version is a git tag (`v1.1` to `v1.8`), so `git diff v1.7 v1.8` shows exactly what changed.
 
+## Download
+
+Get a single tool from the [latest release](../../releases/latest): each tool has its own zip (for example `WinSuperTool-v1.8.zip`) with the script, its launcher and a short read-me. **Source code** contains everything. Every older version is on the [releases page](../../releases) too.
+
+Windows marks downloaded files as blocked: right-click the zip > **Properties** > tick **Unblock** before extracting.
+
 ## The tools
 
 All scripts are in [`tools/`](tools/). Start each one with its launcher, or right-click it and choose **Run with PowerShell**. Each tool asks for administrator rights itself.
