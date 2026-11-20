@@ -1,6 +1,6 @@
 # Windows Repair Toolkit - https://github.com/TheTechSupportGuru/windows-repair-toolkit
 # Copyright (C) 2026 TheTechSupportGuru
-# SPDX-License-Identifier: GPL-3.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 #
 # Build-NoAIEdition.ps1 - builds WinSuperTool-NoAI.ps1 (+ its .bat launcher) from WinSuperTool.ps1.
 #

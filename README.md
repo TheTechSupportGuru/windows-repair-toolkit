@@ -196,7 +196,7 @@ Never edit `WinSuperTool-NoAI.ps1` by hand. Change `WinSuperTool.ps1`, keep any 
 
 Copyright (C) 2026 TheTechSupportGuru.
 
-This project is free software, licensed under the **GNU General Public License v3.0** (`GPL-3.0-only`). See [`LICENSE`](LICENSE) for the full text.
+This project is free software, licensed under the **GNU General Public License, version 3 or (at your option) any later version** (`GPL-3.0-or-later`). See [`LICENSE`](LICENSE) for the full text.
 
 What that means in practice:
 - You may use, study, share and change these tools.

@@ -2,11 +2,11 @@
 # Version 1.8.1 (2026-11-20). What changed: docs/changes/V1.8.1.md
 # Windows Repair Toolkit - https://github.com/TheTechSupportGuru/windows-repair-toolkit
 # Copyright (C) 2026 TheTechSupportGuru
-# SPDX-License-Identifier: GPL-3.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 # This program is free software: you can redistribute it and/or modify it under the terms of the GNU General
-# Public License version 3 as published by the Free Software Foundation. It is distributed WITHOUT ANY WARRANTY;
-# without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the LICENSE file
-# or https://www.gnu.org/licenses/gpl-3.0.html for details.
+# Public License as published by the Free Software Foundation, either version 3 of the License, or (at your
+# option) any later version. It is distributed WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the LICENSE file or https://www.gnu.org/licenses/.
 <#
     WinSuperTool.ps1  -  all-in-one Windows tech toolkit (one file, no extra libraries)
     Runs on Windows 10 / 11 and in WinPE (built for Hiren's BootCD PE 11).

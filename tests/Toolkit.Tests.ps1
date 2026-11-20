@@ -20,7 +20,7 @@ Describe 'T1 license (GNU GPL v3.0)' {
     It 'every script and launcher carries the SPDX line and copyright' {
         foreach ($f in $Ps1 + $Bat) {
             $t = [IO.File]::ReadAllText($f.FullName)
-            if ($t -notmatch 'SPDX-License-Identifier: GPL-3\.0-only') { throw "$($f.Name): no SPDX line" }
+            if ($t -notmatch 'SPDX-License-Identifier: GPL-3\.0-or-later') { throw "$($f.Name): no SPDX line" }
             if ($t -notmatch 'Copyright \(C\) 2026 TheTechSupportGuru') { throw "$($f.Name): no copyright line" }
         }
         ($Ps1 + $Bat).Count | Should BeGreaterThan 10
