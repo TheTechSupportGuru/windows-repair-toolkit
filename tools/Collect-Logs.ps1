@@ -1,4 +1,5 @@
 #requires -Version 5.1
+# Version 1.3 (2026-11-19) - edited copy. What changed: Edited scripts\V1.3\CHANGES.md
 <#
   Collect-Logs.ps1  -  Windows 11 log collector
   Copies Windows Update / DISM-CBS / Event Viewer / crash / setup logs
@@ -26,10 +27,15 @@ function Get-InteractiveUser {
         if ($u) {
             $sid  = (New-Object Security.Principal.NTAccount($u)).Translate([Security.Principal.SecurityIdentifier]).Value
             $prof = (Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$sid" -ErrorAction Stop).ProfileImagePath
-            $d    = (Get-ItemProperty "Registry::HKEY_USERS\$sid\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders" -ErrorAction Stop).Desktop
-            $d    = [Environment]::ExpandEnvironmentVariables(($d -replace '%USERPROFILE%', [regex]::Escape($prof) -replace '\\\\','\'))
-            $profilePath = $prof
-            if ($d) { $desktop = $d }
+            if ($prof) { $profilePath = $prof }
+            # read the RAW value: Get-ItemProperty would expand %USERPROFILE% with the profile of whoever ELEVATED
+            # (e.g. a different admin account), sending the logs to the wrong Desktop. (Same fix as WinSuperTool.)
+            $key = Get-Item -LiteralPath "Registry::HKEY_USERS\$sid\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders" -ErrorAction Stop
+            $raw = $key.GetValue('Desktop', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+            if ($raw) {
+                $d = [regex]::Replace([string]$raw, '%USERPROFILE%', $profilePath.Replace('$', '$$'), 'IgnoreCase')
+                $desktop = [Environment]::ExpandEnvironmentVariables($d)
+            }
         }
     } catch {}
     [pscustomobject]@{ Profile = $profilePath; Desktop = $desktop }

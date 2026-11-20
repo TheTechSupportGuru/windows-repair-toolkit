@@ -1,4 +1,5 @@
 #requires -Version 5.1
+# Version 1.3 (2026-11-19) - edited copy. What changed: Edited scripts\V1.3\CHANGES.md
 # Claude Log & Screenshot Analyzer - Windows 11, no extra libraries.
 # Works with Claude (Anthropic) or Gemini (Google, has a free tier) - pick in the dropdown.
 # Login: the PC shows a QR code, you scan it with your phone, type/paste your API key on the phone.
@@ -280,7 +281,7 @@ function Start-Pairing {
     $port = $script:Listener.LocalEndpoint.Port
     $b64 = [Convert]::ToBase64String($pad).TrimEnd('=').Replace('+', '-').Replace('/', '_')
     $script:PairExpires = (Get-Date).AddMinutes($PairingMin)
-    $script:Attempts = 0
+    $script:Attempts = 0; $script:PairConns = 0
     return ('http://{0}:{1}/{2}#{3}' -f (Get-LanIp), $port, $script:Token, $b64)
 }
 
@@ -292,7 +293,8 @@ function Send-Resp($stream, [int]$code, [string]$ctype, [string]$body) {
 }
 
 function Handle-Client($client) {
-    $client.ReceiveTimeout = 1500; $client.SendTimeout = 1500
+    $client.ReceiveTimeout = 700; $client.SendTimeout = 700   # runs on the GUI thread: keep each client short
+    $script:PairConns++                     # every connection counts toward the junk limit (see the timer)
     $stream = $client.GetStream()
     $buf = New-Object byte[] 8192; $total = 0; $hEnd = -1; $txt = ''
     while ($total -lt $buf.Length) {
@@ -447,13 +449,16 @@ $timer.Add_Tick({
     $now = Get-Date
     if (-not $script:ApiKey) {
         if ($script:Listener) {
-            if ($now -gt $script:PairExpires -or $script:Attempts -ge 5) {
+            if ($now -gt $script:PairExpires -or $script:Attempts -ge 5 -or $script:PairConns -ge 40) {
                 Stop-Pairing
                 $lblCount.Text = 'This QR code is no longer valid. Click "New QR code".'
                 $old = $picQr.Image; $picQr.Image = $null; if ($old) { $old.Dispose() }
             } else {
                 $lblCount.Text = 'Waiting for your phone... code valid for ' + ($script:PairExpires - $now).ToString('m\:ss')
-                while ($script:Listener -and $script:Listener.Pending()) {
+                # at most 3 clients per tick: this runs on the GUI thread, so a flood of connections must not freeze the window
+                $n = 0
+                while ($script:Listener -and $n -lt 3 -and $script:Listener.Pending()) {
+                    $n++
                     $c = $script:Listener.AcceptTcpClient()
                     try { Handle-Client $c } catch {} finally { $c.Close() }
                     if ($script:ApiKey) { break }

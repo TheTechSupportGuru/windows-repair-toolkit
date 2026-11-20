@@ -1,4 +1,4 @@
-# Version 1.2 (2026-11-19) - edited copy. What changed: Edited scripts\V1.2\CHANGES.md
+# Version 1.3 (2026-11-19) - edited copy. What changed: Edited scripts\V1.3\CHANGES.md
 <#
 .SYNOPSIS
   WinFixKit - Windows troubleshooting power tool (replacement for the retired .diagcab troubleshooters).
@@ -210,11 +210,15 @@ function Get-PowerSettings([string]$sub) {
     }
 }
 
+# Escape text for a '...' PowerShell string. PowerShell also treats the typographic quotes U+2018-U+201B as
+# single quotes (e.g. a profile folder named O<U+2019>Brien), so those must be doubled too, not only '.
+function ConvertTo-SqEscaped([string]$s) { $s -replace "(['$([char]0x2018)-$([char]0x201B)])", '$1$1' }
+
 function Start-InWindow([scriptblock]$Block, [string]$Title) {
     $safe = ($Title -replace '[^A-Za-z0-9]+', '-').Trim('-')
-    $tl = (Join-Path $script:LogDir ("{0}-{1}.txt" -f $safe, (Get-Date -Format 'yyyyMMdd-HHmmss'))).Replace("'", "''")
-    $ld = $script:LogDir.Replace("'", "''")
-    $rdp = $script:ReportDir.Replace("'", "''")
+    $tl = ConvertTo-SqEscaped (Join-Path $script:LogDir ("{0}-{1}.txt" -f $safe, (Get-Date -Format 'yyyyMMdd-HHmmss')))
+    $ld = ConvertTo-SqEscaped $script:LogDir
+    $rdp = ConvertTo-SqEscaped $script:ReportDir
     $text = "`$LogDir = '$ld'`r`n`$ReportDir = '$rdp'`r`n`$Host.UI.RawUI.WindowTitle = '$safe'`r`nStart-Transcript -Path '$tl' | Out-Null`r`n" +
             $Block.ToString() +
             "`r`nStop-Transcript | Out-Null`r`nWrite-Host ''`r`nRead-Host 'Finished. Press Enter to close this window'"
@@ -224,7 +228,8 @@ function Start-InWindow([scriptblock]$Block, [string]$Title) {
 }
 
 # ---------------------------------------------------------------------------------------------
-#  Registry safety net. The FIRST backup of any value/key is kept as "the original" and is never overwritten.
+#  Registry safety net. The FIRST backup of any value/key is kept as "the original" until it is restored.
+#  After a restore, the next fix takes a fresh backup (the value may have been changed legitimately since).
 #    Keys\<id>.json  = manifest for one-click restore      Keys\<id>.reg = full export of the key
 #    Full\<time>\    = SYSTEM + SOFTWARE hive copies (taken once per session before the first registry change)
 # ---------------------------------------------------------------------------------------------
@@ -245,10 +250,16 @@ function Get-RegVal([string]$Key, [string]$Name) {
     if ($null -eq $p) { '(not set)' } else { $p.$Name }
 }
 
+# $true while a backup file exists and has NOT been restored yet (= it still holds the value to go back to)
+function Test-BackupPending([string]$File) {
+    if (-not (Test-Path -LiteralPath $File)) { return $false }
+    try { return (-not (Get-Content -LiteralPath $File -Raw | ConvertFrom-Json).RestoredAt) } catch { return $true }   # unreadable: never overwrite
+}
+
 function Backup-RegValue([string]$Key, [string]$Name, [string]$Why = '') {
     $id = Get-BackupId "$Key|$Name" $Name
     $file = Join-Path $script:RegKeyDir "$id.json"
-    if (Test-Path -LiteralPath $file) { return "  Registry: original of $Key [$Name] is already backed up (kept)." }
+    if (Test-BackupPending $file) { return "  Registry: original of $Key [$Name] is already backed up (kept)." }
     $keyExisted = Test-Path -LiteralPath $Key
     $existed = $false; $kind = $null; $data = $null; $regFile = $null
     if ($keyExisted) {
@@ -257,7 +268,8 @@ function Backup-RegValue([string]$Key, [string]$Name, [string]$Why = '') {
             $existed = $true
             $kind = $item.GetValueKind($Name).ToString()
             $raw = $item.GetValue($Name, $null, 'DoNotExpandEnvironmentNames')
-            $data = if ($raw -is [byte[]]) { [Convert]::ToBase64String($raw) } else { $raw }
+            # assign inside the branches: "$data = if ... else { $raw }" would turn an EMPTY multi-string into $null
+            if ($raw -is [byte[]]) { $data = [Convert]::ToBase64String($raw) } else { $data = $raw }
         }
         $regFile = "$id.reg"
         reg.exe export (ConvertTo-RegExePath $Key) (Join-Path $script:RegKeyDir $regFile) /y 2>&1 | Out-Null
@@ -272,7 +284,7 @@ function Backup-RegKey([string]$Key, [string]$Why = '') {
     $leaf = $Key.Substring($Key.LastIndexOf('\') + 1)
     $id = Get-BackupId "$Key|*key*" ($leaf + '_key')
     $file = Join-Path $script:RegKeyDir "$id.json"
-    if (Test-Path -LiteralPath $file) { return "  Registry: original of key $Key is already backed up (kept)." }
+    if (Test-BackupPending $file) { return "  Registry: original of key $Key is already backed up (kept)." }
     if (-not (Test-Path -LiteralPath $Key)) { return "  Registry: key $Key does not exist (nothing to back up)." }
     $regFile = "$id.reg"
     reg.exe export (ConvertTo-RegExePath $Key) (Join-Path $script:RegKeyDir $regFile) /y 2>&1 | Out-Null
@@ -319,7 +331,7 @@ function Restore-RegBackup([string]$File) {
                 'DWord'       { $val = [int]$val }
                 'QWord'       { $val = [int64]$val }
                 'Binary'      { $val = [Convert]::FromBase64String([string]$m.Data) }
-                'MultiString' { $val = [string[]]@($m.Data) }
+                'MultiString' { $val = [string[]]@($m.Data | Where-Object { $null -ne $_ }) }   # older backups stored an empty list as null
                 default       { $val = [string]$val }
             }
             if (-not (Test-Path -LiteralPath $m.Key)) { New-Item -Path $m.Key -Force | Out-Null }
@@ -707,7 +719,11 @@ Read-only. Shows identity-related services, your UPN, dsregcmd join/PRT state (A
        Hdr 'Identity services'
        Safe { Table (Svc 'wlidsvc', 'TokenBroker', 'VaultSvc', 'OneSyncSvc*', 'CDPSvc', 'W32Time') }
        Hdr 'Signed-in identity'
-       Safe { whoami /upn }
+       Safe {
+           $upn = (& whoami.exe /upn 2>$null | Out-String).Trim()
+           if ($LASTEXITCODE -eq 0 -and $upn) { "UPN: $upn" }
+           else { "No UPN: this is a local account (not signed in with a Microsoft / work or school account). User: $env:USERDOMAIN\$env:USERNAME" }
+       }
        Hdr 'Join / token state (dsregcmd)'
        Safe { dsregcmd /status | Select-String 'AzureAdJoined|DomainJoined|WorkplaceJoined|NgcSet|AzureAdPrt|WamDefaultSet|TenantName|DeviceId' | ForEach-Object { $_.Line.Trim() } }
        Hdr 'Stored credentials (targets only)'
@@ -1933,13 +1949,22 @@ function Update-RegBackupList {
     $p.SuspendLayout()
     try {
         $p.Controls.Clear()
-        $rows = @()
+        $rows = @(); $bad = @()
         foreach ($f in @(Get-ChildItem -LiteralPath $script:RegKeyDir -Filter '*.json' -ErrorAction SilentlyContinue)) {
-            try { $rows += [pscustomobject]@{ File = $f.FullName; M = (Get-Content -LiteralPath $f.FullName -Raw | ConvertFrom-Json) } } catch { }
+            try {
+                $m = Get-Content -LiteralPath $f.FullName -Raw | ConvertFrom-Json
+                if (-not $m -or -not $m.Type -or -not $m.Key) { throw 'missing fields' }
+                $rows += [pscustomobject]@{ File = $f.FullName; M = $m }
+            } catch { $bad += $f.Name }
         }
         $rows = @($rows | Sort-Object { $_.M.Created } -Descending)
         $h1 = New-Ctl Label @{ Text = "Per-item originals ($($rows.Count))  -  click Restore to put one item back exactly as it was:"; AutoSize = $true; Margin = (New-Object System.Windows.Forms.Padding 3, 6, 3, 4); Font = (New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)) }
         $p.Controls.Add($h1)
+        if ($bad.Count) {
+            # do not hide them: these changes have NO one-click restore. The matching .reg export (same name) can still be imported by hand.
+            $p.Controls.Add((New-Ctl Label @{ Text = ("   WARNING: {0} backup file(s) are unreadable and cannot be restored from here: {1}`r`n   Open the backup folder and import the .reg file with the same name by hand (double-click it, or: reg import <file>)." -f $bad.Count, ($bad -join ', ')); AutoSize = $true; ForeColor = [System.Drawing.Color]::Firebrick; MaximumSize = (New-Object System.Drawing.Size 1000, 0) }))
+            Write-Out ("Registry Backups: {0} unreadable backup file(s): {1}" -f $bad.Count, ($bad -join ', ')) 'Salmon'
+        }
         if ($rows.Count -eq 0) {
             $p.Controls.Add((New-Ctl Label @{ Text = '   (none yet - items appear here the first time a fix edits the registry)'; AutoSize = $true }))
         }
@@ -2015,10 +2040,11 @@ $script:Tabs.TabPages.Add($rpage)
 
 # Bottom bar
 $script:Bottom = New-Ctl FlowLayoutPanel @{ Dock = 'Bottom'; Height = 44; Padding = (New-Object System.Windows.Forms.Padding 6, 6, 6, 4) }
-function Add-BottomButton([string]$Text, [int]$Width, [scriptblock]$Click, [string]$Tip) {
+# (parameter is $TipText, not $Tip: PowerShell names ignore case, so $Tip would hide the global $tip ToolTip object)
+function Add-BottomButton([string]$Text, [int]$Width, [scriptblock]$Click, [string]$TipText) {
     $b = New-Ctl Button @{ Text = $Text; Width = $Width; Height = 30 }
     $b.Add_Click($Click)
-    $tip.SetToolTip($b, $Tip)
+    $tip.SetToolTip($b, $TipText)
     $script:Bottom.Controls.Add($b)
 }
 Add-BottomButton 'Run ALL status checks' 170 { Invoke-AllStatus } 'Read-only baseline of every tab, written to the session log.'

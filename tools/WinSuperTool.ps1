@@ -1,5 +1,5 @@
 #requires -Version 5.1
-# Version 1.2 (2026-11-19) - edited copy. What changed: Edited scripts\V1.2\CHANGES.md
+# Version 1.3 (2026-11-19) - edited copy. What changed: Edited scripts\V1.3\CHANGES.md
 <#
     WinSuperTool.ps1  -  all-in-one Windows tech toolkit (one file, no extra libraries)
     Runs on Windows 10 / 11 and in WinPE (built for Hiren's BootCD PE 11).
@@ -96,13 +96,36 @@ function Ask($t, $c = 'Confirm', $i = 'Question', $def = 'Button1') { return ([W
 function Log([string]$m) {
     $line = '[{0}] {1}' -f (Get-Date -Format 'HH:mm:ss'), $m
     if ($script:txtLog) { $script:txtLog.AppendText($line + $NL) }
-    try { [IO.File]::AppendAllText($ActivityLog, ('{0:yyyy-MM-dd} {1}{2}' -f (Get-Date), $line, $NL)) } catch {}
+    try { [IO.File]::AppendAllText($ActivityLog, ('{0:yyyy-MM-dd} {1}{2}' -f (Get-Date), $line, $NL)) }
+    catch {
+        # say it once on screen instead of silently losing the audit trail
+        if (-not $script:ActLogWarned -and $script:txtLog) {
+            $script:ActLogWarned = $true
+            $script:txtLog.AppendText(('[{0}] WARNING: cannot write the activity log file {1} ({2}). Actions are only shown here from now on.{3}' -f (Get-Date -Format 'HH:mm:ss'), $ActivityLog, $_.Exception.Message, $NL))
+        }
+    }
 }
 function Safe([scriptblock]$Do) {
     try { & $Do } catch { Log "ERROR: $($_.Exception.Message)"; Msg $_.Exception.Message 'Error' 'Error' }
 }
 function Test-LetterUsed([string]$L) { return ([IO.DriveInfo]::GetDrives().Name -contains ('{0}:\' -f $L.ToUpper())) }
 function Fmt-Size($b) { if ($b -ge 1GB) { '{0:N1} GB' -f ($b / 1GB) } else { '{0:N0} MB' -f ($b / 1MB) } }
+# Firmware of the PC this runs on: 'UEFI', 'BIOS' or '' (unknown). WinPE: PEFirmwareType (1/2); Windows: %firmware_type%.
+function Get-FirmwareType {
+    $v = 0; try { $v = [int](Get-ItemProperty -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Control' -Name PEFirmwareType -ErrorAction Stop).PEFirmwareType } catch {}
+    if ($v -eq 2) { return 'UEFI' }; if ($v -eq 1) { return 'BIOS' }
+    switch ($env:firmware_type) { 'UEFI' { 'UEFI' } 'Legacy' { 'BIOS' } default { '' } }
+}
+# BitLocker state of a volume via WMI (language-independent). Returns 'On', 'Off' or the reason it could not be read.
+function Get-BitLockerState([string]$Drive) {
+    try {
+        $ev = Get-CimInstance -Namespace 'root\cimv2\Security\MicrosoftVolumeEncryption' -ClassName Win32_EncryptableVolume -Filter "DriveLetter='$Drive'" -ErrorAction Stop
+        if (-not $ev) { return 'unknown (volume not found in BitLocker WMI)' }
+        $conv = (Invoke-CimMethod -InputObject $ev -MethodName GetConversionStatus -ErrorAction Stop).ConversionStatus
+        if ($ev.ProtectionStatus -eq 1 -or ($null -ne $conv -and $conv -ne 0)) { return 'On' }
+        return 'Off'
+    } catch { return "unknown ($($_.Exception.Message))" }
+}
 function Open-Folder([string]$p) { try { Start-Process -FilePath explorer.exe -ArgumentList ('"{0}"' -f $p) } catch { Msg "Could not open $p" } }
 
 $tip = New-Object Windows.Forms.ToolTip
@@ -545,7 +568,8 @@ while ($true) {
 '@
 
 $script:MonProcs = New-Object Collections.ArrayList
-function Esc-Sq([string]$s) { return ($s -replace "'", "''") }
+# PowerShell also treats the typographic quotes U+2018-U+201B as single quotes (e.g. O<U+2019>Brien), so double those too
+function Esc-Sq([string]$s) { return ($s -replace "(['$([char]0x2018)-$([char]0x201B)])", '$1$1') }
 function Start-Monitor($item, [int]$tail) {
     $tpl = switch ($item.Type) {
         'File'   { $tplFile }
@@ -843,7 +867,7 @@ function Start-Pairing {
     $port = $script:Listener.LocalEndpoint.Port
     $b64 = [Convert]::ToBase64String($pad).TrimEnd('=').Replace('+', '-').Replace('/', '_')
     $script:PairExpires = (Get-Date).AddMinutes($AiPairingMin)
-    $script:Attempts = 0
+    $script:Attempts = 0; $script:PairConns = 0
     return ('http://{0}:{1}/{2}#{3}' -f (Get-LanIp), $port, $script:Token, $b64)
 }
 function Send-Resp($stream, [int]$code, [string]$ctype, [string]$body) {
@@ -854,8 +878,9 @@ function Send-Resp($stream, [int]$code, [string]$ctype, [string]$body) {
     $stream.Write($hb, 0, $hb.Length); $stream.Write($b, 0, $b.Length); $stream.Flush()
 }
 function Invoke-PairClient($client) {
-    $client.ReceiveTimeout = 1500; $client.SendTimeout = 1500
+    $client.ReceiveTimeout = 700; $client.SendTimeout = 700   # runs on the GUI thread: keep each client short
     $stream = $client.GetStream()
+    $script:PairConns++                     # every connection counts toward the junk limit (see the timer)
     $buf = New-Object byte[] 8192; $total = 0; $hEnd = -1; $txt = ''
     while ($total -lt $buf.Length) {
         $r = $stream.Read($buf, $total, $buf.Length - $total)
@@ -1158,7 +1183,7 @@ function Invoke-Diskpart([string[]]$Cmds) {
     return $out
 }
 # Data rows of a diskpart table = the lines between the "---  ---" underline and the next blank line.
-# Works in any display language ("Disk 0", "Datenträger 0", "Disque 0" ...), because it never looks for the English word.
+# Works in any display language ("Disk 0", "Datentraeger 0", "Disque 0" ...), because it never looks for the English word.
 function Get-DiskpartRows([string]$Text) {
     $in = $false
     foreach ($ln in ($Text -split "`r?`n")) {
@@ -1342,7 +1367,8 @@ function Backup-Bcd($t) {
 }
 # every BCD-changing command is preceded by an automatic backup - and is NOT run if that backup fails
 function Invoke-Bcd($t, [string[]]$BcdArgs) {
-    if ($BcdArgs[0] -in '/set', '/copy', '/delete', '/deletevalue', '/import') {
+    # back up before EVERYTHING except the known read-only verbs (so a future button using /default, /displayorder ... is covered too)
+    if ($BcdArgs[0] -notin '/enum', '/v', '/export', '/?') {
         if (-not (Backup-Bcd $t)) {
             Log ('NOT RUN (no backup): bcdedit ' + ($BcdArgs -join ' '))
             return [pscustomobject]@{ Rc = 1; Out = 'The BCD backup failed, so the change was NOT made. See the activity log.' }
@@ -1405,12 +1431,10 @@ function Get-Preflight([string]$Mode) {
                 else { & $add 'OK' 'Not domain-joined.' }
             } catch {}
 
-            try {
-                $bl = (& manage-bde.exe -status $env:SystemDrive 2>&1) | Out-String
-                if ($bl -match '(?i)Protection Status:\s+Protection On|Conversion Status:\s+(Fully Encrypted|Used Space Only Encrypted|Encryption in Progress)') {
-                    & $add 'WARN' "BitLocker / device encryption is active on $($env:SystemDrive). Decrypt the drive first (manage-bde -off $($env:SystemDrive)) - generalize fails otherwise."
-                } else { & $add 'OK' 'No BitLocker encryption detected (checked with manage-bde; English output only).' }
-            } catch {}
+            $bls = Get-BitLockerState $env:SystemDrive
+            if ($bls -eq 'On') { & $add 'WARN' "BitLocker / device encryption is active on $($env:SystemDrive). Decrypt the drive first (manage-bde -off $($env:SystemDrive)) - generalize fails otherwise." }
+            elseif ($bls -eq 'Off') { & $add 'OK' "No BitLocker encryption on $($env:SystemDrive)." }
+            else { & $add 'WARN' "Could not check BitLocker on $($env:SystemDrive): $bls. Check by hand with: manage-bde -status $($env:SystemDrive)" }
 
             $ans = @("$env:windir\Panther\unattend.xml", "$env:windir\Panther\Unattend\unattend.xml", "$env:windir\System32\Sysprep\unattend.xml", "$env:SystemDrive\unattend.xml", "$env:SystemDrive\autounattend.xml") | Where-Object { [IO.File]::Exists($_) }
             if (@($ans).Count) { & $add 'WARN' ('Existing answer file(s) found; they can conflict with the one you pass: ' + (@($ans) -join '; ')) }
@@ -1451,7 +1475,7 @@ function Build-Unattend {
     $user = $txtUser.Text.Trim(); $pcn = $txtPC.Text.Trim(); $locale = $txtLoc.Text.Trim()
     if (-not ($chkSkip.Checked -or $chkUser.Checked -or $chkPC.Checked -or $chkRegion.Checked)) { Msg 'Tick at least one option on the Unattend tab first.' 'Unattend' 'Warning'; return $null }
     if ($chkSkip.Checked -and -not $chkUser.Checked) { Msg "Skipping the OOBE screens without creating an account leaves no usable account.${NL}Tick 'Create local account' as well." 'Unattend' 'Warning'; return $null }
-    if ($chkUser.Checked -and ($user.Length -lt 1 -or $user.Length -gt 20 -or $user -match '[\\/\[\]:;|=,+*?<>"@'']')) { Msg 'User name must be 1-20 characters and may not contain \ / [ ] : ; | = , + * ? < > " @ or apostrophes.' 'Unattend' 'Warning'; return $null }
+    if ($chkUser.Checked -and ($user.Length -lt 1 -or $user.Length -gt 20 -or $user -match "[\\/\[\]:;|=,+*?<>`"@%'$([char]0x2018)-$([char]0x201B)]")) { Msg 'User name must be 1-20 characters and may not contain \ / [ ] : ; | = , + * ? < > " @ % or apostrophes.' 'Unattend' 'Warning'; return $null }   # % would be expanded by cmd in FirstLogonCommands
     if ($chkPC.Checked -and $pcn -notmatch '^(\*|[A-Za-z0-9-]{1,15})$') { Msg 'Computer name: 1-15 letters, digits or hyphens, or * for a random name.' 'Unattend' 'Warning'; return $null }
     if ($chkRegion.Checked -and (-not $cmbTz.SelectedItem -or $locale -notmatch '^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})+$')) { Msg 'Pick a time zone and enter a locale such as en-US.' 'Unattend' 'Warning'; return $null }
 
@@ -1567,11 +1591,13 @@ function Update-Esp {
         $l = $d.Name.Substring(0, 2)
         if ($IsWinPE -and $l -eq $env:SystemDrive) { continue }
         $mb = [math]::Round($d.TotalSize / 1MB)
-        [void]$cmbEsp.Items.Add([pscustomobject]@{ Drive = $l; FS = $d.DriveFormat; Text = ('{0}  [{1}]  {2}  {3} MB' -f $l, $d.VolumeLabel, $d.DriveFormat, $mb); MB = $mb })
+        $rem = ($t -eq 'Removable'); $tag = if ($rem) { '  (removable)' } else { '' }
+        [void]$cmbEsp.Items.Add([pscustomobject]@{ Drive = $l; FS = $d.DriveFormat; Text = ('{0}  [{1}]  {2}  {3} MB{4}' -f $l, $d.VolumeLabel, $d.DriveFormat, $mb, $tag); MB = $mb; Removable = $rem })
     }
     $pick = -1
     for ($i = 0; $i -lt $cmbEsp.Items.Count; $i++) { if ($prev -and $cmbEsp.Items[$i].Drive -eq $prev) { $pick = $i } }
-    if ($pick -lt 0) { for ($i = 0; $i -lt $cmbEsp.Items.Count; $i++) { $x = $cmbEsp.Items[$i]; if ($x.FS -eq 'FAT32' -and $x.MB -lt 1100) { $pick = $i; break } } }
+    # auto-pick only a small FAT32 partition on a FIXED disk - never a USB stick (it can still be chosen by hand)
+    if ($pick -lt 0) { for ($i = 0; $i -lt $cmbEsp.Items.Count; $i++) { $x = $cmbEsp.Items[$i]; if ($x.FS -eq 'FAT32' -and $x.MB -lt 1100 -and -not $x.Removable) { $pick = $i; break } } }
     if ($pick -ge 0) { $cmbEsp.SelectedIndex = $pick }
 }
 
@@ -1606,8 +1632,17 @@ $Tools = @(
             return @{ Summary = "bcdedit /import `"$($dlg.FileName)`""; RunArg = @{ T = $t; F = $dlg.FileName }
                 Run = { param($a) $r = Invoke-Bcd $a.T @('/import', $a.F); if ($r.Rc -ne 0) { Msg 'Import failed. See the log.' 'Error' 'Error' } } } } },
     [pscustomobject]@{ Name = 'Rebuild boot files (bcdboot)'; Needs = 'both'; Exe = 'bcdboot.exe'; Window = $false
-        Help = "bcdboot <Windows>\Windows /s <boot partition> /f UEFI|BIOS${NL}${NL}Copies fresh boot files from the Target Windows onto the chosen boot partition and creates a new BCD entry. Firmware type comes from the partition: FAT32 = UEFI, otherwise BIOS.${NL}${NL}Use cases:${NL}- 'BOOTMGR is missing' or 'winload.efi not found'.${NL}- Empty or recreated EFI partition.${NL}- Boot files damaged or wiped."
-        Argv = { param($c) $fw = 'BIOS'; if ($c.EspFS -eq 'FAT32') { $fw = 'UEFI' }; @("$($c.Win)\Windows", '/s', $c.Esp, '/f', $fw) } },
+        Help = "bcdboot <Windows>\Windows /s <boot partition> /f UEFI|BIOS${NL}${NL}Copies fresh boot files from the Target Windows onto the chosen boot partition and creates a new BCD entry. Firmware type (/f) comes from how THIS PC boots (UEFI or BIOS); you are warned if the chosen partition does not match.${NL}${NL}Use cases:${NL}- 'BOOTMGR is missing' or 'winload.efi not found'.${NL}- Empty or recreated EFI partition.${NL}- Boot files damaged or wiped."
+        Argv = { param($c)
+            # /f follows the FIRMWARE of this PC, not the file system of the picked partition (a FAT32 USB stick is not an ESP)
+            $byFs = 'BIOS'; if ($c.EspFS -eq 'FAT32') { $byFs = 'UEFI' }
+            $fw = Get-FirmwareType
+            if (-not $fw) { $fw = $byFs }
+            elseif ($fw -ne $byFs) {
+                $why = if ($fw -eq 'UEFI') { "This PC boots in UEFI mode, but $($c.Esp) is $($c.EspFS) - the EFI system partition is normally a small FAT32 partition." } else { "This PC boots in legacy BIOS mode, but $($c.Esp) is FAT32 (that looks like an EFI partition)." }
+                if (-not (Ask "$why${NL}${NL}bcdboot will use /f $fw (the firmware of THIS PC). Check that you picked the right boot partition.${NL}${NL}Continue?" 'Check boot partition' 'Warning' 'Button2')) { return @() }
+            }
+            @("$($c.Win)\Windows", '/s', $c.Esp, '/f', $fw) } },
     [pscustomobject]@{ Name = 'Scan for Windows installs (bootrec /scanos)'; Needs = 'none'; Exe = 'bootrec.exe'; Window = $false
         Help = "bootrec /scanos${NL}${NL}Read-only scan for Windows installations that are not in the boot menu.${NL}${NL}Use case: check whether Windows is detected before rebuilding the BCD.${NL}bootrec ships with WinRE; some WinPE builds do not include it."
         Argv = { param($c) @('/scanos') } },
@@ -1616,10 +1651,14 @@ $Tools = @(
         Argv = { param($c) @('/rebuildbcd') } },
     [pscustomobject]@{ Name = 'Write new MBR (bootrec /fixmbr)'; Needs = 'none'; Exe = 'bootrec.exe'; Window = $false
         Help = "bootrec /fixmbr${NL}${NL}Writes a standard Windows master boot record to the system disk without touching the partition table.${NL}${NL}Use cases: corrupted MBR, boot-sector virus, a non-Windows loader left on a BIOS/MBR disk.${NL}Rarely needed on UEFI/GPT disks."
-        Argv = { param($c) @('/fixmbr') } },
+        Argv = { param($c)
+            if ((Get-FirmwareType) -eq 'UEFI' -and -not (Ask "This PC boots in UEFI mode. bootrec /fixmbr only matters for BIOS/MBR disks and does not repair UEFI boot - use 'Rebuild boot files (bcdboot)' instead.${NL}${NL}Run it anyway?" 'UEFI system' 'Warning' 'Button2')) { return @() }
+            @('/fixmbr') } },
     [pscustomobject]@{ Name = 'Write boot sector (bootrec /fixboot)'; Needs = 'none'; Exe = 'bootrec.exe'; Window = $false
         Help = "bootrec /fixboot${NL}${NL}Writes a new boot sector to the system partition.${NL}${NL}Use case: BIOS/MBR systems with a damaged boot sector.${NL}On UEFI it often returns 'Access is denied' - use 'Rebuild boot files (bcdboot)' instead."
-        Argv = { param($c) @('/fixboot') } },
+        Argv = { param($c)
+            if ((Get-FirmwareType) -eq 'UEFI' -and -not (Ask "This PC boots in UEFI mode. bootrec /fixboot is for BIOS/MBR boot sectors and usually fails with 'Access is denied' on UEFI - use 'Rebuild boot files (bcdboot)' instead.${NL}${NL}Run it anyway?" 'UEFI system' 'Warning' 'Button2')) { return @() }
+            @('/fixboot') } },
     [pscustomobject]@{ Name = 'System file check (sfc)'; Needs = 'install'; Exe = 'sfc.exe'; Window = $true
         Help = "Offline install: sfc /scannow /offbootdir=D:\ /offwindir=D:\Windows${NL}Running Windows: sfc /scannow${NL}${NL}Verifies and repairs protected system files of the Target Windows.${NL}${NL}Use cases: Windows will not boot because of corrupt system files; after malware or a failed update."
         Argv = { param($c) if ($c.Live) { @('/scannow') } else { @('/scannow', "/offbootdir=$($c.Win)\", "/offwindir=$($c.Win)\Windows") } } },
@@ -2163,12 +2202,16 @@ $timer.Add_Tick({
         if ($script:AiJob -and $script:AiJob.Handle.IsCompleted) { Complete-AiRequest }
         if (-not $script:ApiKey) {
             if ($script:Listener) {
-                if ($now -gt $script:PairExpires -or $script:Attempts -ge 5) {
+                if ($now -gt $script:PairExpires -or $script:Attempts -ge 5 -or $script:PairConns -ge 40) {
+                    if ($script:PairConns -ge 40) { Log 'AI pairing: too many connections to the pairing port (another device on the network?) - QR code cancelled.' }
                     Clear-Qr
                     $lblCount.Text = 'This QR code is no longer valid. Click "New QR code".'
                 } else {
                     $lblCount.Text = 'Waiting for your phone... code valid for ' + ($script:PairExpires - $now).ToString('m\:ss')
-                    while ($script:Listener -and $script:Listener.Pending()) {
+                    # at most 3 clients per tick: this runs on the GUI thread, so a flood of connections must not freeze the window
+                    $n = 0
+                    while ($script:Listener -and $n -lt 3 -and $script:Listener.Pending()) {
+                        $n++
                         $c = $script:Listener.AcceptTcpClient()
                         try { Invoke-PairClient $c } catch {} finally { $c.Close() }
                         if ($script:ApiKey) { break }

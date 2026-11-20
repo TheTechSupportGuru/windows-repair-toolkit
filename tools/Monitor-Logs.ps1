@@ -1,4 +1,5 @@
 #requires -Version 5.1
+# Version 1.3 (2026-11-19) - edited copy. What changed: Edited scripts\V1.3\CHANGES.md
 <#
   Monitor-Logs.ps1  -  Live log monitor launcher for Windows 11
   Pick logs, press "Launch selected", and each log opens in its OWN PowerShell
@@ -132,7 +133,8 @@ while ($true) {
 # ---------- launching ----------
 $script:procs = New-Object System.Collections.ArrayList
 
-function Esc([string]$s) { $s -replace "'", "''" }
+# PowerShell also treats the typographic quotes U+2018-U+201B as single quotes (e.g. O<U+2019>Brien), so double those too
+function Esc([string]$s) { $s -replace "(['$([char]0x2018)-$([char]0x201B)])", '$1$1' }
 
 function Start-Monitor($item, [int]$tail) {
     $title = Esc ("MONITOR: " + $item.Name)
