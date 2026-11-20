@@ -1,4 +1,4 @@
-# Version 1.3 (2026-11-19) - edited copy. What changed: Edited scripts\V1.3\CHANGES.md
+# Version 1.5 (2026-11-19) - edited copy. What changed: Edited scripts\V1.5\CHANGES.md
 <#
 .SYNOPSIS
   WinFixKit - Windows troubleshooting power tool (replacement for the retired .diagcab troubleshooters).
@@ -1359,15 +1359,18 @@ Stops and starts WSearch. Fixes a hung indexer without changing the index. Needs
        @{ Label = 'Rebuild search index'; Registry = $true
           Help = @'
 Rebuild search index
-Stops WSearch, sets SetupCompletedSuccessfully to 0, DELETES Windows.edb (the index database; it is only a cache and is rebuilt automatically) and starts WSearch. Search results are incomplete and the disk/CPU is busy for a while (minutes to hours) while it re-indexes. Needs admin.
+Stops WSearch, sets SetupCompletedSuccessfully to 0, DELETES the index database (Windows.edb on Windows 10; Windows.db, Windows-gather.db, Windows-usn.db and their -wal/-shm files on Windows 11 22H2+; it is only a cache and is rebuilt automatically) and starts WSearch. Search results are incomplete and the disk/CPU is busy for a while (minutes to hours) while it re-indexes. Needs admin.
 '@
           Confirm = 'Delete the search index database and rebuild it? Search will be incomplete while it re-indexes.'
           Run = {
               param($Arg)
               StopSvc 'WSearch'
               Set-RegValueSafe 'HKLM:\SOFTWARE\Microsoft\Windows Search' 'SetupCompletedSuccessfully' 0 'DWord' 'rebuild search index'
-              $e = "$env:ProgramData\Microsoft\Search\Data\Applications\Windows\Windows.edb"
-              if (Test-Path $e) { try { Remove-Item $e -Force -ErrorAction Stop; "Deleted $e" } catch { "Could not delete index: $($_.Exception.Message)" } } else { 'Windows.edb not found (nothing to delete)' }
+              # Windows 10 and older: Windows.edb (ESE). Windows 11 22H2+: Windows.db / Windows-gather.db / Windows-usn.db (SQLite, + -wal/-shm)
+              $dir = "$env:ProgramData\Microsoft\Search\Data\Applications\Windows"
+              $files = @(Get-ChildItem -LiteralPath $dir -File -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -match '^Windows(-\w+)?\.(edb|db)(-wal|-shm)?$' })
+              if ($files.Count -eq 0) { "No index database found in $dir (nothing to delete - the registry reset above still forces a rebuild)" }
+              foreach ($f in $files) { try { Remove-Item -LiteralPath $f.FullName -Force -ErrorAction Stop; "Deleted $($f.Name)" } catch { "Could not delete $($f.Name): $($_.Exception.Message)" } }
               StartSvc 'WSearch'
               'Indexing will now rebuild in the background.'
           } },
@@ -1500,18 +1503,31 @@ Read-only. Shows build/version and whether it is 24H2 or newer, the SMB client s
        @{ Label = 'Test access to a PC / NAS by name or IP...'
           Help = @'
 Test access to a PC / NAS
-Asks for a computer name or IP address, then checks DNS, whether TCP 445 (SMB) and 139 answer, whether \\name can be opened, and shows `net view` output. Read-only. Use it before and after a fix. (Tip from the article: also try typing \\name or \\IP in File Explorer's address bar.)
+Asks for a computer name or IP address, then checks DNS (for a name), whether TCP 445 (SMB) and 139 answer, and whether the share list of \\name can be read (net view - its result is judged by the exit code, so it works in any language). Read-only. Use it before and after a fix. (Tip from the article: also try typing \\name or \\IP in File Explorer's address bar.)
 '@
           Admin = $false; AutoStatus = $false; Prompt = 'Text'; PromptText = 'Computer name or IP address of the PC / NAS with the shares (for example PC1 or 192.168.1.25):'
           Run = {
               param($Arg)
               $h = ([string]$Arg).Trim().TrimStart('\')
               "Target: $h"
-              try { $r = Resolve-DnsName $h -ErrorAction Stop | Select-Object -First 1; "Name lookup: OK ($($r.IPAddress))" } catch { 'Name lookup: failed (try the IP address instead)' }
+              $ip = $null
+              if ([Net.IPAddress]::TryParse($h, [ref]$ip)) {
+                  # an IP needs no name lookup; a reverse lookup only returns a PTR record (no IPAddress field)
+                  $ptr = try { (Resolve-DnsName $h -ErrorAction Stop | Where-Object { $_.NameHost } | Select-Object -First 1).NameHost } catch { $null }
+                  'Name lookup: not needed (target is an IP address)' + $(if ($ptr) { "; reverse name: $ptr" } else { '' })
+              } else {
+                  try {
+                      $ips = @(Resolve-DnsName $h -ErrorAction Stop | Where-Object { $_.IPAddress } | ForEach-Object { $_.IPAddress } | Select-Object -Unique)
+                      if ($ips.Count) { "Name lookup: OK ($($ips -join ', '))" } else { 'Name lookup: answered, but without an IP address (try the IP address instead)' }
+                  } catch { 'Name lookup: failed (try the IP address instead)' }
+              }
               "TCP 445 (SMB): " + $(if (Test-TcpPort $h 445 3000) { 'OPEN' } else { 'closed / unreachable' })
               "TCP 139 (NetBIOS): " + $(if (Test-TcpPort $h 139 3000) { 'OPEN' } else { 'closed / unreachable' })
-              "Open \\$h : " + $(if (Test-Path "\\$h") { 'OK' } else { 'FAILED' })
-              net view "\\$h" 2>&1
+              # "\\server" alone is not a folder (Test-Path is ALWAYS false for it), so judge by net view's exit code instead
+              # (stderr lines arrive as ErrorRecords: print their text only, and drop empty ones)
+              $nv = @(& net.exe view "\\$h" 2>&1 | ForEach-Object { if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.Exception.Message } else { "$_" } } | Where-Object { $_ -and $_ -ne 'System.Management.Automation.RemoteException' }); $rc = $LASTEXITCODE
+              "Share list (net view \\$h): " + $(if ($rc -eq 0) { 'OK' } else { "FAILED (exit code $rc)" })
+              $nv
           } },
        @{ Label = 'Method 3 (PowerShell): allow insecure guest + no signing'; Registry = $true
           Help = @'
