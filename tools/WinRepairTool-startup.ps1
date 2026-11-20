@@ -1,0 +1,887 @@
+<#
+  Windows Repair Toolkit v2 - single-file WinForms GUI (Windows 11 and WinPE / Hiren's PE 11)
+  Tab 1  Mount / unmount partitions (diskpart OR Storage cmdlets, whitelisted non-destructive commands only)
+  Tab 2  Safe Mode (minimal): edit the entry directly OR create a separate boot-menu clone
+  Tab 3  Sysprep deployment (fixed commands, one at a time, optional /mode:vm)
+  Tab 4  EXPERIMENTAL boot recovery tools
+#>
+$ErrorActionPreference = 'Continue'
+$IsWinPE = Test-Path 'HKLM:\SYSTEM\CurrentControlSet\Control\MiniNT'
+$NL = "`r`n"
+
+# ---- self-elevate (normal Windows only; WinPE already runs as SYSTEM) ----
+if (-not $IsWinPE) {
+    $id = [Security.Principal.WindowsIdentity]::GetCurrent()
+    if (-not (New-Object Security.Principal.WindowsPrincipal $id).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+        Start-Process powershell.exe -Verb RunAs -ArgumentList "-NoProfile -STA -ExecutionPolicy Bypass -File `"$PSCommandPath`""
+        exit
+    }
+}
+
+Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+[Windows.Forms.Application]::EnableVisualStyles()
+
+# ---- where memory + backups live (script folder if writable, else TEMP) ----
+$StateDir = $env:TEMP
+if ($PSScriptRoot) {
+    try {
+        $probe = Join-Path $PSScriptRoot '.w'
+        [IO.File]::WriteAllText($probe, ''); Remove-Item $probe -Force
+        $StateDir = $PSScriptRoot
+    } catch {}
+}
+$StateFile = Join-Path $StateDir 'WinRepairTool.mounts.json'
+$script:Mounts = New-Object Collections.ArrayList
+$CloneMarker = 'Safe Mode (minimal) [WinRepairTool]'
+
+# ================= helpers =================
+function Msg($t, $c = 'Windows Repair Toolkit', $i = 'Information') { [void][Windows.Forms.MessageBox]::Show($t, $c, 'OK', $i) }
+function Log($m) { $txtLog.AppendText(("[{0}] {1}`r`n" -f (Get-Date -Format HH:mm:ss), $m)) }
+function Safe([scriptblock]$Do) { try { & $Do } catch { Log "ERROR: $($_.Exception.Message)"; Msg $_.Exception.Message 'Error' 'Error' } }
+function Test-LetterUsed($L) { return ([IO.DriveInfo]::GetDrives().Name -contains ("{0}:\" -f $L.ToUpper())) }
+function Fmt-Size($b) { if ($b -ge 1GB) { '{0:N1} GB' -f ($b / 1GB) } else { '{0:N0} MB' -f ($b / 1MB) } }
+function Test-StorageAvail { return ([bool](Get-Command Get-Disk -ErrorAction SilentlyContinue) -and [bool](Get-Command Add-PartitionAccessPath -ErrorAction SilentlyContinue)) }
+
+# ---- diskpart: ONLY these commands can ever be sent ----
+$DpAllow = '^(list (disk|partition|volume)|select (disk|partition) \d+|select volume [D-Z]|detail partition|assign letter=[D-Z]|remove letter=[D-Z])$'
+function Invoke-Diskpart([string[]]$Cmds) {
+    foreach ($c in $Cmds) { if ($c -notmatch $DpAllow) { throw "Blocked diskpart command: $c" } }
+    $tmp = Join-Path $env:TEMP ("dp_{0}.txt" -f [guid]::NewGuid().ToString('N'))
+    Set-Content -Path $tmp -Value $Cmds -Encoding ASCII
+    try { $out = & diskpart.exe /s $tmp 2>&1 | Out-String } finally { Remove-Item $tmp -Force -ErrorAction SilentlyContinue }
+    Log ('diskpart: ' + ($Cmds -join ' > '))
+    return $out
+}
+
+# ---- mount engine: diskpart OR Storage cmdlets (same 4 operations either way) ----
+function Get-DiskList {
+    if ($rbStor.Checked) {
+        foreach ($d in (Get-Disk | Sort-Object Number)) {
+            [pscustomobject]@{ Num = [int]$d.Number; Text = ("Disk {0}  -  {1}  -  {2}  -  {3}" -f $d.Number, $d.FriendlyName, (Fmt-Size $d.Size), $d.PartitionStyle) }
+        }
+    } else {
+        foreach ($ln in ((Invoke-Diskpart 'list disk') -split "`r?`n")) {
+            if ($ln -match '^\s*Disk (\d+)\s+(.*\S)\s*$') {
+                [pscustomobject]@{ Num = [int]$Matches[1]; Text = ("Disk {0}  -  {1}" -f $Matches[1], ($Matches[2] -replace '\s{2,}', '  ')) }
+            }
+        }
+    }
+}
+function Get-PartList($disk) {
+    if ($rbStor.Checked) {
+        foreach ($p in (Get-Partition -DiskNumber $disk | Sort-Object PartitionNumber)) {
+            $l = ''; if ([int][char]$p.DriveLetter -gt 0) { $l = "  [$($p.DriveLetter):]" }
+            [pscustomobject]@{ Num = [int]$p.PartitionNumber; Text = ("Partition {0}  -  {1}  -  {2}{3}" -f $p.PartitionNumber, $p.Type, (Fmt-Size $p.Size), $l) }
+        }
+    } else {
+        foreach ($ln in ((Invoke-Diskpart @("select disk $disk", 'list partition')) -split "`r?`n")) {
+            if ($ln -match '^\s*Partition (\d+)\s+(.*\S)\s*$') {
+                [pscustomobject]@{ Num = [int]$Matches[1]; Text = ("Partition {0}  -  {1}" -f $Matches[1], ($Matches[2] -replace '\s{2,}', '  ')) }
+            }
+        }
+    }
+}
+# returns a letter, '' (no letter) or 'NOVOLUME'
+function Get-PartLetter($disk, $part) {
+    if ($rbStor.Checked) {
+        $p = Get-Partition -DiskNumber $disk -PartitionNumber $part
+        if ([int][char]$p.DriveLetter -gt 0) { return [string]$p.DriveLetter } else { return '' }
+    }
+    $detail = Invoke-Diskpart @("select disk $disk", "select partition $part", 'detail partition')
+    if ($detail -match 'no volume') { return 'NOVOLUME' }
+    if ($detail -match '(?m)^\s*\*?\s*Volume\s+\d+\s+([A-Z])\s') { return $Matches[1] }
+    return ''
+}
+function Mount-Part($disk, $part, $L) {
+    if ($rbStor.Checked) {
+        Log "Add-PartitionAccessPath -DiskNumber $disk -PartitionNumber $part -AccessPath ${L}:"
+        Add-PartitionAccessPath -DiskNumber $disk -PartitionNumber $part -AccessPath ("{0}:" -f $L) -ErrorAction Stop
+    } else {
+        [void](Invoke-Diskpart @("select disk $disk", "select partition $part", "assign letter=$L"))
+    }
+    Start-Sleep -Milliseconds 800
+    return (Test-LetterUsed $L)
+}
+function Unmount-Letter($L) {
+    if ($rbStor.Checked) {
+        $p = Get-Partition -DriveLetter $L -ErrorAction Stop
+        Log "Remove-PartitionAccessPath ${L}:"
+        Remove-PartitionAccessPath -DiskNumber $p.DiskNumber -PartitionNumber $p.PartitionNumber -AccessPath ("{0}:" -f $L) -ErrorAction Stop
+    } else {
+        [void](Invoke-Diskpart @("select volume $L", "remove letter=$L"))
+    }
+}
+
+function Save-Mounts { try { Set-Content -Path $StateFile -Value (ConvertTo-Json -InputObject @($script:Mounts)) -Encoding UTF8 } catch {} }
+function Load-Mounts {
+    $script:Mounts = New-Object Collections.ArrayList
+    if (Test-Path $StateFile) {
+        try {
+            $j = Get-Content $StateFile -Raw
+            if ($j.Trim()) { foreach ($m in @(ConvertFrom-Json $j)) { if (Test-LetterUsed $m.Letter) { [void]$script:Mounts.Add($m) } } }
+        } catch {}
+    }
+}
+function Update-MountList {
+    $lstMounts.Items.Clear()
+    foreach ($m in $script:Mounts) { [void]$lstMounts.Items.Add(("{0}:   (Disk {1}, Partition {2})" -f $m.Letter, $m.Disk, $m.Partition)) }
+}
+function Update-Letters {
+    $cmbLetter.Items.Clear()
+    $used = @([IO.DriveInfo]::GetDrives() | ForEach-Object { $_.Name.Substring(0, 1) })
+    foreach ($c in 68..90) { $l = [string][char]$c; if ($used -notcontains $l) { [void]$cmbLetter.Items.Add($l) } }
+    if ($cmbLetter.Items.Count) { $cmbLetter.SelectedIndex = 0 }
+}
+function Update-Disks {
+    $cmbDisk.Items.Clear(); $cmbPart.Items.Clear()
+    foreach ($d in @(Get-DiskList)) { [void]$cmbDisk.Items.Add($d) }
+    if ($cmbDisk.Items.Count) { $cmbDisk.SelectedIndex = 0 }
+}
+function Update-Parts {
+    $cmbPart.Items.Clear()
+    $d = $cmbDisk.SelectedItem; if (-not $d) { return }
+    foreach ($p in @(Get-PartList $d.Num)) { [void]$cmbPart.Items.Add($p) }
+    if ($cmbPart.Items.Count) { $cmbPart.SelectedIndex = 0 }
+}
+function Dismount-One($m) {
+    $L = ([string]$m.Letter).ToUpper()
+    if ($L -eq $env:SystemDrive.Substring(0, 1)) { Log "Refusing to unmount the system drive ${L}:"; return $false }
+    try { if (Test-LetterUsed $L) { Unmount-Letter $L; Start-Sleep -Milliseconds 600 } } catch { Log "Unmount error: $($_.Exception.Message)" }
+    if (Test-LetterUsed $L) { Log "Could not unmount ${L}: (in use?)"; return $false }
+    $script:Mounts.Remove($m); Log "Unmounted ${L}:"; return $true
+}
+
+# ---- Windows installations / BCD ----
+function Get-WinInstalls {
+    foreach ($d in [IO.DriveInfo]::GetDrives()) {
+        $t = $d.DriveType.ToString()
+        if ($t -ne 'Fixed' -and $t -ne 'Removable') { continue }
+        if (-not $d.IsReady) { continue }
+        $l = $d.Name.Substring(0, 2)
+        if ($IsWinPE -and $l -eq $env:SystemDrive) { continue }
+        if (-not ([IO.File]::Exists("$l\Windows\System32\config\SYSTEM") -and [IO.File]::Exists("$l\Windows\System32\ntoskrnl.exe"))) { continue }
+        $ver = ''; try { $ver = (Get-Item "$l\Windows\System32\ntoskrnl.exe").VersionInfo.ProductVersion } catch {}
+        $build = 0; if ($ver -match '^\d+\.\d+\.(\d+)') { $build = [int]$Matches[1] }
+        $name = if ($build -ge 22000) { 'Windows 11' } elseif ($build -ge 10240) { 'Windows 10/Server' } else { 'Windows' }
+        $run = if (-not $IsWinPE -and $l -eq $env:SystemDrive) { '  [RUNNING]' } else { '' }
+        [pscustomobject]@{ Drive = $l; Text = ("{0}\Windows  -  {1} {2}  [{3}]{4}" -f $l, $name, $ver, $d.VolumeLabel, $run) }
+    }
+}
+function ConvertFrom-BcdText([string]$text) {
+    foreach ($blk in [regex]::Split($text, '(?:\r?\n){2,}')) {
+        if ($blk -match '(?m)^identifier\s+(\{[^}]+\})') {
+            $id = $Matches[1]; $dev = ''; $sb = ''; $desc = ''
+            if ($blk -match '(?m)^osdevice\s+partition=([A-Za-z]:)') { $dev = $Matches[1].ToUpper() }
+            if ($blk -match '(?m)^safeboot\s+(\S+)') { $sb = $Matches[1] }
+            if ($blk -match '(?m)^description\s+(.+?)\s*$') { $desc = $Matches[1] }
+            [pscustomobject]@{ Id = $id; Dev = $dev; Safeboot = $sb; Desc = $desc }
+        }
+    }
+}
+function Get-BcdAll($t) {
+    $a = @(); if ($t.Store) { $a += '/store'; $a += $t.Store }; $a += '/enum'; $a += 'osloader'
+    return @(ConvertFrom-BcdText ((& bcdedit.exe @a 2>&1) | Out-String))
+}
+function Resolve-BcdTarget($drive) {
+    if (-not $IsWinPE -and $drive -eq $env:SystemDrive) {
+        $e = @(ConvertFrom-BcdText ((& bcdedit.exe /enum '{current}' 2>&1) | Out-String)) | Select-Object -First 1
+        return @{ Store = $null; Id = '{current}'; Safeboot = $(if ($e) { $e.Safeboot } else { '' }) }
+    }
+    foreach ($d in [IO.DriveInfo]::GetDrives()) {
+        if (-not $d.IsReady) { continue }
+        $l = $d.Name.Substring(0, 2)
+        foreach ($rel in '\EFI\Microsoft\Boot\BCD', '\Boot\BCD') {
+            $store = "$l$rel"
+            if (-not [IO.File]::Exists($store)) { continue }
+            $txt = (& bcdedit.exe /store $store /enum osloader 2>&1) | Out-String
+            foreach ($e in @(ConvertFrom-BcdText $txt)) {
+                if ($e.Dev -eq $drive.ToUpper()) { return @{ Store = $store; Id = $e.Id; Safeboot = $e.Safeboot } }
+            }
+        }
+    }
+    return $null
+}
+function Get-Clones($t, $drive) {
+    return @(Get-BcdAll $t | Where-Object { $_.Dev -eq $drive.ToUpper() -and $_.Desc -eq $CloneMarker -and $_.Id -match '^\{[0-9a-fA-F-]{36}\}$' })
+}
+function Backup-Bcd($t) {
+    try {
+        $dir = Join-Path $StateDir 'BCD-Backups'
+        [void][IO.Directory]::CreateDirectory($dir)
+        $f = Join-Path $dir ("BCD_{0}.bak" -f (Get-Date -Format yyyyMMdd_HHmmss))
+        $a = @(); if ($t.Store) { $a += '/store'; $a += $t.Store }; $a += '/export'; $a += $f
+        $o = (& bcdedit.exe @a 2>&1) | Out-String
+        if ($LASTEXITCODE -eq 0) {
+            Log "BCD backup saved: $f"
+            if ($dir -like "$env:TEMP*") { Log 'NOTE: that is a temporary (RAM) drive - copy the backup somewhere permanent.' }
+        } else { Log "BCD backup FAILED: $($o.Trim())" }
+    } catch { Log "BCD backup error: $($_.Exception.Message)" }
+}
+# every BCD-changing command is preceded by an automatic backup
+function Invoke-Bcd($t, [string[]]$BcdArgs) {
+    if ($BcdArgs[0] -in '/set', '/copy', '/delete', '/deletevalue', '/import') { Backup-Bcd $t }
+    $a = @(); if ($t.Store) { $a += '/store'; $a += $t.Store }; $a += $BcdArgs
+    Log ('bcdedit ' + ($a -join ' '))
+    $o = (& bcdedit.exe @a 2>&1) | Out-String
+    $rc = $LASTEXITCODE
+    Log $o.Trim()
+    return [pscustomobject]@{ Rc = $rc; Out = $o }
+}
+function Update-Windows([bool]$Popup = $false) {
+    $cmbWin.Items.Clear()
+    $found = @(Get-WinInstalls)
+    foreach ($w in $found) { [void]$cmbWin.Items.Add($w) }
+    if ($found.Count -eq 0) {
+        $lblWarn.ForeColor = 'DarkOrange'
+        $lblWarn.Text = 'No Windows installation found. Mount its partition on tab 1, then press Rescan.'
+    } elseif ($found.Count -gt 1) {
+        $lblWarn.ForeColor = 'Red'
+        $lblWarn.Text = "WARNING: $($found.Count) Windows installations found. Select the correct one - nothing is pre-selected."
+        if ($Popup) { Msg "$($found.Count) Windows installations were detected.$NL$NL Choose the one you want to modify on the Safe Mode tab before changing anything." 'Multiple Windows installations' 'Warning' }
+    } else {
+        $lblWarn.ForeColor = 'DarkGreen'
+        $lblWarn.Text = 'One Windows installation found (selected).'
+        $cmbWin.SelectedIndex = 0
+    }
+    Update-SafeStatus
+}
+function Update-SafeLabels {
+    if ($rbClone.Checked) { $btnSafeOn.Text = 'Create Safe Mode clone'; $btnSafeOff.Text = 'Delete Safe Mode clone(s)' }
+    else { $btnSafeOn.Text = 'Enable Safe Mode (minimal)'; $btnSafeOff.Text = 'Remove Safe Mode flag' }
+}
+function Update-SafeStatus {
+    $btnSafeOn.Enabled = $false; $btnSafeOff.Enabled = $false
+    $w = $cmbWin.SelectedItem
+    if (-not $w) { $lblBcd.Text = 'Select a Windows installation.'; return }
+    $t = Resolve-BcdTarget $w.Drive
+    if (-not $t) { $lblBcd.Text = "No boot entry for $($w.Drive) found in any BCD store. Mount the EFI/System partition (tab 1), then Rescan."; return }
+    $where = if ($t.Store) { $t.Store } else { 'running system' }
+    $sb = if ($t.Safeboot) { "SAFE MODE ($($t.Safeboot))" } else { 'normal boot' }
+    $n = @(Get-Clones $t $w.Drive).Count
+    $cl = if ($n) { "present ($n)" } else { 'none' }
+    $lblBcd.Text = "Boot entry $($t.Id) in $where$NL Entry state: $sb     |     Safe Mode clone: $cl"
+    $btnSafeOn.Enabled = $true; $btnSafeOff.Enabled = $true
+}
+function Update-Esp {
+    $cmbEsp.Items.Clear()
+    foreach ($d in [IO.DriveInfo]::GetDrives()) {
+        $t = $d.DriveType.ToString()
+        if ($t -ne 'Fixed' -and $t -ne 'Removable') { continue }
+        if (-not $d.IsReady) { continue }
+        $l = $d.Name.Substring(0, 2)
+        if ($IsWinPE -and $l -eq $env:SystemDrive) { continue }
+        $mb = [math]::Round($d.TotalSize / 1MB)
+        [void]$cmbEsp.Items.Add([pscustomobject]@{ Drive = $l; FS = $d.DriveFormat; Text = ("{0}  [{1}]  {2}  {3} MB" -f $l, $d.VolumeLabel, $d.DriveFormat, $mb); MB = $mb })
+    }
+    $pick = -1
+    for ($i = 0; $i -lt $cmbEsp.Items.Count; $i++) { $x = $cmbEsp.Items[$i]; if ($x.FS -eq 'FAT32' -and $x.MB -lt 1100) { $pick = $i; break } }
+    if ($pick -ge 0) { $cmbEsp.SelectedIndex = $pick }
+}
+function Read-Text($prompt, $title = 'Input') {
+    $f = New-Object Windows.Forms.Form
+    $f.Text = $title; $f.Size = New-Object Drawing.Size(400, 150); $f.StartPosition = 'CenterParent'
+    $f.FormBorderStyle = 'FixedDialog'; $f.MaximizeBox = $false; $f.MinimizeBox = $false
+    [void](New-Ctl 'Label' $f 10 10 365 20 $prompt)
+    $t = New-Ctl 'TextBox' $f 10 35 365 24
+    $ok = New-Ctl 'Button' $f 205 70 80 28 'OK'; $ca = New-Ctl 'Button' $f 295 70 80 28 'Cancel'
+    $ok.DialogResult = 'OK'; $ca.DialogResult = 'Cancel'; $f.AcceptButton = $ok; $f.CancelButton = $ca
+    if ($f.ShowDialog() -eq 'OK') { return $t.Text.Trim() }
+    return $null
+}
+
+# ================= report window =================
+function Show-Report($title, $text, [bool]$Ask = $false) {
+    $f = New-Object Windows.Forms.Form
+    $f.Text = $title; $f.Size = New-Object Drawing.Size(660, 500); $f.StartPosition = 'CenterParent'
+    $t = New-Ctl 'TextBox' $f 10 10 625 400
+    $t.Multiline = $true; $t.ReadOnly = $true; $t.ScrollBars = 'Vertical'; $t.Font = New-Object Drawing.Font('Consolas', 9)
+    $t.Text = $text; $t.Anchor = 'Top,Bottom,Left,Right'
+    if ($Ask) {
+        $ok = New-Ctl 'Button' $f 400 420 125 30 'Continue anyway'; $ca = New-Ctl 'Button' $f 535 420 100 30 'Cancel'
+        $ok.DialogResult = 'Yes'; $ca.DialogResult = 'Cancel'; $f.CancelButton = $ca
+        $ok.Anchor = 'Bottom,Right'; $ca.Anchor = 'Bottom,Right'
+    } else {
+        $cl = New-Ctl 'Button' $f 535 420 100 30 'Close'; $cl.DialogResult = 'OK'; $f.CancelButton = $cl; $cl.Anchor = 'Bottom,Right'
+    }
+    $t.Select(0, 0)
+    return ($f.ShowDialog() -eq 'Yes')
+}
+
+# ================= sysprep pre-flight checks (run on the live Windows) =================
+function Get-Preflight([string]$Mode) {
+    $r = New-Object Collections.ArrayList
+    $add = { param($l, $t) [void]$r.Add([pscustomobject]@{ Level = $l; Text = $t }) }
+    $gen = ($Mode -eq 'A')
+    [Windows.Forms.Cursor]::Current = [Windows.Forms.Cursors]::WaitCursor
+    try {
+        $sp = Join-Path $env:windir 'System32\Sysprep\sysprep.exe'
+        if (Test-Path $sp) { & $add 'OK' 'sysprep.exe found.' } else { & $add 'FAIL' 'sysprep.exe not found.' }
+        if (Get-Process sysprep -ErrorAction SilentlyContinue) { & $add 'FAIL' 'Sysprep is already running.' }
+
+        $pend = (Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Component Based Servicing\RebootPending') -or (Test-Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\WindowsUpdate\Auto Update\RebootRequired')
+        if ($pend) { & $add 'WARN' 'A reboot is pending (updates / servicing). Reboot first, then run sysprep.' } else { & $add 'OK' 'No pending reboot.' }
+
+        try {
+            $free = (New-Object IO.DriveInfo $env:SystemDrive).AvailableFreeSpace
+            if ($free -lt 10GB) { & $add 'WARN' ("Only {0} free on {1}. Sysprep and image capture want roughly 10 GB or more." -f (Fmt-Size $free), $env:SystemDrive) }
+            else { & $add 'OK' ("{0} free on {1}." -f (Fmt-Size $free), $env:SystemDrive) }
+        } catch {}
+
+        if ($gen) {
+            $up = @(Get-ChildItem 'HKLM:\SYSTEM\Setup' -ErrorAction SilentlyContinue | Where-Object { $_.PSChildName -like 'Source OS*' })
+            if ($up.Count) { & $add 'WARN' 'This Windows looks like an in-place UPGRADE (Source OS keys present). Sysprep is not supported on upgraded installs - use a clean install.' }
+            else { & $add 'OK' 'No in-place upgrade markers found.' }
+
+            try {
+                if ((Get-CimInstance Win32_ComputerSystem -ErrorAction Stop).PartOfDomain) { & $add 'WARN' 'This PC is joined to a domain. Generalize removes the domain join and is usually not wanted on a production PC.' }
+                else { & $add 'OK' 'Not domain-joined.' }
+            } catch {}
+
+            try {
+                $bl = (& manage-bde.exe -status $env:SystemDrive 2>&1) | Out-String
+                if ($bl -match '(?i)Protection Status:\s+Protection On|Conversion Status:\s+(Fully Encrypted|Used Space Only Encrypted|Encryption in Progress)') {
+                    & $add 'WARN' "BitLocker / device encryption is active on $($env:SystemDrive). Decrypt the drive first (manage-bde -off $($env:SystemDrive)) - generalize fails otherwise."
+                } else { & $add 'OK' 'No BitLocker encryption detected (checked with manage-bde).' }
+            } catch {}
+
+            $files = @("$env:windir\Panther\unattend.xml", "$env:windir\Panther\Unattend\unattend.xml", "$env:windir\System32\Sysprep\unattend.xml", "$env:SystemDrive\unattend.xml", "$env:SystemDrive\autounattend.xml") | Where-Object { [IO.File]::Exists($_) }
+            if (@($files).Count) { & $add 'WARN' ('Existing answer file(s) found; they can conflict with the one you pass: ' + (@($files) -join '; ')) }
+            else { & $add 'OK' 'No leftover answer files found.' }
+
+            try {
+                $prov = @(Get-AppxProvisionedPackage -Online -ErrorAction Stop | ForEach-Object { $_.DisplayName })
+                $bad = @(Get-AppxPackage -AllUsers -ErrorAction Stop | Where-Object { -not $_.IsFramework -and -not $_.IsResourcePackage -and $_.SignatureKind -ne 'System' -and $prov -notcontains $_.Name } | ForEach-Object { $_.Name } | Sort-Object -Unique)
+                if ($bad.Count) {
+                    $shown = ($bad | Select-Object -First 15) -join ', '
+                    & $add 'WARN' ("Possible Store apps installed for a user but not provisioned for all users (the classic generalize failure): $shown. Remove them with Remove-AppxPackage -AllUsers if sysprep fails.")
+                } else { & $add 'OK' 'No per-user-only Store apps found.' }
+            } catch { & $add 'INFO' 'Store app check skipped (Appx cmdlets unavailable).' }
+        }
+
+        $err = "$env:windir\System32\Sysprep\Panther\setuperr.log"
+        if ([IO.File]::Exists($err)) {
+            $tail = @(Get-Content $err -Tail 6 -ErrorAction SilentlyContinue | Where-Object { $_.Trim() })
+            if ($tail.Count) { & $add 'INFO' ("A previous sysprep error log exists ($err, " + (Get-Item $err).LastWriteTime + "). Last lines: " + ($tail[-1])) }
+        }
+    } finally { [Windows.Forms.Cursor]::Current = [Windows.Forms.Cursors]::Default }
+    return @($r)
+}
+function Format-Preflight($items) {
+    $w = @($items | Where-Object { $_.Level -eq 'WARN' }).Count
+    $f = @($items | Where-Object { $_.Level -eq 'FAIL' }).Count
+    $head = "Pre-flight result: $f blocking problem(s), $w warning(s).$NL" + ('-' * 60) + $NL
+    return $head + (($items | ForEach-Object { "[{0,-4}] {1}" -f $_.Level, $_.Text }) -join ($NL + $NL))
+}
+
+# ================= unattend.xml builder =================
+function Build-Unattend {
+    $a = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
+    $arch = switch ($a) { 'ARM64' { 'arm64' } 'x86' { 'x86' } default { 'amd64' } }
+    $user = $txtUser.Text.Trim(); $pcn = $txtPC.Text.Trim(); $locale = $txtLoc.Text.Trim()
+    if (-not ($chkSkip.Checked -or $chkUser.Checked -or $chkPC.Checked -or $chkRegion.Checked)) { Msg 'Tick at least one option on the Unattend tab first.' 'Unattend' 'Warning'; return $null }
+    if ($chkSkip.Checked -and -not $chkUser.Checked) { Msg "Skipping the OOBE screens without creating an account leaves no usable account.$NL Tick 'Create local account' as well." 'Unattend' 'Warning'; return $null }
+    if ($chkUser.Checked -and ($user.Length -lt 1 -or $user.Length -gt 20 -or $user -match '[\\/\[\]:;|=,+*?<>"@'']')) { Msg 'User name must be 1-20 characters and may not contain \ / [ ] : ; | = , + * ? < > " @ or apostrophes.' 'Unattend' 'Warning'; return $null }
+    if ($chkPC.Checked -and $pcn -notmatch '^(\*|[A-Za-z0-9-]{1,15})$') { Msg 'Computer name: 1-15 letters, digits or hyphens, or * for a random name.' 'Unattend' 'Warning'; return $null }
+    if ($chkRegion.Checked -and (-not $cmbTz.SelectedItem -or $locale -notmatch '^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})+$')) { Msg 'Pick a time zone and enter a locale such as en-US.' 'Unattend' 'Warning'; return $null }
+
+    $esc = { param($s) [Security.SecurityElement]::Escape($s) }
+    $ns = 'xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"'
+    $comp = { param($n) ('<component name="{0}" processorArchitecture="{1}" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" {2}>' -f $n, $arch, $ns) }
+    $sb = New-Object Text.StringBuilder
+    $ap = { param($s) [void]$sb.AppendLine($s) }
+    $pw = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($txtPass.Text + 'Password'))
+
+    & $ap '<?xml version="1.0" encoding="utf-8"?>'
+    & $ap '<unattend xmlns="urn:schemas-microsoft-com:unattend">'
+    if ($chkPC.Checked) {
+        & $ap '  <settings pass="specialize">'
+        & $ap ('    ' + (& $comp 'Microsoft-Windows-Shell-Setup'))
+        & $ap ('      <ComputerName>{0}</ComputerName>' -f (& $esc $pcn))
+        & $ap '    </component>'
+        & $ap '  </settings>'
+    }
+    if ($chkSkip.Checked -or $chkUser.Checked -or $chkRegion.Checked) {
+        & $ap '  <settings pass="oobeSystem">'
+        if ($chkRegion.Checked) {
+            $le = & $esc $locale
+            & $ap ('    ' + (& $comp 'Microsoft-Windows-International-Core'))
+            & $ap "      <InputLocale>$le</InputLocale>"
+            & $ap "      <SystemLocale>$le</SystemLocale>"
+            & $ap "      <UILanguage>$le</UILanguage>"
+            & $ap "      <UserLocale>$le</UserLocale>"
+            & $ap '    </component>'
+        }
+        & $ap ('    ' + (& $comp 'Microsoft-Windows-Shell-Setup'))
+        if ($chkLogon.Checked -and $chkUser.Checked) {
+            & $ap '      <AutoLogon>'
+            & $ap '        <Enabled>true</Enabled>'
+            & $ap '        <LogonCount>1</LogonCount>'
+            & $ap ('        <Username>{0}</Username>' -f (& $esc $user))
+            & $ap ('        <Password><Value>{0}</Value><PlainText>false</PlainText></Password>' -f $pw)
+            & $ap '      </AutoLogon>'
+        }
+        if ($chkNoExp.Checked -and $chkUser.Checked) {
+            $cmd = & $esc ('powershell.exe -NoProfile -Command "Set-LocalUser -Name ''{0}'' -PasswordNeverExpires $true"' -f $user)
+            & $ap '      <FirstLogonCommands>'
+            & $ap '        <SynchronousCommand wcm:action="add">'
+            & $ap '          <Order>1</Order>'
+            & $ap "          <CommandLine>$cmd</CommandLine>"
+            & $ap '          <Description>Password never expires</Description>'
+            & $ap '        </SynchronousCommand>'
+            & $ap '      </FirstLogonCommands>'
+        }
+        if ($chkSkip.Checked) {
+            & $ap '      <OOBE>'
+            & $ap '        <HideEULAPage>true</HideEULAPage>'
+            & $ap '        <HideLocalAccountScreen>true</HideLocalAccountScreen>'
+            & $ap '        <HideOEMRegistrationScreen>true</HideOEMRegistrationScreen>'
+            & $ap '        <HideOnlineAccountScreens>true</HideOnlineAccountScreens>'
+            & $ap '        <HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE>'
+            & $ap '        <NetworkLocation>Work</NetworkLocation>'
+            & $ap '        <ProtectYourPC>3</ProtectYourPC>'
+            & $ap '      </OOBE>'
+        }
+        if ($chkRegion.Checked) { & $ap ('      <TimeZone>{0}</TimeZone>' -f (& $esc ([string]$cmbTz.SelectedItem))) }
+        if ($chkUser.Checked) {
+            & $ap '      <UserAccounts>'
+            & $ap '        <LocalAccounts>'
+            & $ap '          <LocalAccount wcm:action="add">'
+            & $ap ('            <Name>{0}</Name>' -f (& $esc $user))
+            & $ap ('            <DisplayName>{0}</DisplayName>' -f (& $esc $user))
+            & $ap ('            <Group>{0}</Group>' -f [string]$cmbGroup.SelectedItem)
+            & $ap ('            <Password><Value>{0}</Value><PlainText>false</PlainText></Password>' -f $pw)
+            & $ap '          </LocalAccount>'
+            & $ap '        </LocalAccounts>'
+            & $ap '      </UserAccounts>'
+        }
+        & $ap '    </component>'
+        & $ap '  </settings>'
+    }
+    & $ap '</unattend>'
+    return $sb.ToString()
+}
+function Write-Xml($path, $xml) {
+    [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($path))
+    [IO.File]::WriteAllText($path, $xml, (New-Object Text.UTF8Encoding $false))
+}
+function Update-UnattendUi {
+    $u = $chkUser.Checked
+    foreach ($c in $txtUser, $txtPass, $chkShowPw, $cmbGroup, $chkNoExp, $chkLogon) { $c.Enabled = $u }
+    if (-not $u) { $chkLogon.Checked = $false; $chkNoExp.Checked = $false }
+    $txtPC.Enabled = $chkPC.Checked
+    $cmbTz.Enabled = $chkRegion.Checked; $txtLoc.Enabled = $chkRegion.Checked
+}
+function Init-Unattend {
+    try { foreach ($z in [TimeZoneInfo]::GetSystemTimeZones()) { [void]$cmbTz.Items.Add($z.Id) } } catch {}
+    if ($cmbTz.Items.Count -eq 0) { foreach ($z in 'Pacific Standard Time', 'Mountain Standard Time', 'Central Standard Time', 'Eastern Standard Time', 'UTC') { [void]$cmbTz.Items.Add($z) } }
+    try { $i = $cmbTz.Items.IndexOf([TimeZoneInfo]::Local.Id); if ($i -ge 0) { $cmbTz.SelectedIndex = $i } } catch {}
+    if ($cmbTz.SelectedIndex -lt 0) { $cmbTz.SelectedIndex = 0 }
+    $loc = 'en-US'; try { if ((Get-Culture).Name) { $loc = (Get-Culture).Name } } catch {}
+    $txtLoc.Text = $loc
+    Update-UnattendUi
+}
+
+# ================= experimental boot recovery tools =================
+# Exe tools: Exe + Argv (returns arg array; empty array = cancel) + Window ($true = own console window with progress)
+# Script tools: Build returns @{Summary; Run; RunArg} (empty = cancel)
+$Tools = @(
+    [pscustomobject]@{ Name = 'BCD: back up store (export)'; Needs = 'install'
+        Help = "Exports the BCD store that boots the selected Windows to a timestamped file in the BCD-Backups folder next to this script.$NL$NL Use cases:$NL- Take a safety copy before any boot repair.$NL- Keep a known-good copy to restore later.$NL$NL Every BCD change made by this tool already makes an automatic backup first."
+        Build = { param($c, $tool)
+            $t = Resolve-BcdTarget $c.Win
+            if (-not $t) { Msg 'No boot entry found for that install. Mount the EFI partition first.'; return $null }
+            @{ Summary = 'bcdedit /export <timestamped file>'; Run = { param($a) Backup-Bcd $a }; RunArg = $t } } },
+    [pscustomobject]@{ Name = 'BCD: restore from backup (import)'; Needs = 'install'
+        Help = "Replaces the boot configuration store with a backup file made earlier (bcdedit /import).$NL$NL Use cases:$NL- Undo a failed repair or rebuild.$NL- Recover after a bad BCD edit.$NL$NL A fresh backup of the current store is taken first. Replaces the WHOLE store."
+        Build = { param($c, $tool)
+            $t = Resolve-BcdTarget $c.Win
+            if (-not $t) { Msg 'No boot entry found for that install. Mount the EFI partition first.'; return $null }
+            $dlg = New-Object Windows.Forms.OpenFileDialog; $dlg.Title = 'Select a BCD backup file'
+            if ($dlg.ShowDialog() -ne 'OK') { return $null }
+            @{ Summary = "bcdedit /import `"$($dlg.FileName)`""; RunArg = @{ T = $t; F = $dlg.FileName }
+               Run = { param($a) $r = Invoke-Bcd $a.T @('/import', $a.F); if ($r.Rc -ne 0) { Msg 'Import failed. See the log.' 'Error' 'Error' } } } } },
+    [pscustomobject]@{ Name = 'Rebuild boot files (bcdboot)'; Needs = 'both'; Exe = 'bcdboot.exe'; Window = $false
+        Help = "bcdboot <Windows>\Windows /s <boot partition> /f UEFI|BIOS$NL$NL Copies fresh boot files from the selected Windows onto the chosen boot partition and creates a new BCD entry. Firmware type is chosen from the partition: FAT32 = UEFI, otherwise BIOS.$NL$NL Use cases:$NL- 'BOOTMGR is missing' or 'winload.efi not found'.$NL- Empty or recreated EFI partition.$NL- Boot files damaged or wiped."
+        Argv = { param($c) $fw = if ($c.EspFS -eq 'FAT32') { 'UEFI' } else { 'BIOS' }; @("$($c.Win)\Windows", '/s', $c.Esp, '/f', $fw) } },
+    [pscustomobject]@{ Name = 'Scan for Windows installs (bootrec /scanos)'; Needs = 'none'; Exe = 'bootrec.exe'; Window = $false
+        Help = "bootrec /scanos$NL$NL Read-only scan for Windows installations not currently in the boot menu.$NL$NL Use case: check whether Windows is detected before rebuilding the BCD."
+        Argv = { param($c) @('/scanos') } },
+    [pscustomobject]@{ Name = 'Rebuild BCD (bootrec /rebuildbcd)'; Needs = 'none'; Exe = 'bootrec.exe'; Window = $true
+        Help = "bootrec /rebuildbcd$NL$NL Scans for installs and offers to add them to the BCD (asks Yes / No / All in its own window).$NL$NL Use cases: missing boot menu entry; 'no operating system found'.$NL Tip: run 'BCD: back up store' first."
+        Argv = { param($c) @('/rebuildbcd') } },
+    [pscustomobject]@{ Name = 'Write new MBR (bootrec /fixmbr)'; Needs = 'none'; Exe = 'bootrec.exe'; Window = $false
+        Help = "bootrec /fixmbr$NL$NL Writes a standard Windows master boot record to the system disk without touching the partition table.$NL$NL Use cases: corrupted MBR, boot-sector virus, a non-Windows loader left on a BIOS/MBR disk.$NL Rarely needed on UEFI/GPT disks."
+        Argv = { param($c) @('/fixmbr') } },
+    [pscustomobject]@{ Name = 'Write boot sector (bootrec /fixboot)'; Needs = 'none'; Exe = 'bootrec.exe'; Window = $false
+        Help = "bootrec /fixboot$NL$NL Writes a new boot sector to the system partition.$NL$NL Use case: BIOS/MBR systems with a damaged boot sector.$NL On UEFI it often returns 'Access is denied' - use 'Rebuild boot files (bcdboot)' instead."
+        Argv = { param($c) @('/fixboot') } },
+    [pscustomobject]@{ Name = 'Offline system file check (sfc)'; Needs = 'install'; Exe = 'sfc.exe'; Window = $true
+        Help = "sfc /scannow /offbootdir=D:\ /offwindir=D:\Windows$NL$NL Verifies and repairs protected system files of the selected offline Windows.$NL$NL Use cases: Windows will not boot because of corrupt system files; after malware or a failed update."
+        Argv = { param($c) @('/scannow', "/offbootdir=$($c.Win)\", "/offwindir=$($c.Win)\Windows") } },
+    [pscustomobject]@{ Name = 'Offline DISM: restore health'; Needs = 'install'; Exe = 'dism.exe'; Window = $true
+        Help = "dism /image:D:\ /cleanup-image /restorehealth /scratchdir:D:\Windows\Temp$NL$NL Repairs the component store of the offline install.$NL$NL Use case: sfc cannot repair files. Offline repair may fail without a /source (install.wim); check the console output."
+        Argv = { param($c) @("/image:$($c.Win)\", '/cleanup-image', '/restorehealth', "/scratchdir:$($c.Win)\Windows\Temp") } },
+    [pscustomobject]@{ Name = 'Offline DISM: list third-party drivers'; Needs = 'install'; Exe = 'dism.exe'; Window = $true
+        Help = "dism /image:D:\ /get-drivers$NL$NL Read-only list of non-Microsoft drivers (oemNN.inf) in the offline install.$NL$NL Use case: find the NVMe / RAID / Intel RST-VMD driver name before removing it."
+        Argv = { param($c) @("/image:$($c.Win)\", '/get-drivers') } },
+    [pscustomobject]@{ Name = 'Offline DISM: inject drivers from folder'; Needs = 'install'; Exe = 'dism.exe'; Window = $true
+        Help = "dism /image:D:\ /add-driver /driver:<folder> /recurse$NL$NL Adds every driver found in a folder to the offline install.$NL$NL Use cases: 0x7B INACCESSIBLE_BOOT_DEVICE after moving the disk to new hardware; adding NVMe / RAID / VMD storage drivers so Windows can boot."
+        Argv = { param($c)
+            $fb = New-Object Windows.Forms.FolderBrowserDialog; $fb.Description = 'Folder containing the driver .inf files'
+            if ($fb.ShowDialog() -ne 'OK') { return @() }
+            @("/image:$($c.Win)\", '/add-driver', "/driver:$($fb.SelectedPath)", '/recurse') } },
+    [pscustomobject]@{ Name = 'Offline DISM: remove a driver'; Needs = 'install'; Exe = 'dism.exe'; Window = $true
+        Help = "dism /image:D:\ /remove-driver /driver:oemNN.inf$NL$NL Removes one third-party driver package from the offline install.$NL$NL Use cases: a storage / RAID driver is causing a boot crash; clean up before switching controller mode.$NL Run 'list third-party drivers' first to get the oemNN.inf name."
+        Argv = { param($c)
+            $n = Read-Text 'Driver published name (for example oem12.inf):' 'Remove driver'
+            if (-not $n) { return @() }
+            if ($n -notmatch '^oem\d+\.inf$') { Msg 'Invalid name. Use the oemNN.inf name from the driver list.' 'Invalid' 'Warning'; return @() }
+            @("/image:$($c.Win)\", '/remove-driver', "/driver:$n") } },
+    [pscustomobject]@{ Name = 'Check disk, read-only scan (chkdsk /scan)'; Needs = 'install'; Exe = 'chkdsk.exe'; Window = $true
+        Help = "chkdsk D: /scan$NL$NL Scans the file system of the selected Windows volume without fixing anything.$NL$NL Use case: see whether file-system errors explain a boot failure."
+        Argv = { param($c) @($c.Win, '/scan') } },
+    [pscustomobject]@{ Name = 'Check disk and REPAIR (chkdsk /f)'; Needs = 'install'; Exe = 'chkdsk.exe'; Window = $true
+        Help = "chkdsk D: /f$NL$NL Fixes file-system errors on the selected Windows volume. This WRITES to the disk.$NL$NL Use case: the read-only scan reported errors. Back up important data first if possible."
+        Argv = { param($c) @($c.Win, '/f') } },
+    [pscustomobject]@{ Name = 'Boot menu: enable legacy F8 menu'; Needs = 'install'; Elem = 'bootmenupolicy'; Val = 'legacy'
+        Help = "bcdedit /set <entry> bootmenupolicy legacy$NL$NL Brings back the classic F8 Advanced Boot Options menu (Safe Mode, Disable driver signature enforcement...).$NL$NL Use case: you need F8 options on Windows 10/11."
+        Build = { param($c, $tool)
+            $t = Resolve-BcdTarget $c.Win
+            if (-not $t) { Msg 'No boot entry found for that install. Mount the EFI partition first.'; return $null }
+            @{ Summary = "bcdedit /set $($t.Id) $($tool.Elem) $($tool.Val)"; RunArg = @{ T = $t; E = $tool.Elem; V = $tool.Val }
+               Run = { param($a) $r = Invoke-Bcd $a.T @('/set', $a.T.Id, $a.E, $a.V); if ($r.Rc -ne 0) { Msg 'bcdedit reported an error. See the log.' 'Error' 'Error' } } } } },
+    [pscustomobject]@{ Name = 'Boot menu: restore standard menu'; Needs = 'install'; Elem = 'bootmenupolicy'; Val = 'standard'
+        Help = "bcdedit /set <entry> bootmenupolicy standard$NL$NL Returns to the default boot menu behavior (undoes the legacy F8 menu)."
+        Build = { param($c, $tool)
+            $t = Resolve-BcdTarget $c.Win
+            if (-not $t) { Msg 'No boot entry found for that install. Mount the EFI partition first.'; return $null }
+            @{ Summary = "bcdedit /set $($t.Id) $($tool.Elem) $($tool.Val)"; RunArg = @{ T = $t; E = $tool.Elem; V = $tool.Val }
+               Run = { param($a) $r = Invoke-Bcd $a.T @('/set', $a.T.Id, $a.E, $a.V); if ($r.Rc -ne 0) { Msg 'bcdedit reported an error. See the log.' 'Error' 'Error' } } } } },
+    [pscustomobject]@{ Name = 'Automatic Repair loop: disable'; Needs = 'install'; Elem = 'recoveryenabled'; Val = 'No'
+        Help = "bcdedit /set <entry> recoveryenabled No$NL$NL Stops Windows from launching Automatic Repair after failed boots.$NL$NL Use case: the PC loops 'Preparing Automatic Repair' / 'Diagnosing your PC' and you want to see the real error or reach Safe Mode."
+        Build = { param($c, $tool)
+            $t = Resolve-BcdTarget $c.Win
+            if (-not $t) { Msg 'No boot entry found for that install. Mount the EFI partition first.'; return $null }
+            @{ Summary = "bcdedit /set $($t.Id) $($tool.Elem) $($tool.Val)"; RunArg = @{ T = $t; E = $tool.Elem; V = $tool.Val }
+               Run = { param($a) $r = Invoke-Bcd $a.T @('/set', $a.T.Id, $a.E, $a.V); if ($r.Rc -ne 0) { Msg 'bcdedit reported an error. See the log.' 'Error' 'Error' } } } } },
+    [pscustomobject]@{ Name = 'Automatic Repair loop: re-enable'; Needs = 'install'; Elem = 'recoveryenabled'; Val = 'Yes'
+        Help = "bcdedit /set <entry> recoveryenabled Yes$NL$NL Turns Automatic Repair back on (the Windows default)."
+        Build = { param($c, $tool)
+            $t = Resolve-BcdTarget $c.Win
+            if (-not $t) { Msg 'No boot entry found for that install. Mount the EFI partition first.'; return $null }
+            @{ Summary = "bcdedit /set $($t.Id) $($tool.Elem) $($tool.Val)"; RunArg = @{ T = $t; E = $tool.Elem; V = $tool.Val }
+               Run = { param($a) $r = Invoke-Bcd $a.T @('/set', $a.T.Id, $a.E, $a.V); if ($r.Rc -ne 0) { Msg 'bcdedit reported an error. See the log.' 'Error' 'Error' } } } } }
+)
+
+# ================= GUI =================
+$form = New-Object Windows.Forms.Form
+$form.Text = 'Windows Repair Toolkit'; $form.ClientSize = New-Object Drawing.Size(690, 630)
+$form.StartPosition = 'CenterScreen'; $form.AutoScroll = $true
+$form.Font = New-Object Drawing.Font('Segoe UI', 9)
+$tip = New-Object Windows.Forms.ToolTip; $tip.AutoPopDelay = 30000; $tip.InitialDelay = 200
+
+function New-Ctl($type, $parent, $x, $y, $w, $h, $text = '') {
+    $c = New-Object "Windows.Forms.$type"
+    $c.Location = New-Object Drawing.Point($x, $y); $c.Size = New-Object Drawing.Size($w, $h)
+    if ($text) { $c.Text = $text }
+    if ($type -in 'Label', 'CheckBox', 'RadioButton') { $c.AutoSize = $false }
+    if ($type -eq 'ComboBox') { $c.DropDownStyle = 'DropDownList' }
+    $parent.Controls.Add($c)
+    return $c
+}
+function Add-Help($parent, $x, $y, $title, $text) {
+    $b = New-Ctl 'Button' $parent $x $y 24 24 '?'
+    $tip.SetToolTip($b, $text)
+    $b.Add_Click({ [void][Windows.Forms.MessageBox]::Show($text, $title, 'OK', 'Information') }.GetNewClosure())
+}
+$tabs = New-Object Windows.Forms.TabControl
+$tabs.Location = New-Object Drawing.Point(10, 8); $tabs.Size = New-Object Drawing.Size(670, 470)
+$form.Controls.Add($tabs)
+function New-Page($text) { $p = New-Object Windows.Forms.TabPage; $p.Text = $text; $p.UseVisualStyleBackColor = $true; [void]$tabs.TabPages.Add($p); return $p }
+$g1 = New-Page '1. Mount'; $g2 = New-Page '2. Safe Mode'; $g3 = New-Page '3. Sysprep'; $gU = New-Page '4. Unattend'; $g4 = New-Page '5. Recovery (experimental)'
+
+# ---------- 1. Mount ----------
+[void](New-Ctl 'Label' $g1 12 15 60 20 'Engine')
+$rbDp = New-Ctl 'RadioButton' $g1 75 12 110 22 'diskpart'; $rbDp.Checked = $true
+$rbStor = New-Ctl 'RadioButton' $g1 190 12 170 22 'Storage cmdlets'
+Add-Help $g1 370 11 'Mount engine' ("diskpart: the classic tool; works everywhere including WinPE. Output is parsed as text, so it can misbehave on non-English systems.$NL$NL Storage cmdlets: Get-Disk / Get-Partition / Add-PartitionAccessPath. Cleaner, language independent, and available on Windows 11 and most WinPE builds that include the Storage module.$NL$NL Both do the same thing: list disks and partitions, add or remove a drive letter. Nothing is formatted, cleaned or deleted.")
+[void](New-Ctl 'Label' $g1 12 50 60 20 'Disk')
+$cmbDisk = New-Ctl 'ComboBox' $g1 75 47 470 24; $cmbDisk.DisplayMember = 'Text'
+$btnRefresh = New-Ctl 'Button' $g1 555 46 95 26 'Refresh'
+[void](New-Ctl 'Label' $g1 12 82 60 20 'Partition')
+$cmbPart = New-Ctl 'ComboBox' $g1 75 79 470 24; $cmbPart.DisplayMember = 'Text'
+[void](New-Ctl 'Label' $g1 12 114 60 20 'Letter')
+$cmbLetter = New-Ctl 'ComboBox' $g1 75 111 70 24
+$btnMount = New-Ctl 'Button' $g1 155 109 150 28 'Mount'
+Add-Help $g1 315 111 'Mount a partition' ("Gives any partition a temporary drive letter (diskpart: list disk > select disk > list partition > select partition > assign letter).$NL$NL Use cases:$NL- Mount the hidden EFI System Partition to edit or repair the bootloader (BCD).$NL- Reach an offline Windows install to copy data, inject/remove drivers or edit registry hives.$NL- Access Recovery / OEM partitions.$NL$NL Safety: only list, select, detail, assign letter and remove letter are ever sent to diskpart, and the Storage mode only adds/removes access paths. Only letters this tool assigned are removed.")
+[void](New-Ctl 'Label' $g1 12 150 330 18 'Mounted by this tool (remembered between runs):')
+$lstMounts = New-Ctl 'ListBox' $g1 12 170 535 100
+$btnUnmount = New-Ctl 'Button' $g1 555 170 95 28 'Unmount'
+$btnUnmountAll = New-Ctl 'Button' $g1 555 204 95 28 'Unmount all'
+$chkAuto = New-Ctl 'CheckBox' $g1 12 278 330 20 'Unmount everything when this tool closes'
+$chkAuto.Checked = $true
+
+# ---------- 2. Safe mode ----------
+[void](New-Ctl 'Label' $g2 12 15 70 20 'Apply to')
+$rbEdit = New-Ctl 'RadioButton' $g2 90 12 380 22 'Edit the selected boot entry directly'; $rbEdit.Checked = $true
+$rbClone = New-Ctl 'RadioButton' $g2 90 36 380 22 'Clone the entry -> separate "Safe Mode" item in the boot menu'
+Add-Help $g2 480 24 'Edit vs. clone' ("Edit directly: sets safeboot on the existing entry (bcdedit /set {current} safeboot minimal). The PC boots into Safe Mode on EVERY start until you remove the flag.$NL$NL Clone: copies the entry (bcdedit /copy), names the copy 'Safe Mode (minimal) [WinRepairTool]' and sets safeboot only on the copy. Your normal entry stays untouched; pick Safe Mode from the boot menu when you want it. Removing deletes only clones this tool created.$NL$NL Every BCD change is preceded by an automatic backup.")
+[void](New-Ctl 'Label' $g2 12 74 120 20 'Windows install')
+$cmbWin = New-Ctl 'ComboBox' $g2 135 71 410 24; $cmbWin.DisplayMember = 'Text'
+$btnRescan = New-Ctl 'Button' $g2 555 70 95 26 'Rescan'
+$lblWarn = New-Ctl 'Label' $g2 12 104 640 20; $lblWarn.Font = New-Object Drawing.Font('Segoe UI', 9, [Drawing.FontStyle]::Bold)
+$lblBcd = New-Ctl 'Label' $g2 12 128 640 44
+$btnSafeOn = New-Ctl 'Button' $g2 12 184 230 30 'Enable Safe Mode (minimal)'
+Add-Help $g2 248 187 'Enable Safe Mode' ("bcdedit /set {current} safeboot minimal$NL$NL Use cases:$NL- Remove or replace NVMe / RAID / Intel RST-VMD storage drivers.$NL- Switch the SATA controller mode (RAID <-> AHCI) without an INACCESSIBLE_BOOT_DEVICE blue screen.$NL- Uninstall a driver or program that crashes a normal boot.$NL$NL For an offline install the tool targets that install's own entry in its BCD store (bcdedit /store ... /set {guid} ...). In clone mode the boot menu shows the new entry; Windows usually waits about 30 seconds there.")
+$btnSafeOff = New-Ctl 'Button' $g2 300 184 230 30 'Remove Safe Mode flag'
+Add-Help $g2 536 187 'Remove Safe Mode' ("Edit mode: bcdedit /deletevalue {current} safeboot - returns the selected Windows to a normal boot.$NL$NL Clone mode: deletes only the clone entries created by this tool (matched by their exact name).")
+
+# ---------- 3. Sysprep ----------
+$rbA = New-Ctl 'RadioButton' $g3 12 15 590 22 'A.  Generalize:  sysprep /generalize /oobe /shutdown'
+Add-Help $g3 612 14 'A - Generalize' ("%windir%\System32\Sysprep\sysprep.exe /generalize /oobe /shutdown$NL$NL Strips machine-specific data (SID, hardware IDs) and shuts down. Next boot starts OOBE.$NL$NL Use cases:$NL- Capture a master image to deploy to many PCs.$NL- Create a template for virtual machines.$NL- Move / translate an installation to different hardware.")
+$chkVM = New-Ctl 'CheckBox' $g3 34 40 570 22 'Add /mode:vm  (VM deployment on the SAME hypervisor / virtual hardware)'
+$chkVM.Enabled = $false
+Add-Help $g3 612 39 'VM mode' ("Appends /mode:vm to option A.$NL$NL Skips hardware re-detection on first boot, so a generalized VHD/VM image starts much faster.$NL$NL Only valid with /generalize /oobe /shutdown, and only when the image is deployed to identical virtual hardware (same hypervisor, same VM configuration). For physical PCs or a different hypervisor leave it OFF.")
+$rbB1 = New-Ctl 'RadioButton' $g3 12 74 590 22 'B1. Two-step, step 1 - Audit mode:  sysprep /audit /reboot'
+Add-Help $g3 612 73 'B1 - Audit mode' ("%windir%\System32\Sysprep\sysprep.exe /audit /reboot$NL$NL Reboots into Audit mode (built-in Administrator, no OOBE) so you can customize before deployment.$NL$NL Use cases:$NL- Install drivers, updates and software.$NL- Prepare an image for another PC.$NL- Remove or inject storage (NVMe / RAID) drivers before the move.")
+$rbB2 = New-Ctl 'RadioButton' $g3 12 104 590 22 'B2. Two-step, step 2 - Deploy (OOBE):  sysprep /oobe /reboot'
+Add-Help $g3 612 103 'B2 - Deploy (OOBE)' ("%windir%\System32\Sysprep\sysprep.exe /oobe /reboot$NL$NL Run this from Audit mode when customizing is finished. Reboots into the first-run experience (OOBE) where the end user creates their account.$NL$NL Use cases: finish a prepared install for a VM, a new PC, or the PC it was moved to.")
+$chkUnatt = New-Ctl 'CheckBox' $g3 12 138 590 22 'Pass the answer file built on tab 4 to sysprep (/unattend:)'
+Add-Help $g3 612 137 'Answer file' ("Builds the unattend.xml from the Unattend tab when you press Run and adds /unattend:<file> to the command (works with A, B1 and B2).$NL$NL Sysprep caches the answer file, so settings like 'skip OOBE screens', the local account, computer name and time zone are applied during the next specialize / OOBE pass.$NL$NL The file lives in your TEMP folder and holds the account password in a recoverable form - delete it afterwards.")
+$lblDep = New-Ctl 'Label' $g3 12 170 640 50 'Only ONE option can be selected. Sysprep acts on the Windows you are running right now. Two-step mode: run B1 first, customize in Audit mode, then run B2. The commands are fixed and cannot be edited.'
+$btnRun = New-Ctl 'Button' $g3 12 230 240 30 'Run selected command...'
+$btnPre = New-Ctl 'Button' $g3 262 230 200 30 'Run pre-flight checks'
+$chkAutoPre = New-Ctl 'CheckBox' $g3 12 268 500 22 'Also run the pre-flight checks automatically before each run'
+Add-Help $g3 468 233 'Pre-flight checks' ("Checks the running Windows for the usual reasons sysprep fails or does damage:$NL- pending reboot, free disk space$NL- in-place upgrade (unsupported for generalize)$NL- domain join$NL- BitLocker / device encryption (generalize fails while encrypted)$NL- leftover unattend.xml files that conflict$NL- Store apps installed for one user but not provisioned (the classic generalize failure)$NL- last sysprep error log (Sysprep\Panther\setuperr.log)$NL$NL Run it on demand with the button, or tick the checkbox below it to also run it before every sysprep run (off by default). Findings can be overridden with 'Continue anyway'.")
+if ($IsWinPE) {
+    foreach ($c in $rbA, $rbB1, $rbB2, $btnRun, $btnPre, $chkUnatt, $chkAutoPre) { $c.Enabled = $false }
+    $lblDep.Text = 'Disabled in WinPE: Sysprep only works from inside the installed Windows.'
+}
+
+# ---------- 4. Unattend ----------
+[void](New-Ctl 'Label' $gU 12 8 630 34 'Builds an answer file (unattend.xml). Tick only what you want; unticked options are left out of the file.')
+$chkSkip = New-Ctl 'CheckBox' $gU 12 46 590 22 'Skip OOBE screens (EULA, online account, Wi-Fi, privacy, OEM registration)'; $chkSkip.Checked = $true
+Add-Help $gU 612 45 'Skip OOBE screens' ("Hides the first-run screens (HideEULAPage, HideOnlineAccountScreens, HideLocalAccountScreen, HideWirelessSetupInOOBE, HideOEMRegistrationScreen, ProtectYourPC=3).$NL$NL This is the 'skip user creation' switch: nobody is asked to create an account. Because that leaves no way to sign in, it requires 'Create local account' below.$NL$NL Use cases: unattended VM and PC deployment, lab machines, hands-off image rollouts.")
+$chkUser = New-Ctl 'CheckBox' $gU 12 76 300 22 'Create local account'; $chkUser.Checked = $true
+Add-Help $gU 612 75 'Local account' ("Creates a local account during OOBE (LocalAccounts in the oobeSystem pass).$NL$NL The password is stored base64-encoded, which is obfuscation, not encryption: anyone who can read the file can recover it. Delete the file after use.$NL$NL Password never expires adds a first-logon command (Set-LocalUser -PasswordNeverExpires).")
+[void](New-Ctl 'Label' $gU 36 106 50 20 'Name')
+$txtUser = New-Ctl 'TextBox' $gU 90 103 160 24; $txtUser.Text = 'User'
+[void](New-Ctl 'Label' $gU 262 106 65 20 'Password')
+$txtPass = New-Ctl 'TextBox' $gU 330 103 150 24; $txtPass.UseSystemPasswordChar = $true
+$chkShowPw = New-Ctl 'CheckBox' $gU 488 104 100 22 'Show'
+[void](New-Ctl 'Label' $gU 36 136 50 20 'Group')
+$cmbGroup = New-Ctl 'ComboBox' $gU 90 133 160 24
+[void]$cmbGroup.Items.Add('Administrators'); [void]$cmbGroup.Items.Add('Users'); $cmbGroup.SelectedIndex = 0
+$chkNoExp = New-Ctl 'CheckBox' $gU 262 134 330 22 'Password never expires'
+$chkLogon = New-Ctl 'CheckBox' $gU 36 164 560 22 'Auto-logon once after setup (uses the account above)'
+$chkPC = New-Ctl 'CheckBox' $gU 12 196 200 22 'Set computer name'
+$txtPC = New-Ctl 'TextBox' $gU 215 193 150 24; $txtPC.Text = '*'
+[void](New-Ctl 'Label' $gU 372 197 270 20 '*  =  random name')
+$chkRegion = New-Ctl 'CheckBox' $gU 12 226 330 22 'Set time zone and language'
+[void](New-Ctl 'Label' $gU 36 256 70 20 'Time zone')
+$cmbTz = New-Ctl 'ComboBox' $gU 110 253 300 24
+[void](New-Ctl 'Label' $gU 420 256 50 20 'Locale')
+$txtLoc = New-Ctl 'TextBox' $gU 475 253 80 24
+$btnUPrev = New-Ctl 'Button' $gU 12 296 110 30 'Preview XML'
+$btnUSave = New-Ctl 'Button' $gU 130 296 130 30 'Save as...'
+$btnUDeploy = New-Ctl 'Button' $gU 268 296 230 30 'Deploy to selected Windows'
+Add-Help $gU 504 299 'Deploy answer file' ("Writes the file to <selected Windows>\Windows\Panther\Unattend\unattend.xml (an existing file is backed up first). Windows Setup looks there during the specialize and OOBE passes.$NL$NL It only has an effect on an install that is about to go through specialize / OOBE (after sysprep /generalize, or on a fresh image). On an install that already finished OOBE it does nothing until it is sysprepped.$NL$NL Alternative: tick 'Pass the answer file to sysprep' on the Sysprep tab instead.")
+[void](New-Ctl 'Label' $gU 12 338 635 60 'Passwords in an answer file are only obfuscated (base64), not encrypted. Delete the file after use. The file is built for this PC architecture; the target install must match.')
+
+# ---------- 5. Experimental recovery ----------
+$lblExp = New-Ctl 'Label' $g4 12 10 640 36 'EXPERIMENTAL: these tools are untested on your hardware and can change boot configuration or disk contents. Back up first (BCD backup tool below).'
+$lblExp.ForeColor = 'Red'; $lblExp.Font = New-Object Drawing.Font('Segoe UI', 9, [Drawing.FontStyle]::Bold)
+[void](New-Ctl 'Label' $g4 12 56 100 20 'Boot partition')
+$cmbEsp = New-Ctl 'ComboBox' $g4 115 53 430 24; $cmbEsp.DisplayMember = 'Text'
+$btnEspRefresh = New-Ctl 'Button' $g4 555 52 95 26 'Refresh'
+[void](New-Ctl 'Label' $g4 12 90 100 20 'Tool')
+$cmbTool = New-Ctl 'ComboBox' $g4 115 87 430 24; $cmbTool.DisplayMember = 'Name'
+foreach ($t in $Tools) { [void]$cmbTool.Items.Add($t) }
+$btnToolHelp = New-Ctl 'Button' $g4 551 86 24 24 '?'
+$lblToolDesc = New-Ctl 'Label' $g4 12 124 640 60
+$lblToolNote = New-Ctl 'Label' $g4 12 190 640 36 'Tools use the Windows install selected on the Safe Mode tab and (where needed) the boot partition above. Long jobs open their own console window.'
+$btnTool = New-Ctl 'Button' $g4 12 236 240 30 'Run selected tool...'
+
+# ---------- log ----------
+$txtLog = New-Ctl 'TextBox' $form 10 488 670 132
+$txtLog.Multiline = $true; $txtLog.ReadOnly = $true; $txtLog.ScrollBars = 'Vertical'; $txtLog.Font = New-Object Drawing.Font('Consolas', 8.5)
+
+# ================= events =================
+$cmbDisk.Add_SelectedIndexChanged({ Safe { Update-Parts } })
+$rbStor.Add_CheckedChanged({ Safe { Update-Disks } })
+$btnRefresh.Add_Click({ Safe { Update-Disks; Update-Letters; Update-Windows; Update-Esp } })
+$btnRescan.Add_Click({ Safe { Update-Windows $true } })
+$cmbWin.Add_SelectedIndexChanged({ Safe { Update-SafeStatus } })
+$rbClone.Add_CheckedChanged({ Safe { Update-SafeLabels; Update-SafeStatus } })
+$rbA.Add_CheckedChanged({ $chkVM.Enabled = $rbA.Checked; if (-not $rbA.Checked) { $chkVM.Checked = $false } })
+$btnEspRefresh.Add_Click({ Safe { Update-Esp } })
+$cmbTool.Add_SelectedIndexChanged({
+    $t = $cmbTool.SelectedItem
+    if ($t) { $lblToolDesc.Text = ($t.Help -split "`r?`n")[0]; $tip.SetToolTip($btnToolHelp, $t.Help) }
+})
+$btnToolHelp.Add_Click({ $t = $cmbTool.SelectedItem; if ($t) { Msg $t.Help $t.Name 'Information' } })
+
+$chkUser.Add_CheckedChanged({ Update-UnattendUi })
+$chkPC.Add_CheckedChanged({ Update-UnattendUi })
+$chkRegion.Add_CheckedChanged({ Update-UnattendUi })
+$chkShowPw.Add_CheckedChanged({ $txtPass.UseSystemPasswordChar = -not $chkShowPw.Checked })
+$btnPre.Add_Click({ Safe {
+    $mode = if ($rbB1.Checked) { 'B1' } elseif ($rbB2.Checked) { 'B2' } else { 'A' }
+    [void](Show-Report "Sysprep pre-flight checks (mode $mode)" (Format-Preflight @(Get-Preflight $mode)))
+} })
+$btnUPrev.Add_Click({ Safe {
+    $x = Build-Unattend
+    if ($x) { [void](Show-Report 'unattend.xml preview (password is only base64-obfuscated)' $x) }
+} })
+$btnUSave.Add_Click({ Safe {
+    $x = Build-Unattend; if (-not $x) { return }
+    $d = New-Object Windows.Forms.SaveFileDialog
+    $d.FileName = 'unattend.xml'; $d.Filter = 'XML file (*.xml)|*.xml'; $d.InitialDirectory = $StateDir
+    if ($d.ShowDialog() -eq 'OK') { Write-Xml $d.FileName $x; Log "Answer file saved: $($d.FileName)" }
+} })
+$btnUDeploy.Add_Click({ Safe {
+    $w = $cmbWin.SelectedItem
+    if (-not $w) { Msg 'Select a Windows installation on the Safe Mode tab first.'; return }
+    $x = Build-Unattend; if (-not $x) { return }
+    $dest = "$($w.Drive)\Windows\Panther\Unattend\unattend.xml"
+    $q = "Write the answer file to:$NL$dest$NL$NL for $($w.Text)$NL$NL An existing file is backed up first. Continue?"
+    if ([Windows.Forms.MessageBox]::Show($q, 'Deploy answer file', 'YesNo', 'Question') -ne 'Yes') { return }
+    if ([IO.File]::Exists($dest)) { Copy-Item $dest ("{0}.bak_{1}" -f $dest, (Get-Date -Format yyyyMMdd_HHmmss)) }
+    Write-Xml $dest $x
+    Log "Answer file deployed: $dest"
+    Msg "Deployed to $dest"
+} })
+$btnMount.Add_Click({ Safe {
+    $d = $cmbDisk.SelectedItem; $p = $cmbPart.SelectedItem; $L = [string]$cmbLetter.SelectedItem
+    if (-not $d -or -not $p -or -not $L) { Msg 'Select a disk, a partition and a free letter first.'; return }
+    $cur = Get-PartLetter $d.Num $p.Num
+    if ($cur -eq 'NOVOLUME') { Msg 'This partition has no mountable volume (e.g. MSR / reserved).' 'Cannot mount' 'Warning'; return }
+    if ($cur) { Msg "This partition is already mounted as ${cur}:." 'Already mounted' 'Information'; return }
+    if (Test-LetterUsed $L) { Update-Letters; Msg "Letter ${L}: was just taken. Pick another." 'Letter in use' 'Warning'; return }
+    if (Mount-Part $d.Num $p.Num $L) {
+        [void]$script:Mounts.Add([pscustomobject]@{ Letter = $L; Disk = $d.Num; Partition = $p.Num })
+        Save-Mounts; Update-MountList; Update-Letters; Update-Esp; Log "Mounted as ${L}:"; Update-Windows
+    } else { Msg 'Mount failed. See the log below.' 'Mount failed' 'Error' }
+} })
+$btnUnmount.Add_Click({ Safe {
+    $i = $lstMounts.SelectedIndex
+    if ($i -lt 0) { Msg 'Select a mounted entry in the list first.'; return }
+    [void](Dismount-One $script:Mounts[$i])
+    Save-Mounts; Update-MountList; Update-Letters; Update-Esp; Update-Windows
+} })
+$btnUnmountAll.Add_Click({ Safe {
+    foreach ($m in @($script:Mounts)) { [void](Dismount-One $m) }
+    Save-Mounts; Update-MountList; Update-Letters; Update-Esp; Update-Windows
+} })
+
+$btnSafeOn.Add_Click({ Safe {
+    $w = $cmbWin.SelectedItem; if (-not $w) { return }
+    $t = Resolve-BcdTarget $w.Drive; if (-not $t) { Update-SafeStatus; return }
+    if ($rbClone.Checked) {
+        if (@(Get-Clones $t $w.Drive).Count) { Msg 'A Safe Mode clone for this install already exists.'; return }
+        $q = "Create a separate boot-menu entry 'Safe Mode (minimal)' for:$NL$NL$($w.Text)$NL$NL Your normal entry is not changed."
+        if ([Windows.Forms.MessageBox]::Show($q, 'Confirm', 'YesNo', 'Question') -ne 'Yes') { return }
+        $r = Invoke-Bcd $t @('/copy', $t.Id, '/d', $CloneMarker)
+        $ok = $r.Out -match '(\{[0-9a-fA-F-]{36}\})'
+        if ($r.Rc -ne 0 -or -not $ok) { Msg 'Could not copy the boot entry. See the log.' 'Error' 'Error'; return }
+        $new = $Matches[1]
+        $r2 = Invoke-Bcd $t @('/set', $new, 'safeboot', 'minimal')
+        if ($r2.Rc -ne 0) { [void](Invoke-Bcd $t @('/delete', $new)); Msg 'Could not set safeboot on the copy; the copy was removed. See the log.' 'Error' 'Error' }
+        else { Msg "Done. Choose 'Safe Mode (minimal)' in the boot menu on next start." }
+    } else {
+        $q = "Enable Safe Mode (minimal) for:$NL$NL$($w.Text)$NL$NL It will boot into Safe Mode on every start until you remove the flag."
+        if ([Windows.Forms.MessageBox]::Show($q, 'Confirm', 'YesNo', 'Warning', 'Button2') -ne 'Yes') { return }
+        $r = Invoke-Bcd $t @('/set', $t.Id, 'safeboot', 'minimal')
+        if ($r.Rc -ne 0) { Msg 'bcdedit reported an error. See the log.' 'Error' 'Error' }
+    }
+    Update-SafeStatus
+} })
+$btnSafeOff.Add_Click({ Safe {
+    $w = $cmbWin.SelectedItem; if (-not $w) { return }
+    $t = Resolve-BcdTarget $w.Drive; if (-not $t) { Update-SafeStatus; return }
+    if ($rbClone.Checked) {
+        $cl = @(Get-Clones $t $w.Drive)
+        if ($cl.Count -eq 0) { Msg 'No Safe Mode clone created by this tool was found for this install.'; return }
+        if ([Windows.Forms.MessageBox]::Show("Delete $($cl.Count) Safe Mode clone entry(ies) for:$NL$NL$($w.Text)", 'Confirm', 'YesNo', 'Question') -ne 'Yes') { return }
+        foreach ($e in $cl) { [void](Invoke-Bcd $t @('/delete', $e.Id)) }
+    } else {
+        if ([Windows.Forms.MessageBox]::Show("Remove the Safe Mode flag for:$NL$NL$($w.Text)", 'Confirm', 'YesNo', 'Question') -ne 'Yes') { return }
+        $r = Invoke-Bcd $t @('/deletevalue', $t.Id, 'safeboot')
+        if ($r.Rc -ne 0) { Msg 'bcdedit reported an error (the flag may not be set). See the log.' 'Notice' 'Warning' }
+    }
+    Update-SafeStatus
+} })
+
+$btnRun.Add_Click({ Safe {
+    if ($rbA.Checked) {
+        $arg = '/generalize /oobe /shutdown'
+        $warn = "GENERALIZE removes the machine identity (SID, hardware-specific data) from THIS Windows and SHUTS DOWN.$NL The next boot starts OOBE.$NL$NL - Back up / snapshot first.$NL - Do not use on a PC you are not ready to reset (not for domain-joined production PCs).$NL - User-installed Store apps can make generalize fail."
+        if ($chkVM.Checked) { $arg += ' /mode:vm'; $warn += "$NL$NL VM MODE: the image must be deployed to identical virtual hardware on the same hypervisor, otherwise it may fail to boot." }
+    } elseif ($rbB1.Checked) {
+        $arg = '/audit /reboot'
+        $warn = "This REBOOTS THIS PC into Audit mode (built-in Administrator, no OOBE).$NL Close all work first. When customizing is done, run B2."
+    } elseif ($rbB2.Checked) {
+        $arg = '/oobe /reboot'
+        $warn = "Run this only from Audit mode when customizing is FINISHED.$NL This REBOOTS into OOBE (first-run setup)."
+    } else { Msg 'Select one of the three options first.'; return }
+    $sp = Join-Path $env:windir 'System32\Sysprep\sysprep.exe'
+    if (-not (Test-Path $sp)) { Msg 'sysprep.exe was not found on this system.' 'Error' 'Error'; return }
+    if (Get-Process sysprep -ErrorAction SilentlyContinue) { Msg 'Sysprep is already running.' 'Busy' 'Warning'; return }
+    $mode = if ($rbA.Checked) { 'A' } elseif ($rbB1.Checked) { 'B1' } else { 'B2' }
+    if ($chkAutoPre.Checked) {
+        $pf = @(Get-Preflight $mode)
+        if (@($pf | Where-Object { $_.Level -eq 'WARN' -or $_.Level -eq 'FAIL' }).Count) {
+            if (-not (Show-Report 'Pre-flight checks - issues found' (Format-Preflight $pf) $true)) { return }
+        }
+    }
+    if ($chkUnatt.Checked) {
+        $xml = Build-Unattend; if (-not $xml) { return }
+        $uf = Join-Path $env:TEMP 'WinRepairTool_unattend.xml'
+        Write-Xml $uf $xml
+        $arg += " /unattend:`"$uf`""
+        $warn += "$NL$NL ANSWER FILE: $uf is passed with /unattend. It holds the account password in a recoverable form - delete it afterwards."
+    }
+    $q = "$warn$NL$NL Command:$NL$sp $arg$NL$NL Continue?"
+    if ([Windows.Forms.MessageBox]::Show($q, 'WARNING - Sysprep', 'YesNo', 'Warning', 'Button2') -ne 'Yes') { return }
+    Log "sysprep $arg"
+    Start-Process -FilePath $sp -ArgumentList $arg
+} })
+
+$btnTool.Add_Click({ Safe {
+    $tool = $cmbTool.SelectedItem; if (-not $tool) { Msg 'Select a tool first.'; return }
+    $w = $cmbWin.SelectedItem; $e = $cmbEsp.SelectedItem
+    if ($tool.Needs -in 'install', 'both' -and -not $w) { Msg 'Select a Windows installation on the Safe Mode tab first.'; return }
+    if ($tool.Needs -eq 'both' -and -not $e) { Msg 'Select the boot partition on this tab first.'; return }
+    $ctx = @{ Win = $(if ($w) { $w.Drive } else { '' }); Esp = $(if ($e) { $e.Drive } else { '' }); EspFS = $(if ($e) { $e.FS } else { '' }) }
+    if ($tool.Build) {
+        $def = & $tool.Build $ctx $tool
+        if (-not $def) { return }
+    } else {
+        $a = @(& $tool.Argv $ctx)
+        if ($a.Count -eq 0) { return }
+        $line = $tool.Exe + ' ' + (($a | ForEach-Object { if ($_ -match '\s') { '"' + $_ + '"' } else { $_ } }) -join ' ')
+        $def = @{ Summary = $line; Exe = $tool.Exe; Argv = $a; Window = $tool.Window; Line = $line }
+    }
+    $q = "EXPERIMENTAL - $($tool.Name)$NL$NL $($def.Summary)$NL$NL This tool is experimental and untested on your hardware. It may change boot configuration or disk contents. Continue?"
+    if ([Windows.Forms.MessageBox]::Show($q, 'EXPERIMENTAL - confirm', 'YesNo', 'Warning', 'Button2') -ne 'Yes') { return }
+    Log "TOOL: $($tool.Name)"
+    if ($def.Run) { & $def.Run $def.RunArg }
+    elseif ($def.Window) { Start-Process cmd.exe -ArgumentList ('/c ' + $def.Line + ' & pause') }
+    else { $o = (& $def.Exe @($def.Argv) 2>&1) | Out-String; Log $o.Trim() }
+} })
+
+$form.Add_FormClosing({
+    if ($chkAuto.Checked -and $script:Mounts.Count -gt 0) {
+        foreach ($m in @($script:Mounts)) { [void](Dismount-One $m) }
+    }
+    Save-Mounts
+})
+$form.Add_Shown({ Safe {
+    Log $(if ($IsWinPE) { 'Running in WinPE.' } else { 'Running in normal Windows.' })
+    if (-not (Test-StorageAvail)) { $rbStor.Enabled = $false; Log 'Storage cmdlets not available here - using diskpart.' }
+    Update-SafeLabels
+    Init-Unattend
+    Update-Disks; Update-Letters; Load-Mounts; Update-MountList; Update-Esp; Update-Windows $true
+} })
+
+[void]$form.ShowDialog()
