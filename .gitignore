@@ -1,0 +1,2 @@
+# a tool's data folder (logs, backups) when a tool is started from the repo folder - never commit it
+WinSuperTool-Data/

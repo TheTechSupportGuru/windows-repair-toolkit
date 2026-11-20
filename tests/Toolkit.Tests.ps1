@@ -67,6 +67,21 @@ Describe 'T2 window helpers: display scaling, splash, resizing (all GUI tools)' 
             if ($cc[0] -lt $pages[-1] -or $cc[0] - $pages[-1] -gt 3) { throw "$($f.Name): the tab control is not created right after the last New-Page" }
         }
     }
+    It 'the main window stays open after the splash closes (1.8.1 / 1.8.2 closed 4 tools by themselves after 1-2 s)' {
+        $tk = $null; $pe = $null; $ast = [Management.Automation.Language.Parser]::ParseFile($GuiTools[0].FullName, [ref]$tk, [ref]$pe)
+        foreach ($n in 'Set-WrtScaling', 'Get-WrtScale', 'Resize-WrtColumns', 'Move-WrtIntoView', 'Show-WrtSplash', 'Close-WrtSplash', 'Initialize-WrtWindow', 'Complete-WrtWindow') {
+            . ([scriptblock]::Create($ast.Find({ param($x) $x -is [Management.Automation.Language.FunctionDefinitionAst] -and $x.Name -eq $n }, $true).Extent.Text))
+        }
+        Show-WrtSplash 'test'                                  # shown BEFORE the main window, exactly like the tools do
+        $f = New-Object Windows.Forms.Form; Set-WrtScaling $f; $f.Text = 'main'
+        $script:stayed = $false
+        $t = New-Object Windows.Forms.Timer; $t.Interval = 3000; $t.Add_Tick({ $this.Stop(); $script:stayed = $true; $f.Close() })
+        $f.Add_Shown({ $t.Start() })
+        Initialize-WrtWindow $f @() 300 200                    # its Shown handler hides the splash after ~1.2 s
+        [void]$f.ShowDialog(); $f.Dispose()
+        $script:stayed | Should Be $true
+        $script:WrtSplash | Should BeNullOrEmpty             # closed and disposed together with the main window
+    }
     It 'the splash says exactly what it should' {
         $t = [IO.File]::ReadAllText($GuiTools[0].FullName)
         $t | Should Match "@\('Windows Repair Toolkit', 22"

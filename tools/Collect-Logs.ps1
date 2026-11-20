@@ -1,5 +1,5 @@
 #requires -Version 5.1
-# Version 1.8.2 (2026-11-20). What changed: docs/changes/V1.8.2.md
+# Version 1.8.3 (2026-11-20). What changed: docs/changes/V1.8.3.md
 # Windows Repair Toolkit - https://github.com/TheTechSupportGuru/windows-repair-toolkit
 # Copyright (C) 2026 TheTechSupportGuru
 # SPDX-License-Identifier: GPL-3.0-or-later
@@ -100,8 +100,10 @@ function Show-WrtSplash([string]$what) {
 function Close-WrtSplash {
     if (-not $script:WrtSplash) { return }
     try { $left = 1.2 - ((Get-Date) - $script:WrtSplashAt).TotalSeconds; if ($left -gt 0) { Start-Sleep -Milliseconds ([int]($left * 1000)) } } catch {}   # readable for at least ~1 s
-    try { $script:WrtSplash.Close(); $script:WrtSplash.Dispose() } catch {}
-    $script:WrtSplash = $null
+    # HIDE it, do not close it: closing a window that was shown before the main window's ShowDialog also ends that
+    # ShowDialog, so in 1.8.1 / 1.8.2 Collect-Logs, Monitor-Logs, WinFixKit and ClaudeLogAnalyzer closed by themselves
+    # 1-2 s after starting. The splash is closed and disposed when the main window closes (Initialize-WrtWindow).
+    try { $script:WrtSplash.Hide() } catch {}
 }
 # Call right before ShowDialog. Records how much room each scrollable area ($scroll: tab pages, panels) needs at its
 # design size, so a small window scrolls instead of squeezing the controls together; sets the minimum size; opens
@@ -115,6 +117,7 @@ function Initialize-WrtWindow($f, $scroll = @(), [int]$minW = 640, [int]$minH = 
         [void]$script:WrtExt.Add(@($c, $w, $h))
     }
     $f.Add_Shown({ Complete-WrtWindow })
+    $f.Add_FormClosed({ try { if ($script:WrtSplash) { $script:WrtSplash.Close(); $script:WrtSplash.Dispose() } } catch {}; $script:WrtSplash = $null })
 }
 function Complete-WrtWindow {
     $f = $script:WrtForm; $k = Get-WrtScale $f

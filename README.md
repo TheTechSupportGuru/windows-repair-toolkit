@@ -5,13 +5,13 @@ A set of PowerShell tools for repairing and troubleshooting Windows 10/11 PCs, i
 > [!WARNING]
 > These scripts were written with AI. They have been tested on one Windows 11 VM, but not extensively. Several tools change the boot configuration (BCD), the registry, services and network settings. **Use at your own risk.** Try them on a test machine first.
 
-**Current version: 1.8.2** (2026-11-20). Every version is a git tag (`v1.1` to `v1.8.2`), so `git diff v1.8.1 v1.8.2` shows exactly what changed. Licensed under the [GNU GPL v3.0](#license).
+**Current version: 1.8.3** (2026-11-20). Every version is a git tag (`v1.1` to `v1.8.3`), so `git diff v1.8.2 v1.8.3` shows exactly what changed. Licensed under the [GNU GPL v3.0](#license).
 
 ## Download
 
-Get a single tool from the [latest release](../../releases/latest). Each tool has its own zip (for example `WinSuperTool-v1.8.2.zip`) with the script, its launcher, a short read-me and the license. **Source code** contains everything. Every older version is on the [releases page](../../releases) too.
+Get a single tool from the [latest release](../../releases/latest). Each tool has its own zip (for example `WinSuperTool-v1.8.3.zip`) with the script, its launcher, a short read-me and the license. **Source code** contains everything. Every older version is on the [releases page](../../releases) too.
 
-**Don't want AI?** `WinSuperTool-NoAI-v1.8.2.zip` is WinSuperTool without the AI Analyze tab:
+**Don't want AI?** `WinSuperTool-NoAI-v1.8.3.zip` is WinSuperTool without the AI Analyze tab:
 - no phone login and no network listener;
 - nothing is ever sent to Claude or Gemini;
 - everything else is the same.
@@ -21,7 +21,7 @@ Windows marks downloaded files as blocked: right-click the zip > **Properties** 
 ## Beta: WinSuperTool 1.9 beta 4
 
 > [!CAUTION]
-> **Beta = test build.** It has had less testing than 1.8.2 and may get results wrong. Try it on a test machine, and keep using **1.8.2** for real repairs. Only WinSuperTool is in the beta; the other tools are unchanged.
+> **Beta = test build.** It has had less testing than 1.8.3 and may get results wrong. Try it on a test machine, and keep using **1.8.3** for real repairs. Only WinSuperTool is in the beta; the other tools are unchanged.
 
 - **Recovery tab:**
   - **Pass / fail summary.** When sfc, DISM, chkdsk, bcdboot, bootrec or a driver tool finishes, a window says whether the task **passed or failed** and what it found, for example **NO CORRUPTION DETECTED**, **CORRUPTION DETECTED - FIX WORKED** or **FIX DID NOT WORK**. It quotes the tool's own message word for word.
@@ -127,7 +127,7 @@ The registry is backed up before each fix, with one-click restore. Folders are r
 
 ## What has been fixed
 
-Testing and code review led to **more than 100 fixes** across 9 versions. Each version's full list, with severity and how it was verified, is in [`docs/changes/`](docs/changes/).
+Testing and code review led to **more than 100 fixes** across 10 versions. Each version's full list, with severity and how it was verified, is in [`docs/changes/`](docs/changes/).
 
 Severity: **S1** = can make the PC unbootable, lose data or act on the wrong disk. **S2** = a serious bug. **S3** = wrong result or bad behaviour. **S4** = minor.
 
@@ -141,6 +141,8 @@ Severity: **S1** = can make the PC unbootable, lose data or act on the wrong dis
 | **1.7** | A logic and optimization pass from 4 code reviews (85 findings, about 50 fixed, plus 9 bugs found by testing). WinFixKit: firewall rule profiles were rewritten, failed registry restores were marked as done, and power settings only worked in English. WinSuperTool: one bad file cancelled the whole AI request, recovery consoles could be broken by `&` in paths, dual-boot BCD entries were not found, Event Viewer export failures were hidden, and binary `.etl` files were sent to the AI as text. | [V1.7](docs/changes/V1.7.md) |
 | **1.8** | The fixes ported to WinRepairTool, Collect-Logs, Monitor-Logs, ClaudeLogAnalyzer and the launchers. WinRepairTool's Recovery tab now works on the running Windows. ClaudeLogAnalyzer no longer freezes for up to 3 minutes, and uses 2 MB instead of 359 MB of memory on a big log. Both boot tools offer to fix a boot-menu timeout of 0, which made the new Safe Mode entry impossible to pick. | [V1.8](docs/changes/V1.8.md) |
 | **1.8.1** | **All tools:** text was blurry or cut off on 125 / 150 / 200 % displays (for example "Run a .ps1..."), and resizing the window left empty space or cut off the right-hand buttons. The tools now scale their own windows, lists and logs grow with the window, and small windows scroll. Also new: a splash screen, the GNU GPL v3.0 license, and a **no-AI edition** of WinSuperTool. Missing event logs are greyed out in the monitors, and the AI login no longer stops after an unrelated startup error. | [V1.8.1](docs/changes/V1.8.1.md) |
+| **1.8.2** | Two layout fixes for scaled displays: windows opened partly off the screen, because WinForms centres them before they scale; and controls inside tabs could land in the wrong place or overlap, because a tab page is a 200 x 100 placeholder until its tab control exists. | [V1.8.2](docs/changes/V1.8.2.md) |
+| **1.8.3** | **Hotfix:** in 1.8.1 and 1.8.2, Collect-Logs, Monitor-Logs, WinFixKit and ClaudeLogAnalyzer closed by themselves 1-2 seconds after starting. Closing the splash screen also ended the main window. The splash is now hidden instead, and closed together with the tool. | [V1.8.3](docs/changes/V1.8.3.md) |
 
 ### Still open
 
@@ -170,7 +172,7 @@ Invoke-Pester .\tests\Suite.Tests.ps1
 ```
 
 Other test files:
-- **`tests\Toolkit.Tests.ps1`** (21 / 21 pass): checks for all tools since 1.8.1. It covers the license headers, display scaling, the splash screen, the no-AI edition (rebuilt and compared) and the beta's HTML report.
+- **`tests\Toolkit.Tests.ps1`** (22 / 22 pass): checks for all tools since 1.8.1. It covers the license headers, display scaling, the splash screen, the no-AI edition (rebuilt and compared) and the beta's HTML report.
 - **`tests\Beta.Tests.ps1`** (48 / 48 pass): the beta's own tests.
 - **`tests\Run-MonitorLive.ps1`** (start it elevated): opens every Live Monitor window hidden and checks that each one works and follows new activity.
 
@@ -179,10 +181,10 @@ The other scripts in `tests/` are the admin and windowed test runs used on the V
 ## Repository layout
 
 ```
-tools/            the current scripts and launchers (v1.8.2), incl. the generated no-AI edition
+tools/            the current scripts and launchers (v1.8.3), incl. the generated no-AI edition
 beta/             BETA test builds (now: WinSuperTool 1.9 beta 4 + its no-AI edition) - not for real repairs yet
 build/            Build-NoAIEdition.ps1 - generates and checks WinSuperTool-NoAI.ps1
-docs/changes/     what each version fixed (V1.2 ... V1.8.2, V1.9-beta.1 ... beta.4)
+docs/changes/     what each version fixed (V1.2 ... V1.8.3, V1.9-beta.1 ... beta.4)
 docs/testing/     the test plan, results of each phase, and the v1.6 code review
 tests/            Pester unit tests, the test harness and the VM test runs
 LICENSE           GNU General Public License v3.0

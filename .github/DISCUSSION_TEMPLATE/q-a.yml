@@ -120,11 +120,12 @@ body:
       label: "Tool version"
       description: "Optional."
       options:
-        - "1.8.2 (latest)"
+        - "1.8.3 (latest)"
         - "1.9 beta 4 (WinSuperTool beta)"
         - "1.9 beta 3 (WinSuperTool beta)"
         - "1.9 beta 2 (WinSuperTool beta)"
         - "1.9 beta 1 (WinSuperTool beta)"
+        - "1.8.2"
         - "1.8.1"
         - "1.8"
         - "1.7"
