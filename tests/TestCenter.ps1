@@ -16,7 +16,7 @@
 #   Scripted (e.g. your own build):  ... TestCenter.ps1 -ToolsFolder D:\my-build\tools -Run unit-suite,unit-toolkit,sizes -ExitWhenDone
 #   (test ids: the Id values in $Tests below; -Run all = every test that can run here)
 param([string]$ToolsFolder, [string[]]$Run, [switch]$ExitWhenDone)
-$TestCenterVersion = '1.0'
+$TestCenterVersion = '1.0 beta 1'
 $ErrorActionPreference = 'Continue'
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 [Windows.Forms.Application]::EnableVisualStyles()
@@ -73,16 +73,17 @@ $Tests = @(
     @{ Tab = 'WinSuperTool'; Id = 'sysinfo'; Name = 'System Info: all Windows-tool buttons'; Kind = 'ps'; Script = 'Run-SystemInfoButtons.ps1'; Min = 8; Admin = $true
        Args = [ordered]@{ Beta = '{tools}\WinSuperTool.ps1'; Out = '{out}' }
        Desc = 'Clicks every button on the System Info tab and checks the right window opens. Close Settings first.' }
-    @{ Tab = 'WinSuperTool'; Id = 'windowed'; Name = 'Recovery console windows (long)'; Kind = 'ps'; Script = 'Run-Windowed.ps1'; Min = 40; Admin = $true
-       Results = '%LOCALAPPDATA%\suite-windowed'
-       Desc = 'Checks the Recovery "cmd /c tool & pause" windows really start and chkdsk /f stops at its Y/N question.' }
     # ---- WinFixKit
     @{ Tab = 'WinFixKit'; Id = 'wfk-status-user'; Name = 'Check status: every section (no admin)'; Kind = 'ps'; Script = 'Run-StatusChecks.ps1'; Min = 3
        Args = [ordered]@{ OutDir = '{out}' }
-       Desc = 'Runs every "Check status" block without the GUI and proves nothing changed on the PC.' }
+       Desc = 'Runs every "Check status" block without the GUI and proves nothing changed on the PC. Runs without admin rights only when Test Center itself is not running as administrator.' }
     @{ Tab = 'WinFixKit'; Id = 'wfk-status-admin'; Name = 'Check status: every section (admin)'; Kind = 'ps'; Script = 'Run-StatusChecks.ps1'; Min = 3; Admin = $true
        Args = [ordered]@{ OutDir = '{out}' }
        Desc = 'The same as administrator (more sections can read their data).' }
+    @{ Tab = 'WinFixKit'; Id = 'windowed'; Name = 'Fixes that open their own window (CHANGES this PC)'; Kind = 'ps'; Script = 'Run-Windowed.ps1'; Min = 40; Admin = $true
+       Results = '%LOCALAPPDATA%\suite-windowed'
+       Warn = 'This test runs WinFixKit fixes FOR REAL in their own windows: it removes update KB5025221 if it is installed, RE-REGISTERS ALL APPS and runs a DISM + SFC REPAIR. It also checks that WinSuperTool''s Recovery windows start and that chkdsk /f stops at its question. Only run it on a test machine. Continue?'
+       Desc = 'WinFixKit fixes that open their own console window (remove KB5025221, energy report, read-only chkdsk, re-register all apps, DISM + SFC repair) and WinSuperTool''s Recovery windows. Changes the PC - asks first.' }
     @{ Tab = 'WinFixKit'; Id = 'wfk-fixundo'; Name = 'Apply every fix, then undo it (TEST VM ONLY)'; Kind = 'ps'; Script = 'Run-Phase3.ps1'; Min = 60; Admin = $true
        Results = '%TEMP%\suite-phase3'
        Warn = 'This test REALLY CHANGES this PC (registry, services, firewall, sharing) and undoes every change with WinFixKit''s own backups. Only run it on a TEST virtual machine AFTER taking a snapshot. Is the snapshot taken?'
@@ -213,11 +214,66 @@ function Get-OnlineTools($ver, [string]$into) {
 }
 
 # ---------------------------------------------------------------- reports
+# lines a test reports on purpose (the test's own expected failures, or what a VM cannot do) - shown, never counted as a problem
+$ExpectedById = @{
+    'automation' = @('TEST: winget missing', 'winget is not available', '3 task\(s\) ran: 2 passed, 1 failed')
+    'regression' = @('C2-(stop-on-fail|no-popups-no-html) : 3 task\(s\) ran: 2 passed, 1 failed', 'Unable to get User Principal Name', 'is not a domain user')
+    'logs'       = @('dism /get-(packages|drivers) failed \(exit code 87\)', 'INFO\s+copied\s+0\s+failed\s+2', 'ERROR BINARY - skipped', 'Read-Log\s*:\s*ERROR')
+    'windowed'   = @('wusa rejected the request', 'KB5025221 is most likely not installed')
+}
+function Get-FileLines([string]$p) { @(Get-Content -LiteralPath $p -ErrorAction SilentlyContinue | Where-Object { $_.Trim() }) }
+# the summary a test left: summary.txt, else progress.txt, else <name>-summary.txt, else the CSV results, else what it printed
+function Get-TestSummary($t, [string]$out) {
+    $dirs = @($out); if ($t.Results) { $dirs += [Environment]::ExpandEnvironmentVariables($t.Results) }
+    foreach ($d in $dirs) {
+        foreach ($n in 'summary.txt', 'progress.txt') { $p = Join-Path $d $n; if (Test-Path -LiteralPath $p) { return @{ File = $p; Lines = (Get-FileLines $p) } } }
+        $p = Get-ChildItem -LiteralPath $d -Filter '*summary*.txt' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+        if ($p) { return @{ File = $p.FullName; Lines = (Get-FileLines $p.FullName) } }
+    }
+    # System Info buttons: results.csv (Kind, Button, Result, Detail)
+    $csv = Join-Path $out 'results.csv'
+    if (Test-Path -LiteralPath $csv) {
+        $rows = @(Import-Csv -LiteralPath $csv); $l = @(); $res = $rows | ForEach-Object { $_.PSObject.Properties.Value[2] }
+        $l += 'Buttons: ' + (($res | Group-Object | ForEach-Object { "$($_.Name) $($_.Count)" }) -join ', ')
+        $l += @($rows | Where-Object { $_.PSObject.Properties.Value[2] -ne 'PASS' } | ForEach-Object { 'NOT OK: ' + ($_.PSObject.Properties.Value[1]) + ' - ' + ($_.PSObject.Properties.Value[3]) })
+        return @{ File = $csv; Lines = $l }
+    }
+    # WinFixKit status checks: status-summary-<user|admin>.csv + the snapshot line it printed
+    $csv = Get-ChildItem -LiteralPath $out -Filter 'status-summary-*.csv' -File -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($csv) {
+        $rows = @(Import-Csv -LiteralPath $csv.FullName); $l = @("Sections checked: $($rows.Count)")
+        $snap = @(Get-FileLines (Join-Path $out 'console.txt') | Where-Object { $_ -match '^SNAPSHOT CHANGED' }) | Select-Object -Last 1
+        if ($snap) { $l += $snap } else { $l += 'NO RESULT: the read-only snapshot line is missing' }
+        $l += @($rows | Where-Object { $_.FirstError -match 'UNCAUGHT' } | ForEach-Object { "UNCAUGHT in section $($_.Section): $($_.FirstError)" })
+        $l += @($rows | Where-Object { [int]$_.ErrorLines -gt 0 } | ForEach-Object { "Section $($_.Section): $($_.ErrorLines) line(s) from Windows' own logs about this PC (see status-*.txt) - information, not a tool fault" })
+        return @{ File = $csv.FullName; Lines = $l }
+    }
+    # nothing: the last lines it printed, without the transcript's header and its record of handled errors
+    $tx = Get-FileLines (Join-Path $out 'console.txt')
+    if (-not $tx) { return @{ File = $null; Lines = @() } }
+    $body = @(); $inHead = $false
+    foreach ($l in $tx) {
+        if ($l -match '^\*{10,}') { $inHead = -not $inHead; continue }
+        if ($inHead -or $l -match '^(Transcript started|Windows PowerShell transcript|PS>TerminatingError|>> TerminatingError)' -or $l -match '^\s*(At line:|At .+:\d+ char:|\+ |CategoryInfo|FullyQualifiedErrorId|~+$)') { continue }
+        $body += $l
+    }
+    @{ File = $null; Lines = @($body | Select-Object -Last 15) }
+}
 function Get-ResultStatus($t, $code, [string[]]$lines) {
     if ($t.Kind -eq 'pester') { if ($code -eq 0) { return 'PASSED' } else { return 'FAILED' } }
     if (-not $lines) { return 'NO SUMMARY' }
-    $bad = @($lines | Where-Object { $_ -match '(?i)\b(fail(ed|s|ures?)?|errors?|NO RESULT|not ok|wrong|missing)\b' -and $_ -notmatch '(?i)\b0\s+(fail|error)|(fail\w*|errors?)\s*[:=]\s*0\b|no (failures|errors|issues)' })
-    if ($bad.Count) { 'CHECK' } else { 'OK' }
+    if (@(Get-FlaggedLines $t $lines).Count) { 'CHECK' } else { 'OK' }
+}
+# the summary lines that need a look (failure words, not "0 failed", not a heading, not an expected line of this test)
+function Get-FlaggedLines($t, [string[]]$lines) {
+    $exp = @($ExpectedById[$t.Id])
+    @($lines | Where-Object {
+        $l = $_
+        $l -match '(?i)\b(fail(ed|s|ures?)?|errors?|NO RESULT|UNCAUGHT|not ok|wrong|missing|problem)\b' -and
+        $l -notmatch '^\s*=====|:\s*$|launcher said|Transcript: |information, not a tool fault' -and
+        $l -notmatch '(?i)\b0\s+(fail|error)|(fail\w*|errors?)[^\d\r\n]{0,30}\b0\b(?![.,]\d)|no (failures|errors|issues|problems)|nothing \(read-only confirmed\)' -and
+        -not ($exp | Where-Object { $_ -and $l -match $_ })
+    })
 }
 function Get-MarkdownSummary {
     $ti = $script:RunTools; $e = Get-EnvInfo
@@ -334,9 +390,9 @@ $bottom = New-Object Windows.Forms.Panel; $bottom.Dock = 'Bottom'; $bottom.Heigh
 $btns = New-Object Windows.Forms.FlowLayoutPanel; $btns.Dock = 'Top'; $btns.AutoSize = $true; $btns.AutoSizeMode = 'GrowAndShrink'; $btns.Padding = New-Object Windows.Forms.Padding(4)
 function New-Button([string]$text) { $b = New-Btn $text; $b.Height = 28; $btns.Controls.Add($b); $b }
 $bRun = New-Button 'Run selected'; $bStop = New-Button 'Stop'; $bAll = New-Button 'Tick all on this tab'; $bNone = New-Button 'Untick all'
-$bOpen = New-Button 'Open results'; $bHtml = New-Button 'Export HTML...'; $bMd = New-Button 'Copy summary for GitHub'; $bGh = New-Button 'Report on GitHub'
+$bOpen = New-Button 'Open results'; $bHtml = New-Button 'Export HTML...'; $bMd = New-Button 'Copy summary for GitHub'; $bGh = New-Button 'Report on GitHub'; $bPack = New-Button 'Pack full results'
 $bAdmin = New-Button 'Restart as administrator'
-$bStop.Enabled = $false; foreach ($b in $bOpen, $bHtml, $bMd) { $b.Enabled = $false }; $bAdmin.Visible = -not $IsAdmin
+$bStop.Enabled = $false; foreach ($b in $bOpen, $bHtml, $bMd, $bPack) { $b.Enabled = $false }; $bAdmin.Visible = -not $IsAdmin
 $logBox = New-Object Windows.Forms.TextBox; $logBox.Multiline = $true; $logBox.ReadOnly = $true; $logBox.ScrollBars = 'Vertical'; $logBox.Dock = 'Fill'
 $logBox.Font = New-Object Drawing.Font('Consolas', 9)
 $bottom.Controls.Add($logBox); $bottom.Controls.Add($btns)
@@ -420,18 +476,12 @@ $timer.Add_Tick({
     $mins = [Math]::Round(((Get-Date) - $c.Start).TotalMinutes, 1)
     $code = try { $c.Proc.ExitCode } catch { '' }
     $t = $c.Test
-    $sums = @(Join-Path $c.Out 'summary.txt'); if ($t.Results) { $sums += Join-Path ([Environment]::ExpandEnvironmentVariables($t.Results)) 'summary.txt' }
-    $sum = $sums | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
-    $lines = @(); if ($sum) { $lines = @(Get-Content -LiteralPath $sum | Where-Object { $_.Trim() }) }
-    elseif (Test-Path -LiteralPath (Join-Path $c.Out 'console.txt')) {
-        # no summary.txt: the last lines the test printed (the transcript's own header/footer left out)
-        $tx = @(Get-Content -LiteralPath (Join-Path $c.Out 'console.txt') | Where-Object { $_.Trim() })
-        $body = @(); $inHead = $false
-        foreach ($l in $tx) { if ($l -match '^\*{10,}') { $inHead = -not $inHead; continue }; if (-not $inHead -and $l -notmatch '^(Transcript started|Windows PowerShell transcript)') { $body += $l } }
-        $lines = @($body | Select-Object -Last 15)
-    }
-    if ($sum -and $sum -notlike "$($c.Out)*") { Copy-Item -LiteralPath $sum (Join-Path $c.Out 'summary.txt') -ErrorAction SilentlyContinue }
+    $s = Get-TestSummary $t $c.Out; $lines = @($s.Lines); $sum = $s.File
+    # a summary from elsewhere (e.g. %TEMP%) is copied next to the test's other results
+    if ($sum -and $sum -notlike "$($c.Out)*") { Copy-Item -LiteralPath $sum (Join-Path $c.Out (Split-Path $sum -Leaf)) -ErrorAction SilentlyContinue }
     $status = if ($c.Stopped) { 'STOPPED' } else { Get-ResultStatus $t $code $lines }
+    # CHECK: the lines that caused it come first (log, GitHub summary, HTML)
+    if ($status -eq 'CHECK') { $lines = @(Get-FlaggedLines $t $lines | ForEach-Object { "NEEDS A LOOK: $($_.Trim())" }) + $lines }
     [void]$script:Results.Add([pscustomobject]@{ Tab = $t.Tab; Name = $t.Name; Status = $status; Minutes = $mins; Code = $code; Lines = $lines; Folder = $c.Out })
     Write-Log "$status  $($t.Name)  after $mins min, exit code $code"
     $lines | Select-Object -First 12 | ForEach-Object { Write-Log "          $_" }
@@ -480,7 +530,7 @@ $bRun.Add_Click({
     $script:RunTools = $script:Tools
     $total = ($sel | ForEach-Object { $_.Min } | Measure-Object -Sum).Sum
     Write-Log "Test Center ${TestCenterVersion}: $($sel.Count) tests, about $total min. Tools: version $($script:Tools.Version) from $($tbTools.Text) ($($script:Tools.Source))  Admin: $IsAdmin"
-    $script:Queue = $sel; $bRun.Enabled = $false; $bStop.Enabled = $true; $bOpen.Enabled = $true
+    $script:Queue = $sel; $bRun.Enabled = $false; $bStop.Enabled = $true; $bOpen.Enabled = $true; $bPack.Enabled = $true
     Start-NextTest
 })
 $bStop.Add_Click({
@@ -499,10 +549,33 @@ $bHtml.Add_Click({
     if ($d.ShowDialog($form) -eq 'OK') { [IO.File]::WriteAllText($d.FileName, (Get-HtmlReport), (New-Object Text.UTF8Encoding($false))); Start-Process $d.FileName }
 })
 $bMd.Add_Click({
-    $md = Get-MarkdownSummary; [Windows.Forms.Clipboard]::SetText($md)
-    Write-Log 'Summary copied (Markdown, no PC or user names). Paste it into a GitHub issue or discussion.'
+    $file = if ($script:RunRoot) { Join-Path $script:RunRoot 'summary-for-github.md' } else { '' }
+    try {
+        $md = Get-MarkdownSummary
+        # another program can hold the clipboard for a moment: 10 tries, 200 ms apart
+        [Windows.Forms.Clipboard]::SetDataObject($md, $true, 10, 200)
+        Write-Log "Summary copied (Markdown, no PC or user names). Paste it into a GitHub issue or discussion. The same text is in $file"
+    } catch {
+        Write-Log "Could not copy to the clipboard ($($_.Exception.Message)). Open this file and copy it from there: $file"
+    }
 })
 $bGh.Add_Click({ Start-Process "$RepoUrl/issues/new/choose" })
+# a zip of the whole results folder (every test's console.txt and files) for whoever fixes the failures - NOT for GitHub
+$bPack.Add_Click({
+    if (-not $script:RunRoot -or -not (Test-Path -LiteralPath $script:RunRoot)) { return }
+    if ($script:Current -and -not $script:Current.Proc.HasExited) { [void][Windows.Forms.MessageBox]::Show('Wait until the tests are finished (or press Stop) before packing.', $form.Text); return }
+    $zip = $script:RunRoot.TrimEnd('\') + '-full.zip'
+    $form.Cursor = 'WaitCursor'
+    try {
+        Remove-Item -LiteralPath $zip -ErrorAction SilentlyContinue
+        $items = @(Get-ChildItem -LiteralPath $script:RunRoot -Force | Where-Object { $_.Name -ne '_run' } | ForEach-Object { $_.FullName })
+        Compress-Archive -LiteralPath $items -DestinationPath $zip -CompressionLevel Optimal -ErrorAction Stop
+        Write-Log "PACKED the full results to: $zip  ($([Math]::Round((Get-Item -LiteralPath $zip).Length / 1MB, 1)) MB)"
+        Write-Log '          It contains this PC''s name, user paths and logs: send it only to whoever fixes the failures, do not post it on GitHub (use summary-for-github.md there).'
+        Start-Process explorer.exe "/select,`"$zip`""
+    } catch { Write-Log "Packing failed: $($_.Exception.Message)" }
+    finally { $form.Cursor = 'Default' }
+})
 $bAdmin.Add_Click({
     try { Start-Process $PsExe -Verb RunAs -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-STA', '-File', "`"$PSCommandPath`"" -ErrorAction Stop; $form.Close() } catch {}
 })

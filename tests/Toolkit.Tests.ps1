@@ -121,6 +121,9 @@ Describe 'T2 window helpers: display scaling, splash, resizing (all GUI tools)' 
         $f.Add_Load({ $this.AutoScaleDimensions = New-Object Drawing.SizeF(64, 64); $this.AutoScaleMode = 'Dpi'; Move-WrtIntoView $this })
         $f.Add_Shown({ $script:b = $f.Bounds; $f.Close() })
         [void]$f.ShowDialog(); $f.Dispose()
+        # CenterScreen opens on the monitor with the MOUSE POINTER, not always the main one: compare with the monitor the
+        # window is on (Test Center 2026-11-21: the pointer was on monitor 2 after the drag test; likely also the Windows 10 failure)
+        $wa = [Windows.Forms.Screen]::FromRectangle($script:b).WorkingArea
         # the numbers are in the message, so a failure on another PC can be explained (failed once on the Windows 10 test PC, .NET 4.8)
         ("window {0}, work area {1}, .NET release {2}, inside: {3}" -f $script:b, $wa, (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\NET Framework Setup\NDP\v4\Full').Release, $wa.Contains($script:b)) | Should Match 'inside: True$'
         [Math]::Abs(($script:b.Left - $wa.Left) - ($wa.Right - $script:b.Right)) | Should BeLessThan 3        # centred left / right

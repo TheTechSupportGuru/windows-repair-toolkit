@@ -1,9 +1,9 @@
 # Windows Repair Toolkit
 
-A set of PowerShell tools for repairing and troubleshooting Windows 10/11 PCs, including from WinPE (Hiren's BootCD PE 11). Each tool is one `.ps1` file with a WinForms window. They need no extra libraries.
+A set of PowerShell tools for repairing and troubleshooting Windows 10/11 PCs, including from WinPE (Hiren's BootCD PE 10 and 11). Each tool is one `.ps1` file with a WinForms window. They need no extra libraries.
 
 > [!WARNING]
-> These scripts were written with AI. They have been tested on one Windows 11 VM, but not extensively. Several tools change the boot configuration (BCD), the registry, services and network settings. **Use at your own risk.** Try them on a test machine first.
+> These scripts were written with AI. They have been tested on Windows 11, Windows 10 64-bit (MBR disk), and Hiren's BootCD PE 10 and 11, all in VMs. They have not been tested on many real PCs. Several tools change the boot configuration (BCD), the registry, services and network settings. **Use at your own risk.** Try them on a test machine first.
 
 **Current version: 1.9** (2026-11-21). Every version is a git tag (`v1.1` to `v1.9`), so `git diff v1.8.3 v1.9` shows exactly what changed. Licensed under the [GNU GPL v3.0](#license).
 
@@ -35,6 +35,7 @@ If something gets a result wrong, please open a [bug report](../../issues/new?te
 - **A specific change you want?** Open a [feature request](../../issues/new?template=2-feature-request.yml).
 - **An idea to talk through?** Start a discussion in [Ideas](../../discussions/new?category=ideas).
 - **A how-to question?** Ask in [Q&A](../../discussions/new?category=q-a).
+- **A pull request?** Read [CONTRIBUTING.md](CONTRIBUTING.md) first. Code may only use the runtimes built into the supported systems (Windows 11, Windows 10 64-bit, and Hiren's BootCD PE 10 and 11): Windows PowerShell 5.1 (PowerShell 7 in PE 10), .NET / WinForms and cmd. Any program that comes with Windows is fine; other runtimes, modules and third-party tools are not.
 
 Each form asks which tool and which part of it (tab or section) you mean, so reports reach the right place. Before posting logs or screenshots, remove your PC name, user name, IP addresses and any API key.
 
@@ -139,7 +140,7 @@ Severity: **S1** = can make the PC unbootable, lose data or act on the wrong dis
 
 ## Testing
 
-Testing was done on a Windows 11 Pro VM (VirtualBox, UEFI, two monitors), with field tests on a Windows 10 VM (Legacy BIOS) and in Hiren's BootCD PE 10 and PE 11. The plan and every result are in [`docs/testing/`](docs/testing/).
+Testing was done on a Windows 11 Pro VM (VirtualBox, UEFI, two monitors), with field tests on Windows 10 64-bit (MBR disk, Legacy BIOS) and in Hiren's BootCD PE 10 and PE 11. The plan and every result are in [`docs/testing/`](docs/testing/).
 
 | Check | v1.9 result |
 |---|---|
@@ -166,9 +167,9 @@ Earlier phases also ran every WinFixKit fix and undo as admin, the network reset
 - **Scripted runs:** `TestCenter.ps1 -ToolsFolder <dir> -Run unit-suite,unit-toolkit -ExitWhenDone`.
 - **Greyed out:** a test that can't run on the PC or with the chosen tools, for example the two-monitor tests on one monitor. Tests that change the PC ask first.
 
-Details: [`docs/changes/TestCenter-1.0.md`](docs/changes/TestCenter-1.0.md).
+Details: [`docs/changes/TestCenter-1.0-beta.1.md`](docs/changes/TestCenter-1.0-beta.1.md).
 
-Download `TestCenter-v<x.y>.zip` from the [release](https://github.com/TheTechSupportGuru/windows-repair-toolkit/releases/latest), extract it and double-click `Start-TestCenter.bat`. Start it as administrator to get only one admin prompt. Test Center has its own version number and is updated only when the test procedures or the test scripts change.
+Download `TestCenter-v1.0-beta.1.zip` from the [Test Center pre-release](https://github.com/TheTechSupportGuru/windows-repair-toolkit/releases/tag/testcenter-v1.0-beta.1), extract it and double-click `Start-TestCenter.bat`. Start it as administrator to get only one admin prompt. Test Center has its own version number and is updated only when the test procedures or the test scripts change. When a test fails, **Pack full results** makes a zip with every log for whoever fixes it. That zip contains PC details, so don't post it publicly.
 
 To run the unit tests (they read the scripts' code and run no GUI or system changes):
 
@@ -209,3 +210,31 @@ What that means in practice:
 - You may use, study, share and change these tools.
 - If you distribute them, changed or not, you must do so under the same license and include the source.
 - They come **without any warranty**.
+
+<!-- Easter egg: update the numbers at every major release (see the "Hours" lines). -->
+<br><br>
+<details>
+<summary><sub><sup>&pi;</sup></sub></summary>
+
+### You found the time sheet
+
+How long this project has taken, as of **1.9 and Test Center 1.0 beta 1** (November 2026). For 1.1 onwards, the AI hours are measured from the session logs and the human hours are an honest guess. The original scripts are estimated by the Claude project that wrote them, which had no stopwatch either.
+
+| | Human | AI |
+|---|---:|---:|
+| Writing the original scripts in claude.ai, Nov 12-19 (the earlier Claude project's own estimate: Windows repair tool, WinFixKit, log collector and monitor, log analyzer) | ~8 h | ~6 h |
+| 1.1 to 1.9 and Test Center: fixing, testing, more testing, releasing | ~14 h | ~11 h of actual thinking and typing, over ~20 h of wall clock |
+| VMs grinding through test runs while everyone else made coffee | ~0 h | ~10 h of machine time, unsupervised |
+| **Total** | **~22 h** | **~17 h** (plus a lot of patient VMs) |
+
+**By the numbers**
+- 174 messages from the human, 3,867 replies from the AI. The AI talks too much, and it knows.
+- About 9,600 lines of tool code, 5,100 lines of tests, 1,800 lines of docs.
+- 363 unit tests, 16 releases, 36 commits. More than 100 bugs fixed. One of them was a splash screen that closed the whole app.
+- 3 operating systems, 2 monitors, 1 VM that got its display scaling changed more times than any VM should.
+- Number of times the AI mixed up which side the second monitor is on: 1. The human remembers.
+- Number of times a short PowerShell alias (`H`, `R`) secretly turned into `Get-History`: 2. It doesn't forget either.
+
+*Updated at every major release. If the human column ever drops below the AI column, someone owes someone a coffee.*
+
+</details>
