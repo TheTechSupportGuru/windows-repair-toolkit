@@ -127,8 +127,22 @@ function Test-Layout($root, [string]$size, [string]$tab) {
         }
     }
 }
+# Screenshots come from the tool's OWN window (PrintWindow), not from the screen: a screen grab shows whatever
+# window happens to be on top (another app, a prompt), which once led to a wrong conclusion about a bug.
+Add-Type -TypeDefinition @'
+using System; using System.Runtime.InteropServices;
+public static class WrtShot {
+    [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr hwnd, IntPtr hdc, uint flags);
+}
+'@
 function Save-Shot($f, $file) {
-    try { $r = $f.Bounds; $b = New-Object Drawing.Bitmap($r.Width, $r.Height); $g = [Drawing.Graphics]::FromImage($b); $g.CopyFromScreen($r.Location, [Drawing.Point]::Empty, $r.Size); $g.Dispose(); $b.Save((Join-Path $WrtAuditOutDir $file)); $b.Dispose() } catch {}
+    try {
+        $b = New-Object Drawing.Bitmap($f.Width, $f.Height); $g = [Drawing.Graphics]::FromImage($b); $hdc = $g.GetHdc()
+        $ok = [WrtShot]::PrintWindow($f.Handle, $hdc, 2)    # 2 = PW_RENDERFULLCONTENT: also windows that are covered or partly off the screen
+        $g.ReleaseHdc($hdc); $g.Dispose()
+        if ($ok) { $b.Save((Join-Path $WrtAuditOutDir $file)) } else { Add-Content -LiteralPath (Join-Path $WrtAuditOutDir 'sizes.txt') "$WrtAudittag screenshot failed: $file" }
+        $b.Dispose()
+    } catch {}
 }
 $WrtAudithook = @'
 $__f = $form
