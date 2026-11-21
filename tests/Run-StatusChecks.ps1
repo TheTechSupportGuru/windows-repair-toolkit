@@ -24,7 +24,9 @@ foreach ($f in $fns) { . ([scriptblock]::Create($f.Extent.Text)) }
 
 function Get-Snapshot {
     [pscustomobject]@{
-        Services   = (Get-CimInstance Win32_Service | Sort-Object Name | ForEach-Object { '{0}|{1}' -f $_.Name, $_.StartMode }) -join "`n"
+        # BITS is left out: Windows (SYSTEM) switches its start type between Manual and Automatic by itself whenever
+        # downloads are queued or finished (event 7040), which made this read-only check report a false change (2026-11-20)
+        Services   = (Get-CimInstance Win32_Service | Where-Object Name -ne 'BITS' | Sort-Object Name | ForEach-Object { '{0}|{1}' -f $_.Name, $_.StartMode }) -join "`n"
         NetProfile = (Get-NetConnectionProfile | ForEach-Object { '{0}|{1}' -f $_.Name, $_.NetworkCategory }) -join "`n"
         PowerPlan  = (powercfg /getactivescheme | Out-String).Trim()
         SmbClient  = (Get-SmbClientConfiguration -ErrorAction SilentlyContinue | ForEach-Object { '{0}|{1}' -f $_.EnableInsecureGuestLogons, $_.RequireSecuritySignature }) -join ''

@@ -4,7 +4,8 @@
 param([string]$OutDir = (Join-Path $env:TEMP 'suite-smoke'))
 $ErrorActionPreference = 'Continue'
 . (Join-Path $PSScriptRoot 'Harness.ps1')
-$verDir = $global:EditedVersions[0].FullName
+# the repo's tools\ folder (the old "Edited scripts\V<x.y>" folders only exist outside the repo)
+$verDir = if (@($global:EditedVersions).Count) { $global:EditedVersions[0].FullName } else { Join-Path (Split-Path $PSScriptRoot -Parent) 'tools' }
 Remove-Item $OutDir -Recurse -Force -ErrorAction SilentlyContinue; New-Item -ItemType Directory -Force -Path "$OutDir\gui" | Out-Null
 $sum = Join-Path $OutDir 'summary.txt'
 function W($m) { Add-Content -LiteralPath $sum -Value $m -Encoding UTF8 }
