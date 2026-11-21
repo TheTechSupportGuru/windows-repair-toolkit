@@ -7,7 +7,8 @@
 # Shows the verdict, the quoted lines and whether the wording was recognised ("matched") or the exit code decided
 # (matched=False: for example Windows in another display language). Run as administrator for sfc and DISM scanhealth.
 #   .\tests\Run-TaskCapture.ps1 -Script .\beta\WinSuperTool.ps1 -OutDir $env:TEMP\wrt-capture -Elevated
-param([string]$Script = (Join-Path (Split-Path $PSScriptRoot -Parent) 'beta\WinSuperTool.ps1'), [string]$OutDir = (Join-Path $env:TEMP 'wrt-capture'), [switch]$Elevated)
+param([string]$Script = (Join-Path (Split-Path $PSScriptRoot -Parent) 'beta\WinSuperTool.ps1'), [string]$OutDir = (Join-Path $env:TEMP 'wrt-capture'), [switch]$Elevated,
+      [string]$Windows = '')     # offline: the drive of a Windows that is not running (WinPE), e.g. D: - uses the tools' offline forms
 $ErrorActionPreference = 'Stop'
 $t = $null; $e = $null
 $ast = [Management.Automation.Language.Parser]::ParseFile($Script, [ref]$t, [ref]$e)
@@ -18,11 +19,22 @@ $NL = "`r`n"
 . ([scriptblock]::Create((Get-Assign 'TaskRules'))); . ([scriptblock]::Create((Get-Fn 'Get-TaskVerdict'))); . ([scriptblock]::Create((Get-Fn 'Read-TaskResult')))
 . ([scriptblock]::Create((Get-Fn 'Esc-Sq'))); . ([scriptblock]::Create((Get-Assign 'tplTask')))
 New-Item -ItemType Directory -Force $OutDir | Out-Null
+if ($Windows) {
+    # offline forms, as the Recovery tab builds them for a Windows that is not running (all read-only)
+    $W = $Windows.TrimEnd('\')
+    $jobs = @(
+        @{ N = 'offline-dism-checkhealth'; K = 'dism-check';  Exe = 'dism.exe';   A = @("/image:$W\", '/cleanup-image', '/checkhealth') },
+        @{ N = 'offline-dism-scanhealth';  K = 'dism-check';  Exe = 'dism.exe';   A = @("/image:$W\", '/cleanup-image', '/scanhealth', "/scratchdir:$W\Windows\Temp") },
+        @{ N = 'offline-sfc-verifyonly';   K = 'sfc-verify';  Exe = 'sfc.exe';    A = @('/verifyonly', "/offbootdir=$W\", "/offwindir=$W\Windows") },
+        @{ N = 'offline-chkdsk-scan';      K = 'chkdsk-scan'; Exe = 'chkdsk.exe'; A = @($W, '/scan') }
+    )
+} else {
 $jobs = @(
     @{ N = 'dism-checkhealth'; K = 'dism-check';  Exe = 'dism.exe';   A = @('/online', '/cleanup-image', '/checkhealth') },
     @{ N = 'chkdsk-scan';      K = 'chkdsk-scan'; Exe = 'chkdsk.exe'; A = @($env:SystemDrive, '/scan') }
 )
-if ($Elevated) {
+}
+if ($Elevated -and -not $Windows) {
     $jobs += @{ N = 'sfc-verifyonly';  K = 'sfc-verify'; Exe = 'sfc.exe';  A = @('/verifyonly') }
     $jobs += @{ N = 'dism-scanhealth'; K = 'dism-check'; Exe = 'dism.exe'; A = @('/online', '/cleanup-image', '/scanhealth') }
 }

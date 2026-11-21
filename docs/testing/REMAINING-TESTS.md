@@ -9,7 +9,7 @@ Everything that could be tested from inside the test VM has been tested (see [TE
 | 3 | WinFixKit: apply every fix, then undo it | easy, but **snapshot first** | the test VM + a VirtualBox snapshot | `tests/Run-FixUndoTest.cmd` |
 | 4 | AI Analyze with a real API key; phone pairing by QR code | medium | an API key with a spend limit; a phone on the same Wi-Fi | steps below |
 | 5 | Repair results on a damaged Windows (SFC / DISM actually repairing) | advanced | a snapshot, and deliberate damage | not prepared, see below |
-| 6 | WinPE (the tools booted from a Windows PE stick) | advanced | Windows ADK + WinPE add-on (several GB) | not prepared, see below |
+| 6 | WinPE (Hiren's BootCD PE): the tools working on a Windows that is not running | medium: attach an ISO, double-click | Hiren's BootCD PE + the kit ISO | `tests/Run-PETest.ps1` (kit ISO built from it) |
 
 **Done since the last list:** dragging windows between monitors with the mouse is now automated (`tests/Run-DragTest.ps1`, real mouse, button held across the edge) and passed for Collect-Logs, WinSuperTool and the beta. Run against the code from before the M1 fix, the same test catches the window being pulled away while the button is held, so it would notice if that bug came back.
 
@@ -73,6 +73,14 @@ Not scripted: they need a paid account and a phone.
 
 The Recovery and Automation summaries for "corruption found and repaired" are tested with Windows' real wording (unit tests B2-B8), but never on a PC that really was damaged: the test VM is healthy. A real test means deliberately damaging system files in a snapshotted VM, then running SFC / DISM repair through the tool. Not prepared yet, because it is the riskiest test; ask Claude to prepare it when a snapshot can be taken.
 
-## 6. WinPE
+## 6. WinPE (Hiren's BootCD PE)
 
-The tools have a WinPE mode (offline repair of a Windows that does not start). Testing it means building a WinPE ISO with PowerShell added (Windows ADK + WinPE add-on, several GB), and booting a VM from it. Not prepared; ask Claude for a build script when you want this.
+The tools have a WinPE mode: they work on a Windows that is not running (offline repair). `tests/Run-PETest.ps1` tests it, read-only:
+
+- the PE itself: WinPE or not, PowerShell / .NET / WinForms, the Windows tools the toolkit calls, disks;
+- which Windows installations the tools find;
+- the boot configuration of the offline Windows (bcdedit, clones, boot menu timeout, BitLocker), every question answered No;
+- real offline scans read back by the summaries: `DISM /image: /checkhealth` and `/scanhealth`, `sfc /verifyonly /offwindir`, `chkdsk /scan`;
+- every GUI tool started for 20 s, a short resize audit, and the unit tests if Pester is in the PE.
+
+A ready kit is built as an ISO (WinPE usually cannot see VirtualBox shared folders): attach `WRT-PE-Test.iso` as a second CD drive of the VM, boot Hiren's, double-click `Start-PETest.cmd` on that CD. It copies itself to the RAM drive X: (a CD is read-only and the tools write data next to themselves) and writes its results to `WRT-PE-Results-<date>` on the Windows drive, so they are there after booting Windows normally. Send `WRT-PE-share.zip` (masked) from that folder. If the PE has no PowerShell the launcher says so and stops.
