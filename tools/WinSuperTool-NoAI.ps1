@@ -221,7 +221,9 @@ try {
 [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 '@
     $hCon = [WinSuperTool.Native]::GetConsoleWindow()
-    if ($hCon -ne [IntPtr]::Zero) { [void][WinSuperTool.Native]::ShowWindow($hCon, 6) }
+    # 7 = minimized WITHOUT activating another window. With 6 (SW_MINIMIZE) Windows minimized the tool's main window too
+    # when a monitor was removed while the tool was on it (1.9, found by the two-monitor regression).
+    if ($hCon -ne [IntPtr]::Zero) { [void][WinSuperTool.Native]::ShowWindow($hCon, 7) }
 } catch {}
 
 # ---- data folder: next to the script if writable (USB stick in WinPE), else TEMP ----

@@ -171,6 +171,13 @@ Describe 'T5 PowerShell for task windows (1.9: WinPE with PowerShell 7 only, as 
         }
         [IO.File]::ReadAllText((Join-Path $Root 'tools\WinFixKit.ps1')) | Should Match 'Start-Process \$wfkPs -ArgumentList'
     }
+    It 'WinSuperTool minimizes its console WITHOUT activating another window (with 6 the main window was minimized when a monitor was removed)' {
+        foreach ($f in 'tools\WinSuperTool.ps1', 'tools\WinSuperTool-NoAI.ps1', 'beta\WinSuperTool.ps1', 'beta\WinSuperTool-NoAI.ps1') {
+            $t = [IO.File]::ReadAllText((Join-Path $Root $f))
+            $t | Should Match 'ShowWindow\(\$hCon, 7\)'
+            $t | Should Not Match 'ShowWindow\(\$hCon, 6\)'
+        }
+    }
 }
 Describe 'T4 beta: HTML Automation report' {
     $tk = $null; $pe = $null; $ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $Root 'beta\WinSuperTool.ps1'), [ref]$tk, [ref]$pe)
