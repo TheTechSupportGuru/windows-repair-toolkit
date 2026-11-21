@@ -207,7 +207,9 @@ function Complete-WrtWindow {
 }
 Show-WrtSplash $AppName
 try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12 } catch {}
-$PsExePath = Join-Path $PSHOME 'powershell.exe'
+# the PowerShell for task / log windows: Windows PowerShell, or - where there is none, as in WinPE builds that only have
+# PowerShell 7 (Hiren's PE 10) - the PowerShell this tool runs in (1.9; found by the Hiren's PE test)
+$PsExePath = Join-Path $PSHOME 'powershell.exe'; if (-not [IO.File]::Exists($PsExePath)) { $PsExePath = (Get-Process -Id $PID).Path }
 $script:Consoles = New-Object Collections.ArrayList     # repair console windows started from the Recovery tab
 $script:Busy = $null                                    # set while a long job (log collection) runs
 
@@ -1145,9 +1147,10 @@ function Read-TextTail([string]$path, [int]$maxChars) {
 function Read-LogForAi([string]$path, [int]$cap) {
     $trunc = $false
     if ([IO.Path]::GetExtension($path).ToLower() -eq '.evtx') {
-        $ev = @(Get-WinEvent -FilterHashtable @{ Path = $path; Level = 1, 2, 3 } -MaxEvents 400 -ErrorAction SilentlyContinue)
+        $ev = @(); $evErr = ''; try { $ev = @(Get-WinEvent -FilterHashtable @{ Path = $path; Level = 1, 2, 3 } -MaxEvents 400 -ErrorAction SilentlyContinue) } catch { $evErr = $_.Exception.Message }   # (1.9) some errors stop Get-WinEvent even with SilentlyContinue - seen in WinPE
         $hdr = 'Critical / Error / Warning events only, newest first:'
-        if (-not $ev.Count) { $ev = @(Get-WinEvent -Path $path -MaxEvents 400 -ErrorAction SilentlyContinue); $hdr = 'Newest events (no errors or warnings found):' }
+        if (-not $ev.Count) { try { $ev = @(Get-WinEvent -Path $path -MaxEvents 400 -ErrorAction SilentlyContinue) } catch { $evErr = $_.Exception.Message }; $hdr = 'Newest events (no errors or warnings found):' }
+        if (-not $ev.Count -and $evErr) { return @{ Text = "(this event log could not be read here: $evErr)"; Truncated = $false; Binary = $false } }
         if (-not $ev.Count) { return @{ Text = '(this event log contains no events)'; Truncated = $false; Binary = $false } }   # wevtutil writes empty logs for empty channels
         $lines = foreach ($e in $ev) {
             $m = $e.Message

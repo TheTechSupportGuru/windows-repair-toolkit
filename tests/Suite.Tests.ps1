@@ -311,6 +311,18 @@ Describe 'U8a Take ownership + reset permissions refuses protected folders' {
             $out | Should Match 'REFUSED'
         }
     }
+    It 'refuses the system folders of ANOTHER Windows installation (WinPE / a second disk), allows its data folders (1.9)' {
+        $fq = Join-Path $env:SystemDrive ('wrt-fakeq-' + [guid]::NewGuid().ToString('N').Substring(0, 8)); $L = $null
+        foreach ($c in [char[]]'QPONMLK') { if (-not (Test-Path "${c}:\")) { $L = "${c}:"; break } }
+        if (-not $L) { return }
+        New-Item -ItemType Directory -Force "$fq\Windows\System32\config", "$fq\Users\Bob\AppData\Local", "$fq\Users\Bob\Documents\Work", "$fq\Data" | Out-Null; 'x' | Set-Content "$fq\Windows\System32\config\SYSTEM"
+        $null = & subst.exe $L $fq
+        try {
+            foreach ($t in "$L\Windows", "$L\Users", "$L\Users\Bob", "$L\Users\Bob\AppData\Local") { Test-ProtectedFolder $t | Should Match "Windows on $L|whole user profile|AppData" }
+            Test-ProtectedFolder "$L\Users\Bob\Documents\Work" | Should BeNullOrEmpty
+            Test-ProtectedFolder "$L\Data" | Should BeNullOrEmpty
+        } finally { $null = & subst.exe $L /D; Remove-Item $fq -Recurse -Force }
+    }
     It 'allows a normal data folder (Documents subfolder)' {
         $global:Took = @()
         $f = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'wfk-own-test'; New-Item -ItemType Directory $f -Force | Out-Null
@@ -639,6 +651,10 @@ Describe 'U23 V1.7 WinSuperTool: AI request survives bad files; mount ownership 
     'line 1' | Set-Content "$d\ok.log"
     $aiFiles = @("$d\empty.evtx", "$d\broken.png", "$d\ok.log"); $script:ApiKey = 'sk-ant-test'
     $txtPrompt = [pscustomobject]@{ Text = '' }; $lblAiStatus = [pscustomobject]@{ Text = '' }
+    It 'a broken .evtx is reported as unreadable, not an exception (1.9 - Get-WinEvent threw in WinPE)' {
+        [IO.File]::WriteAllBytes("$d\broken.evtx", [byte[]](1..200))
+        (Read-LogForAi "$d\broken.evtx" 1000).Text | Should Match 'could not be read here'
+    }
     It 'empty .evtx is read as "(this event log contains no events)", not an exception' {
         (Read-LogForAi "$d\empty.evtx" 1000).Text | Should Match 'contains no events'
     }

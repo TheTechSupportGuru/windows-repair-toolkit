@@ -603,9 +603,10 @@ function Read-TextTail([string]$path, [int]$maxChars) {
 function Read-LogForAi([string]$path, [int]$cap) {
     $trunc = $false
     if ([IO.Path]::GetExtension($path).ToLower() -eq '.evtx') {
-        $ev = @(Get-WinEvent -FilterHashtable @{ Path = $path; Level = 1, 2, 3 } -MaxEvents 400 -ErrorAction SilentlyContinue)
+        $ev = @(); $evErr = ''; try { $ev = @(Get-WinEvent -FilterHashtable @{ Path = $path; Level = 1, 2, 3 } -MaxEvents 400 -ErrorAction SilentlyContinue) } catch { $evErr = $_.Exception.Message }   # (1.9) some errors stop Get-WinEvent even with SilentlyContinue - seen in WinPE
         $hdr = 'Critical / Error / Warning events only, newest first:'
-        if (-not $ev.Count) { $ev = @(Get-WinEvent -Path $path -MaxEvents 400 -ErrorAction SilentlyContinue); $hdr = 'Newest events (no errors or warnings found):' }
+        if (-not $ev.Count) { try { $ev = @(Get-WinEvent -Path $path -MaxEvents 400 -ErrorAction SilentlyContinue) } catch { $evErr = $_.Exception.Message }; $hdr = 'Newest events (no errors or warnings found):' }
+        if (-not $ev.Count -and $evErr) { return @{ Text = "(this event log could not be read here: $evErr)"; Truncated = $false; Binary = $false } }
         if (-not $ev.Count) { return @{ Text = '(this event log contains no events)'; Truncated = $false; Binary = $false } }
         $lines = foreach ($e in $ev) {
             $m = $e.Message

@@ -163,6 +163,15 @@ Describe 'T3 no-AI edition of WinSuperTool' {
     }
 }
 
+Describe 'T5 PowerShell for task windows (1.9: WinPE with PowerShell 7 only, as in Hiren''s PE 10)' {
+    It 'every tool that starts task / log windows falls back to the PowerShell it runs in when Windows PowerShell is missing' {
+        foreach ($f in 'tools\WinSuperTool.ps1', 'tools\WinRepairTool-startup.ps1', 'tools\Monitor-Logs.ps1', 'beta\WinSuperTool.ps1') {
+            $t = [IO.File]::ReadAllText((Join-Path $Root $f))
+            $t | Should Match '\$PsExePath = [^\r\n]*powershell\.exe''; if \(-not \[IO\.File\]::Exists\(\$PsExePath\)\) \{ \$PsExePath = \(Get-Process -Id \$PID\)\.Path \}'
+        }
+        [IO.File]::ReadAllText((Join-Path $Root 'tools\WinFixKit.ps1')) | Should Match 'Start-Process \$wfkPs -ArgumentList'
+    }
+}
 Describe 'T4 beta: HTML Automation report' {
     $tk = $null; $pe = $null; $ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $Root 'beta\WinSuperTool.ps1'), [ref]$tk, [ref]$pe)
     foreach ($n in 'ConvertTo-HtmlText', 'Export-AutoHtml', 'Format-Dur', 'Read-TaskResult') { . ([scriptblock]::Create($ast.Find({ param($x) $x -is [Management.Automation.Language.FunctionDefinitionAst] -and $x.Name -eq $n }, $true).Extent.Text)) }

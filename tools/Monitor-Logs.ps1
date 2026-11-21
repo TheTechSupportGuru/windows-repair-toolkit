@@ -183,7 +183,9 @@ function Complete-WrtWindow {
 Show-WrtSplash 'Monitor-Logs'
 
 $W = $env:SystemDrive     # Windows drive (was hard-coded C:)
-$PsExePath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+# the PowerShell for task / log windows: Windows PowerShell, or - where there is none, as in WinPE builds that only have
+# PowerShell 7 (Hiren's PE 10) - the PowerShell this tool runs in (1.9; found by the Hiren's PE test)
+$PsExePath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'; if (-not [IO.File]::Exists($PsExePath)) { $PsExePath = (Get-Process -Id $PID).Path }
 
 # ---------- what can be monitored ----------
 # Type: File = Get-Content -Wait | Filter = same, but only lines matching Pattern

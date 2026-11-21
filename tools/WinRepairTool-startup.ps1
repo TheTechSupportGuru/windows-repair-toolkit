@@ -22,7 +22,9 @@ if ([Environment]::Is64BitOperatingSystem -and -not [Environment]::Is64BitProces
     $native = Join-Path $env:windir 'Sysnative\WindowsPowerShell\v1.0\powershell.exe'
     if (Test-Path -LiteralPath $native) { Start-Process -FilePath $native -ArgumentList "-NoProfile -STA -ExecutionPolicy Bypass -File `"$PSCommandPath`""; exit }
 }
-$PsExePath = Join-Path $env:windir 'System32\WindowsPowerShell\v1.0\powershell.exe'
+# the PowerShell for task / log windows: Windows PowerShell, or - where there is none, as in WinPE builds that only have
+# PowerShell 7 (Hiren's PE 10) - the PowerShell this tool runs in (1.9; found by the Hiren's PE test)
+$PsExePath = Join-Path $env:windir 'System32\WindowsPowerShell\v1.0\powershell.exe'; if (-not [IO.File]::Exists($PsExePath)) { $PsExePath = (Get-Process -Id $PID).Path }
 
 # ---- self-elevate (normal Windows only; WinPE already runs as SYSTEM) ----
 if (-not $IsWinPE) {

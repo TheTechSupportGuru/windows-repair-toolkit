@@ -149,7 +149,8 @@ if ($Win) {
             Check 'Confirm-BootMenuShown reads the boot menu timeout (no change)' { $global:Asked = $null; Confirm-BootMenuShown $script:BcdT; $true, "asked to change it: $([bool]$global:Asked)" }
         }
         Check "BitLocker state of $Win" { $b = Get-BitLockerState $Win; [bool]$b, $b }
-        Check 'bcdedit /enum all reads the store' { $o = (& bcdedit.exe /enum all 2>&1 | Out-String); ($LASTEXITCODE -eq 0), ("{0} lines" -f ($o -split "`n").Count) }
+        # in WinPE the default store is the PE's own: read the store that boots the offline Windows
+        Check 'bcdedit /enum all reads that boot store' { $ba = @(); if ($script:BcdT -and $script:BcdT.Store) { $ba += '/store'; $ba += $script:BcdT.Store }; $o = (& bcdedit.exe @ba /enum all 2>&1 | Out-String); ($LASTEXITCODE -eq 0), ("{0} lines from {1}" -f ($o -split "`n").Count, $(if ($ba) { $ba[1] } else { 'the system store' })) }
     }
     # ---------- 3 offline scans ----------
     Step "3 Offline scans of $Win read back by the summaries (read-only, 10-30 minutes)"

@@ -214,7 +214,9 @@ function Complete-WrtWindow {
 }
 Show-WrtSplash $AppName
 try { [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12 } catch {}
-$PsExePath = Join-Path $PSHOME 'powershell.exe'
+# the PowerShell for task / log windows: Windows PowerShell, or - where there is none, as in WinPE builds that only have
+# PowerShell 7 (Hiren's PE 10) - the PowerShell this tool runs in (1.9; found by the Hiren's PE test)
+$PsExePath = Join-Path $PSHOME 'powershell.exe'; if (-not [IO.File]::Exists($PsExePath)) { $PsExePath = (Get-Process -Id $PID).Path }
 $script:Consoles = New-Object Collections.ArrayList     # repair console windows started from the Recovery tab
 $script:Busy = $null                                    # set while a long job (log collection) runs
 

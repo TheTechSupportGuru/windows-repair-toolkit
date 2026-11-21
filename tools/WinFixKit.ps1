@@ -303,6 +303,21 @@ function Test-ProtectedFolder([string]$Path) {
         $s = & $norm $sys
         if (& $under $p $s) { return "$p is inside protected system folder $s" }
     }
+    # the same folders of every OTHER Windows installation (WinPE, a second disk): the environment variables above only
+    # describe the running system - in WinPE that is X:, so the offline Windows was not protected (1.9, Hiren's PE test)
+    foreach ($dv in [IO.DriveInfo]::GetDrives()) {
+        $L = $dv.Name.Substring(0, 2)
+        if (-not [IO.File]::Exists("$L\Windows\System32\config\SYSTEM")) { continue }
+        foreach ($sub in 'Windows', 'Program Files', 'Program Files (x86)', 'ProgramData') { $s = & $norm "$L\$sub"; if (& $under $p $s) { return "$p is inside protected system folder $s (Windows on $L)" } }
+        $ud = & $norm "$L\Users"
+        if ($p -eq $ud) { return "$p is the Users folder (Windows on $L)" }
+        foreach ($leaf in 'Default', 'Public', 'All Users', 'Default User') { if (& $under $p (Join-Path $ud $leaf)) { return "$p is inside the shared $leaf profile (Windows on $L)" } }
+        foreach ($pd in @(Get-ChildItem -LiteralPath $ud -Directory -Force -ErrorAction SilentlyContinue)) {
+            $pp = & $norm $pd.FullName
+            if ($p -eq $pp) { return "$p is a whole user profile - pick a folder inside it instead" }
+            if (& $under $p (Join-Path $pp 'AppData')) { return "$p is inside AppData (app and system data)" }
+        }
+    }
     $plKey = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList'
     $usersDir = & $norm ((Get-ItemProperty -LiteralPath $plKey -ErrorAction SilentlyContinue).ProfilesDirectory)
     if (-not $usersDir) { $usersDir = & $norm (Join-Path $env:SystemDrive 'Users') }
@@ -398,7 +413,9 @@ function Start-InWindow([scriptblock]$Block, [string]$Title) {
             $Block.ToString() +
             "`r`nStop-Transcript | Out-Null`r`nWrite-Host ''`r`nRead-Host 'Finished. Press Enter to close this window'"
     $enc = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($text))
-    Start-Process powershell.exe -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $enc
+    # Windows PowerShell, or the PowerShell this runs in where there is none (WinPE with PowerShell 7 only - 1.9)
+    $wfkPs = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'; if (-not [IO.File]::Exists($wfkPs)) { $wfkPs = (Get-Process -Id $PID).Path }
+    Start-Process $wfkPs -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $enc
     "Launched in a separate window. Transcript: $tl"
 }
 
