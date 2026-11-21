@@ -155,6 +155,12 @@ Earlier phases also ran every WinFixKit fix and undo as admin, the network reset
 
 **Not tested:** a physical PC, non-English Windows, a 32-bit host, real Wi-Fi / Bluetooth hardware, a live Claude or Gemini call. What is left and how to run it: [`docs/testing/REMAINING-TESTS.md`](docs/testing/REMAINING-TESTS.md).
 
+### Test Center: run the tests yourself
+
+**Test Center** ([`tests/TestCenter.ps1`](tests/TestCenter.ps1)) is one window for every test that is run regularly. It has a tab per tool (Whole toolkit, WinSuperTool, WinFixKit, Log tools, Other PCs / WinPE) with a tick box per test. Tick what you want and press **Run selected**. The tests then run one after the other, and each one's results and a `report.txt` go to `C:\Users\Public\wrt-testcenter-<date>`. A test that can't run on the PC is greyed out, for example the two-monitor tests on one monitor or the WinPE test outside WinPE. Tests that change the PC ask first.
+
+Download `TestCenter-v<x.y>.zip` from the [release](https://github.com/TheTechSupportGuru/windows-repair-toolkit/releases/latest), extract it and double-click `Start-TestCenter.bat`. Start it as administrator to get only one admin prompt. Test Center has its own version number and is updated only when the test procedures or the test scripts change.
+
 To run the unit tests (they read the scripts' code and run no GUI or system changes):
 
 ```powershell
@@ -176,7 +182,7 @@ beta/             beta test builds - none at the moment (1.9 beta 5 became 1.9)
 build/            Build-NoAIEdition.ps1 (generates the no-AI edition), Promote-Beta.ps1 (makes a beta stable)
 docs/changes/     what each version fixed (V1.2 ... V1.9, and the 1.9 betas)
 docs/testing/     the test plan, results of each phase, and the v1.6 code review
-tests/            Pester unit tests, the test harness and the VM test runs
+tests/            Pester unit tests, Test Center (TestCenter.ps1), the test harness and the VM test runs
 LICENSE           GNU General Public License v3.0
 ```
 
