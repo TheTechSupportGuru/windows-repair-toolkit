@@ -4,6 +4,10 @@
 #
 # Run-PETest.ps1 - the toolkit in WinPE (for example Hiren's BootCD PE), working on a Windows that is NOT running:
 #   0 the PE: is it WinPE, PowerShell / .NET / WinForms, the Windows tools the toolkit calls, firmware, disks
+#   M mounting, NON-DESTRUCTIVE (drive letters only, with the tools' own Mount functions): when the Windows volume has no
+#     letter in the PE it is mounted for the tests; a partition without a letter (System Reserved / EFI / Recovery) is
+#     mounted, read, and unmounted with diskpart and with the Storage cmdlets; the MSR and the system drive must be
+#     refused. Every letter the test added is removed at the end, also when something fails.
 #   1 the Windows installations the tools find (WinSuperTool and WinRepairTool)
 #   2 boot configuration of each one, READ-ONLY (bcdedit /enum, clones, boot menu timeout, partition letters)
 #   3 real READ-ONLY offline scans read back by the summaries: DISM /image checkhealth + scanhealth,
@@ -11,7 +15,7 @@
 #   4 every GUI tool started for 20 s: does it open, does it report errors
 #   5 window sizes (resize audit, short)
 #   6 unit tests, if Pester is in this PE
-# Changes nothing (no repair, no boot change; the answer to every question in the tools is No) apart from writing the
+# Changes nothing (no repair, no boot change, no format; letters it adds are removed; every question is answered No) apart from writing the
 # results. Results: <first Windows drive>\WRT-PE-Results-<date> (so they are there after booting that Windows) and a
 # copy in X:\WRT-PE-Results. private\ = unmasked, share\ + WRT-PE-share.zip = masked: send that one.
 param([string]$OutDir = '', [switch]$NoGui)
@@ -54,6 +58,50 @@ W ("Storage cmds : Get-Partition {0}, Get-Volume {1}, Get-CimInstance {2}" -f [b
 $vols = @(Get-CimInstance Win32_LogicalDisk -ErrorAction SilentlyContinue | ForEach-Object { '{0} {1} {2:N0} GB {3}' -f $_.DeviceID, $_.FileSystem, ($_.Size / 1GB), $_.VolumeName })
 W ("Drives       : {0}" -f ($vols -join '; '))
 
+
+# ---------- M mounting (drive letters only) ----------
+Step 'M Mounting with the tools'' Mount functions (drive letters only - nothing is formatted or changed)'
+function Log($m) { $script:MountLog += "$m" }
+$script:MountLog = @(); $script:Mounts = New-Object Collections.ArrayList; $script:Added = @()
+$rbStor = [pscustomobject]@{ Checked = $false }
+. ([scriptblock]::Create((Get-AssignText 'WinSuperTool.ps1' 'DpAllow')))
+. ([scriptblock]::Create((Get-FnText 'WinSuperTool.ps1' 'Invoke-Diskpart', 'Get-DiskpartRows', 'Fmt-Size', 'Sync-StorageCache', 'Test-IsMsr', 'Test-LetterUsed', 'Get-LetterPartition', 'Get-DpPartLetter', 'Mount-Part', 'Unmount-Letter', 'Dismount-One', 'Get-DiskList', 'Get-PartList')))
+$hasStor = [bool](Get-Command Get-Partition -ErrorAction SilentlyContinue)
+function Get-FreeLetter { foreach ($c in [char[]]'TSRQPONMLKJ') { if (-not (Test-LetterUsed $c)) { return [string]$c } }; return '' }
+# every partition: disk, number, letter ('' = none, NOVOLUME = no file system: MSR / unformatted), size text
+$parts = @()
+foreach ($d in @(Get-DiskList)) { foreach ($pp in @(Get-PartList $d.Num)) { $parts += [pscustomobject]@{ Disk = $d.Num; Part = $pp.Num; Letter = (Get-DpPartLetter $d.Num $pp.Num); Text = $pp.Text } } }
+W ("  disks and partitions (diskpart): " + (($parts | ForEach-Object { "disk $($_.Disk)/p$($_.Part) $(if ($_.Letter -eq 'NOVOLUME') { 'no file system' } elseif ($_.Letter) { "$($_.Letter):" } else { 'no letter' })" }) -join '; '))
+$noLetter = @($parts | Where-Object { $_.Letter -eq '' })
+# the Windows volume has no letter in this PE: mount it for the tests (and remove the letter at the end)
+$winFound = $false; foreach ($dr in [IO.DriveInfo]::GetDrives()) { $l = $dr.Name.Substring(0, 2); if ($l -ne 'X:' -and [IO.File]::Exists("$l\Windows\System32\ntoskrnl.exe")) { $winFound = $true } }
+if (-not $winFound) {
+    foreach ($c in $noLetter) {
+        $L = Get-FreeLetter; if (-not $L) { break }
+        if (Mount-Part $c.Disk $c.Part $L) {
+            if ([IO.File]::Exists("${L}:\Windows\System32\ntoskrnl.exe")) { $script:Added += [pscustomobject]@{ Letter = $L; Disk = $c.Disk; Partition = $c.Part }; W "  the Windows volume had no letter: mounted disk $($c.Disk) partition $($c.Part) as ${L}: for the tests"; $c.Letter = $L; break }
+            [void](Dismount-One ([pscustomobject]@{ Letter = $L; Disk = $c.Disk; Partition = $c.Part }))
+        }
+    }
+}
+$cand = @($parts | Where-Object { $_.Letter -eq '' } | Select-Object -First 1)
+if (-not $cand.Count) { W '  no partition without a letter to test with (every partition already has one) - mount/unmount steps skipped' }
+$engines = @('diskpart') + $(if ($hasStor) { 'Storage cmdlets' } else { @() })
+foreach ($eng in $engines) {
+    if (-not $cand.Count) { break }
+    $rbStor.Checked = ($eng -ne 'diskpart'); $c = $cand[0]; $L = Get-FreeLetter
+    Check "[$eng] mount disk $($c.Disk) partition $($c.Part) ($($c.Text -replace '^Partition \d+\s+-\s+', '')) as ${L}:" { $r = Mount-Part $c.Disk $c.Part $L; if ($r) { $script:Added += [pscustomobject]@{ Letter = $L; Disk = $c.Disk; Partition = $c.Part } }; [bool]$r, "letter there: $r" }
+    if (Test-LetterUsed $L) {
+        Check "[$eng] its files can be read" { $n = @(Get-ChildItem "${L}:\" -Force -ErrorAction Stop | ForEach-Object Name); ($n.Count -gt 0), ("top folder: " + (($n | Select-Object -First 8) -join ', ')) }
+        Check "[$eng] unmount ${L}: with Dismount-One" { $m = [pscustomobject]@{ Letter = $L; Disk = $c.Disk; Partition = $c.Part }; [void]$script:Mounts.Add($m); $r = Dismount-One $m; if ($r) { $script:Added = @($script:Added | Where-Object { $_.Letter -ne $L }) }; ($r -and -not (Test-LetterUsed $L)), "letter gone: $(-not (Test-LetterUsed $L))" }
+    }
+}
+$msr = @($parts | Where-Object { $_.Letter -eq 'NOVOLUME' } | Where-Object { Test-IsMsr $_.Disk $_.Part } | Select-Object -First 1)
+if ($msr.Count) { Check "Mount-Part refuses the MSR (disk $($msr[0].Disk) partition $($msr[0].Part)) before touching it" { $L = Get-FreeLetter; try { [void](Mount-Part $msr[0].Disk $msr[0].Part $L); $false, 'NOT refused' } catch { (-not (Test-LetterUsed $L) -and $_.Exception.Message -match 'Microsoft Reserved'), $_.Exception.Message } } }
+else { W '  no MSR on this PC (MBR disk / Legacy BIOS): the MSR refusal is covered by the unit tests' }
+$sysL = $env:SystemDrive.Substring(0, 1)
+Check "Dismount-One refuses the system drive ${sysL}:" { $r = Dismount-One ([pscustomobject]@{ Letter = $sysL; Disk = 0; Partition = 0 }); (-not $r -and (Test-LetterUsed $sysL)), 'refused' }
+Check 'Dismount-One refuses an entry without a drive letter' { $r = Dismount-One ([pscustomobject]@{ Letter = ''; Disk = 0; Partition = 1 }); (-not $r), 'refused' }
 # ---------- 1 Windows installations ----------
 Step '1 Windows installations found by the tools'
 $installs = @()
@@ -70,7 +118,7 @@ $Win = if ($target.Count) { $target[0].Drive } else { '' }
 W ("  Target for the offline tests: {0}" -f $(if ($Win) { $Win } else { 'none - steps 2 and 3 are skipped' }))
 
 # where the results go: the target Windows (still there after booting it), else X:
-if (-not $OutDir) { $OutDir = $(if ($Win) { Join-Path "$Win\" "WRT-PE-Results-$stamp" } else { "X:\WRT-PE-Results-$stamp" }) }
+if (-not $OutDir) { $OutDir = $(if ($Win) { Join-Path "$Win\" "WRT-PE-Results-$stamp" } else { "X:\WRT-PE-Results-$stamp" }) }   # (a letter the test added is removed at the end, but the files stay on that volume)
 $Priv = Join-Path $OutDir 'private'; $Share = Join-Path $OutDir 'share'
 New-Item -ItemType Directory -Force $Priv, $Share | Out-Null
 
@@ -141,6 +189,8 @@ if (Get-Module Pester -ListAvailable) {
 
 # ---------- save ----------
 Step 'Done'
+[IO.File]::WriteAllText((Join-Path $Priv 'mount-log.txt'), ($script:MountLog -join "`r`n"))
+if (@($script:Added).Count) { W ("  letters added by the test, removed after saving: " + ((@($script:Added) | ForEach-Object { "$($_.Letter):" }) -join ', ')) }
 $all = $log -join "`r`n"
 [IO.File]::WriteAllText((Join-Path $Priv 'summary.txt'), $all); [IO.File]::WriteAllText((Join-Path $Share 'summary.txt'), (Protect-Text $all))
 $zip = Join-Path $OutDir 'WRT-PE-share.zip'
@@ -148,3 +198,9 @@ try { Compress-Archive -Path (Join-Path $Share '*') -DestinationPath $zip -Force
 if ($OutDir -notlike 'X:*') { try { Copy-Item $OutDir "X:\WRT-PE-Results-$stamp" -Recurse -Force -ErrorAction Stop } catch {} }
 W "Results: $OutDir  (send WRT-PE-share.zip; private\ stays with you)"
 if ($Win) { W "After booting $Win normally, the folder is at $($OutDir -replace '^[A-Z]:', 'C:') (the drive letter may change)." }
+
+# ---------- clean up: remove every letter this test added ----------
+foreach ($a in @($script:Added)) {
+    if (Test-LetterUsed $a.Letter) { $rbStor.Checked = $false; [void]$script:Mounts.Add($a); [void](Dismount-One $a); if (Test-LetterUsed $a.Letter) { & mountvol.exe ('{0}:' -f $a.Letter) /D 2>$null | Out-Null } }
+    Write-Host ("  letter {0}: added by the test - removed: {1}" -f $a.Letter, (-not (Test-LetterUsed $a.Letter)))
+}
