@@ -1,5 +1,5 @@
 #requires -Version 5.1
-# Version 1.8.3 (2026-11-20). What changed: docs/changes/V1.8.3.md
+# Version 1.8.4 (2026-11-20). What changed: docs/changes/V1.8.4.md
 # Windows Repair Toolkit - https://github.com/TheTechSupportGuru/windows-repair-toolkit
 # Copyright (C) 2026 TheTechSupportGuru
 # SPDX-License-Identifier: GPL-3.0-or-later
@@ -57,6 +57,7 @@ function Set-WrtScaling($f) {
 function Move-WrtIntoView($f) {
     try {
         $wa = [Windows.Forms.Screen]::FromControl($f).WorkingArea
+        if ($f.MinimumSize.Width -gt $wa.Width -or $f.MinimumSize.Height -gt $wa.Height) { $f.MinimumSize = New-Object Drawing.Size([Math]::Min($f.MinimumSize.Width, $wa.Width), [Math]::Min($f.MinimumSize.Height, $wa.Height)) }
         if ($f.Width -gt $wa.Width) { $f.Width = $wa.Width }
         if ($f.Height -gt $wa.Height) { $f.Height = $wa.Height }
         $sp = [string]$f.StartPosition; $r = $null
@@ -107,7 +108,7 @@ function Close-WrtSplash {
 }
 # Call right before ShowDialog. Records how much room each scrollable area ($scroll: tab pages, panels) needs at its
 # design size, so a small window scrolls instead of squeezing the controls together; sets the minimum size; opens
-# maximized when the scaled window does not fit on the screen; then closes the splash screen.
+# maximized when the scaled window does not fit on the screen; then hides the splash screen.
 function Initialize-WrtWindow($f, $scroll = @(), [int]$minW = 640, [int]$minH = 460) {
     $script:WrtForm = $f; $script:WrtMinWH = @($minW, $minH); $script:WrtExt = New-Object Collections.ArrayList
     foreach ($c in @($scroll)) {
@@ -117,15 +118,54 @@ function Initialize-WrtWindow($f, $scroll = @(), [int]$minW = 640, [int]$minH = 
         [void]$script:WrtExt.Add(@($c, $w, $h))
     }
     $f.Add_Shown({ Complete-WrtWindow })
-    $f.Add_FormClosed({ try { if ($script:WrtSplash) { $script:WrtSplash.Close(); $script:WrtSplash.Dispose() } } catch {}; $script:WrtSplash = $null })
+    $f.Add_FormClosed({
+        try { if ($script:WrtWatch) { $script:WrtWatch.Stop(); $script:WrtWatch.Dispose(); $script:WrtWatch = $null } } catch {}
+        try { if ($script:WrtSplash) { $script:WrtSplash.Close(); $script:WrtSplash.Dispose() } } catch {}; $script:WrtSplash = $null
+    })
+}
+# Keeps the main window usable when the screen changes while the tool is open: a different resolution, a docked /
+# undocked laptop, or the window dragged to another monitor. The minimum size never exceeds the screen's work area,
+# and a normal (not maximized) window is shrunk and moved back inside it. Checked once a second from a window timer.
+function Update-WrtScreenFit([bool]$force = $false) {
+    $f = $script:WrtForm; if (-not $f -or $f.IsDisposed -or -not $f.IsHandleCreated) { return }
+    $scr = [Windows.Forms.Screen]::FromControl($f); $wa = $scr.WorkingArea
+    $key = '{0}|{1}' -f $scr.DeviceName, $wa
+    if (-not $force -and $key -eq $script:WrtScreenKey) { return }
+    $script:WrtScreenKey = $key
+    $k = Get-WrtScale $f
+    $needW = [int]($script:WrtMinWH[0] * $k); $needH = [int]($script:WrtMinWH[1] * $k)
+    $f.MinimumSize = New-Object Drawing.Size([Math]::Min($needW, $wa.Width), [Math]::Min($needH, $wa.Height))
+    # Only when the screen is too small for the minimum layout (e.g. 720p at 150 %) does the window itself scroll, so its
+    # controls keep the minimum layout instead of being squeezed (anchored controls squeezed below zero room never
+    # return to their places). Otherwise it must NOT scroll: a scrolling window counts its bottom-anchored controls
+    # as content, and they would stop following the bottom edge when the window shrinks.
+    if ($needW -gt $wa.Width -or $needH -gt $wa.Height) {
+        $f.AutoScrollMinSize = New-Object Drawing.Size(($needW - ($f.Width - $f.ClientSize.Width)), ($needH - ($f.Height - $f.ClientSize.Height)))
+        $f.AutoScroll = $true
+    } elseif ($f.AutoScroll) {
+        # (order matters: setting AutoScrollMinSize switches AutoScroll back ON, so clear it first)
+        $f.AutoScrollPosition = New-Object Drawing.Point(0, 0); $f.AutoScrollMinSize = [Drawing.Size]::Empty; $f.AutoScroll = $false
+    }
+    if ($f.WindowState -eq 'Normal') {
+        if ($f.Width -gt $wa.Width) { $f.Width = $wa.Width }
+        if ($f.Height -gt $wa.Height) { $f.Height = $wa.Height }
+        $x = [Math]::Max($wa.Left, [Math]::Min($f.Left, $wa.Right - $f.Width)); $y = [Math]::Max($wa.Top, [Math]::Min($f.Top, $wa.Bottom - $f.Height))
+        if ($x -ne $f.Left -or $y -ne $f.Top) { $f.Location = New-Object Drawing.Point($x, $y) }
+    }
 }
 function Complete-WrtWindow {
     $f = $script:WrtForm; $k = Get-WrtScale $f
     foreach ($e in $script:WrtExt) { try { if ($e[1] -gt 0) { $e[0].AutoScroll = $true; $e[0].AutoScrollMinSize = New-Object Drawing.Size([int](($e[1] + 8) * $k), [int](($e[2] + 8) * $k)) } } catch {} }
-    try { $f.MinimumSize = New-Object Drawing.Size([int]($script:WrtMinWH[0] * $k), [int]($script:WrtMinWH[1] * $k)) } catch {}
+    try { Update-WrtScreenFit $true } catch {}      # minimum size within the screen (and scrolling only if the screen is too small)
+
     try { $wa = [Windows.Forms.Screen]::FromControl($f).WorkingArea; if ($f.Width -gt $wa.Width -or $f.Height -gt $wa.Height) { $f.WindowState = 'Maximized' } } catch {}
     Close-WrtSplash
     try { $f.Activate() } catch {}
+    try {
+        $script:WrtWatch = New-Object Windows.Forms.Timer; $script:WrtWatch.Interval = 1000
+        $script:WrtWatch.Add_Tick({ try { Update-WrtScreenFit } catch {} })
+        $script:WrtWatch.Start()
+    } catch {}
 }
 Show-WrtSplash 'Collect-Logs'
 
@@ -441,5 +481,5 @@ $btnGo.Add_Click({
 function Set-Anchor([string]$a, [object[]]$ctls) { foreach ($c in $ctls) { if ($c) { $c.Anchor = $a } } }
 Set-Anchor 'Top,Left,Right'        @($lbl)
 Set-Anchor 'Top,Bottom,Left,Right' @($txtOut)
-Initialize-WrtWindow $form @() 520 520
+Initialize-WrtWindow $form @() 640 560
 [void]$form.ShowDialog()
