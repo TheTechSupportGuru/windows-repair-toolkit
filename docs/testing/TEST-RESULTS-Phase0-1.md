@@ -15,7 +15,7 @@ Files: [Tests/Harness.ps1](../../tests/Harness.ps1) (pulls functions out of the 
 ---
 
 ## Fixes applied (2026-11-19): all S1/S2 bugs, #1–#6
-The originals are kept in [_originals-2026-11-19/](_originals-2026-11-19/).
+The originals are the [v1.1 release](https://github.com/TheTechSupportGuru/windows-repair-toolkit/releases/tag/v1.1) (tag `v1.1`).
 **Unit tests after the fixes: 173 total, 167 passed, 6 failed.** The 6 failures are only the lower-severity bugs that weren't in scope (#7, #8, #11, #12, #13).
 All three changed scripts still parse cleanly, and PSScriptAnalyzer still reports 0 errors.
 

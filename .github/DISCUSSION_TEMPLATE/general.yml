@@ -17,6 +17,7 @@ body:
         - "Monitor-Logs"
         - "ClaudeLogAnalyzer"
         - "Run-PS-As-Admin"
+        - "Test Center (beta)"
         - "Several tools"
         - "Not about a specific tool"
     validations:
@@ -91,6 +92,9 @@ body:
         - "General: Window size, scaling or splash screen"
         - "General: Documentation or README"
         - "General: Releases and downloads"
+        - "Test Center: Tools to test (Offline / Online download)"
+        - "Test Center: Tests, tabs and running"
+        - "Test Center: Reports (HTML, GitHub summary, Pack full results)"
         - "General: License"
         - "General: Whole toolkit"
         - "Not sure"
