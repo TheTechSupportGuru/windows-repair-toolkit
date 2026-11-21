@@ -48,6 +48,20 @@ This is what the tools call now. It isn't a limit: other built-in Windows progra
 
 Some of these are missing on Home editions or in WinPE (for example `gpedit.msc`, `secpol.msc`). The tools say so instead of failing.
 
+## Automation: WinSuperTool first, then WinFixKit
+
+WinSuperTool's **Automation** tab (the queue of tasks, the pass / fail summaries, the HTML report) is the original. The beta `WinFixKit-beta-automation.ps1` has a port of it in its `#region AUTOMATION` block.
+
+- **Every change to Automation is made in `tools/WinSuperTool.ps1` first**, then ported to WinFixKit. Never the other way round, and never in WinFixKit only.
+- The ported code is WinSuperTool's word for word, with a short list of renames: `New-Ctl` -> `New-AutoCtl`, `Safe` -> `Invoke-AutoSafe`, `$DataDir` -> `$script:RootDir`, `WinSuperTool-Data` -> `WinFixKit`.
+- Only the parts marked `WinFixKit:` differ on purpose:
+  - the task list (WinFixKit's own status checks and fixes);
+  - no live-log option;
+  - no offline queue from WinPE;
+  - the admin check.
+- After changing Automation in WinSuperTool, run `build/Port-AutomationToWinFixKit.ps1`. It rebuilds the region from WinSuperTool and stops if WinSuperTool changed in a way the port doesn't expect. The WinFixKit-only parts are in `build/automation-port/`.
+- `tests/WinFixKitAutomation.Tests.ps1` fails when a ported function no longer matches WinSuperTool's.
+
 ## Before you open a pull request
 
 1. Change the scripts in `tools/` only. Never edit `WinSuperTool-NoAI.ps1` by hand. Rebuild it with `build/Build-NoAIEdition.ps1`.
