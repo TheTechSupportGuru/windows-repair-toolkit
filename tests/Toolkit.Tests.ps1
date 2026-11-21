@@ -68,6 +68,7 @@ Describe 'T2 window helpers: display scaling, splash, resizing (all GUI tools)' 
         }
     }
     It 'the main window stays open after the splash closes (1.8.1 / 1.8.2 closed 4 tools by themselves after 1-2 s)' {
+        Add-Type -AssemblyName System.Windows.Forms, System.Drawing
         $tk = $null; $pe = $null; $ast = [Management.Automation.Language.Parser]::ParseFile($GuiTools[0].FullName, [ref]$tk, [ref]$pe)
         foreach ($n in 'Set-WrtScaling', 'Get-WrtScale', 'Resize-WrtColumns', 'Move-WrtIntoView', 'Show-WrtSplash', 'Close-WrtSplash', 'Initialize-WrtWindow', 'Complete-WrtWindow') {
             . ([scriptblock]::Create($ast.Find({ param($x) $x -is [Management.Automation.Language.FunctionDefinitionAst] -and $x.Name -eq $n }, $true).Extent.Text))

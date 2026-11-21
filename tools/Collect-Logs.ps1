@@ -42,6 +42,7 @@ Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 # Sharp, unclipped text on 125 % / 150 % / 200 % displays: this process scales its own windows
 # (AutoScaleMode Dpi on every form) instead of Windows stretching a blurry bitmap of them.
 try { Add-Type -Namespace WrtUi -Name Dpi -MemberDefinition '[DllImport("user32.dll")] public static extern bool SetProcessDPIAware();' -ErrorAction Stop; [void][WrtUi.Dpi]::SetProcessDPIAware() } catch {}
+try { Add-Type -Namespace WrtUi -Name Win -MemberDefinition '[DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h); [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h); [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);' -ErrorAction Stop } catch {}
 # The scaling is switched on when the form LOADS: WinForms only scales what exists at that moment, so this way the
 # finished window and every control in it scale together (setting it at creation scaled nothing inside the window).
 function Set-WrtScaling($f) {
@@ -124,10 +125,13 @@ function Initialize-WrtWindow($f, $scroll = @(), [int]$minW = 640, [int]$minH = 
     })
 }
 # Keeps the main window usable when the screen changes while the tool is open: a different resolution, a docked /
-# undocked laptop, or the window dragged to another monitor. The minimum size never exceeds the screen's work area,
-# and a normal (not maximized) window is shrunk and moved back inside it. Checked once a second from a window timer.
+# undocked laptop, a monitor removed, or the window dragged to another monitor. The minimum size never exceeds the
+# screen's work area. A normal (not maximized) window is only shrunk and moved when part of it is on NO screen: a
+# window the user put across two monitors stays there. Checked once a second from a window timer.
 function Update-WrtScreenFit([bool]$force = $false) {
     $f = $script:WrtForm; if (-not $f -or $f.IsDisposed -or -not $f.IsHandleCreated) { return }
+    # never while a mouse button is down: the user may be dragging the window to another monitor (checked next time)
+    if (-not $force -and [Windows.Forms.Control]::MouseButtons -ne [Windows.Forms.MouseButtons]::None) { return }
     $scr = [Windows.Forms.Screen]::FromControl($f); $wa = $scr.WorkingArea
     $key = '{0}|{1}' -f $scr.DeviceName, $wa
     if (-not $force -and $key -eq $script:WrtScreenKey) { return }
@@ -147,10 +151,15 @@ function Update-WrtScreenFit([bool]$force = $false) {
         $f.AutoScrollPosition = New-Object Drawing.Point(0, 0); $f.AutoScrollMinSize = [Drawing.Size]::Empty; $f.AutoScroll = $false
     }
     if ($f.WindowState -eq 'Normal') {
-        if ($f.Width -gt $wa.Width) { $f.Width = $wa.Width }
-        if ($f.Height -gt $wa.Height) { $f.Height = $wa.Height }
-        $x = [Math]::Max($wa.Left, [Math]::Min($f.Left, $wa.Right - $f.Width)); $y = [Math]::Max($wa.Top, [Math]::Min($f.Top, $wa.Bottom - $f.Height))
-        if ($x -ne $f.Left -or $y -ne $f.Top) { $f.Location = New-Object Drawing.Point($x, $y) }
+        # how much of the window (without Windows' invisible 7-8 px resize border) some screen shows
+        $in = New-Object Drawing.Rectangle(($f.Left + 8), $f.Top, [Math]::Max(1, $f.Width - 16), [Math]::Max(1, $f.Height - 8))
+        $seen = 0.0; foreach ($s in [Windows.Forms.Screen]::AllScreens) { $r = [Drawing.Rectangle]::Intersect($s.WorkingArea, $in); if (-not $r.IsEmpty) { $seen += [double]$r.Width * $r.Height } }
+        if ($seen -lt [double]$in.Width * $in.Height - 1) {
+            if ($f.Width -gt $wa.Width) { $f.Width = $wa.Width }
+            if ($f.Height -gt $wa.Height) { $f.Height = $wa.Height }
+            $x = [Math]::Max($wa.Left, [Math]::Min($f.Left, $wa.Right - $f.Width)); $y = [Math]::Max($wa.Top, [Math]::Min($f.Top, $wa.Bottom - $f.Height))
+            if ($x -ne $f.Left -or $y -ne $f.Top) { $f.Location = New-Object Drawing.Point($x, $y) }
+        }
     }
 }
 function Complete-WrtWindow {
@@ -158,6 +167,9 @@ function Complete-WrtWindow {
     foreach ($e in $script:WrtExt) { try { if ($e[1] -gt 0) { $e[0].AutoScroll = $true; $e[0].AutoScrollMinSize = New-Object Drawing.Size([int](($e[1] + 8) * $k), [int](($e[2] + 8) * $k)) } } catch {} }
     try { Update-WrtScreenFit $true } catch {}      # minimum size within the screen (and scrolling only if the screen is too small)
 
+    # Windows applies a minimized or hidden START style (a shortcut set to "Minimized", or a launcher that minimizes its
+    # console) to the first window the tool shows - the main window, when the splash screen does not own it. Show it.
+    try { $h = $f.Handle; if (-not [WrtUi.Win]::IsWindowVisible($h) -or [WrtUi.Win]::IsIconic($h)) { [void][WrtUi.Win]::ShowWindow($h, 9) } } catch {}
     try { $wa = [Windows.Forms.Screen]::FromControl($f).WorkingArea; if ($f.Width -gt $wa.Width -or $f.Height -gt $wa.Height) { $f.WindowState = 'Maximized' } } catch {}
     Close-WrtSplash
     try { $f.Activate() } catch {}

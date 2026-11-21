@@ -5,7 +5,7 @@ The test VM was upgraded on 2026-11-20. This plan tests everything new since 1.8
 | Item | Before | Now | Used for |
 |---|---|---|---|
 | CPU | 4 vCPU | **8 cores** | the tools and test suites run **in parallel** (9 tools at once, 3 unit suites at once) |
-| Monitors | one virtual screen | **two**: a 3840x2160 monitor (main) and a 2560x1440 monitor **above it** (negative screen coordinates) | moving windows between monitors, maximizing on the second one, across the edge, removing a monitor |
+| Monitors | one virtual screen | **two**: a 3840x2160 monitor (main) and a 2560x1440 monitor **to its right**; also tested arranged **above** it (negative screen coordinates) | moving windows between monitors, maximizing on the second one, across the edge, removing a monitor |
 | Display scaling | 100 % only (150 % was simulated) | each monitor can be **scaled on its own** | a real 150 % monitor next to a 100 % one, changed while the tool is open |
 | Graphics | basic | WDDM with **video acceleration** | the HTML report rendered by Edge at 4K, 2K, 1280 and phone width |
 
@@ -60,9 +60,9 @@ After every screen change the audit also runs its normal checks on every tab: ov
 
 | ID | Test | Pass when |
 |---|---|---|
-| M1 | move to the 2K monitor (above, negative coordinates); sizes there | on monitor 2, inside its work area, no issues |
+| M1 | move to the 2K monitor (to the right; and arranged above, with negative coordinates); sizes there | on monitor 2, inside its work area, no issues |
 | M2 | maximize on the 2K monitor | maximized there, no issues |
-| M3 | across the edge of the two monitors | title bar on a screen, no issues |
+| M3 | across the edge of the two monitors | it stays across the edge (when both screens show all of it), no issues |
 | M4 | 2K monitor scaled to 150 % while the tool is on it; sizes, maximize, across the edge | fits; no issues |
 | M5 | 2K monitor removed while the tool is on it, then back | the window moves to the 4K monitor and fits; no issues |
 | M6 | M1-M5 with simulated 150 % | as above |

@@ -29,6 +29,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path $PSScriptRoot -Parent
+Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 
 if (-not $Child) {
     if (-not $Scripts.Count) { $Scripts = @(Get-ChildItem (Join-Path $Root 'tools'), (Join-Path $Root 'beta') -Filter *.ps1 | Where-Object { [IO.File]::ReadAllText($_.FullName) -match 'Windows\.Forms\.Form' } | ForEach-Object { $_.FullName }) }
@@ -273,6 +274,12 @@ $__t.Add_Tick({
             if ($f.WindowState -eq 'Normal' -and -not @([Windows.Forms.Screen]::AllScreens | Where-Object { $_.WorkingArea.IntersectsWith($bar) }).Count) { Add-Issue $st[0] '-' 'SCREEN' "the title bar at $($bar.Location) is on no screen" }
             if ($st[0] -match '^mon:(\d)$' -and $scr2.DeviceName -notmatch "DISPLAY$($Matches[1])$" -and (Get-WrtAuditScreen ([int]$Matches[1]))) { Add-Issue $st[0] '-' 'SCREEN' "moved to monitor $($Matches[1]) but the window is on $($scr2.DeviceName)" }
             if ($st[0] -match '^mon:' -and -not $wa2.Contains($f.Bounds)) { Add-Issue $st[0] '-' 'SCREEN' "the window $($f.Bounds) is not fully inside its screen's work area $wa2" }
+            # across the edge: when the screens show all of it, the window must stay where it was put (not be pulled onto one monitor)
+            if ($st[0] -eq 'span' -and $f.WindowState -eq 'Normal') {
+                $inR = New-Object Drawing.Rectangle(($f.Left + 8), $f.Top, [Math]::Max(1, $f.Width - 16), [Math]::Max(1, $f.Height - 8)); $seenA = 0.0; $onN = 0
+                foreach ($sc in [Windows.Forms.Screen]::AllScreens) { $ir = [Drawing.Rectangle]::Intersect($sc.WorkingArea, $inR); if (-not $ir.IsEmpty) { $seenA += [double]$ir.Width * $ir.Height; $onN++ } }
+                if ($script:__spanAll -and $onN -lt 2) { Add-Issue 'span' '-' 'SCREEN' "the window was put across the edge of two monitors (fully visible) but was moved onto one monitor: now at $($f.Bounds)" }
+            }
             if ($st[0] -match '^maxon:(\d)$' -and ($f.WindowState -ne 'Maximized' -or $scr2.DeviceName -notmatch "DISPLAY$($Matches[1])$")) { Add-Issue $st[0] '-' 'SCREEN' "should be maximized on monitor $($Matches[1]), is $($f.WindowState) on $($scr2.DeviceName)" }
         }
         Test-Layout $f $st[0] $tabName
@@ -310,6 +317,10 @@ $__t.Add_Tick({
                         $cx = $(if ($a2.Right -le $a1.Left) { [int](($a2.Right + $a1.Left) / 2) } else { [int](($a1.Right + $a2.Left) / 2) })
                     }
                     $f.Location = New-Object Drawing.Point(($cx - [int]($f.Width / 2)), ($cy - [int]($f.Height / 2)))
+                    # remember whether the screens show all of it where it was put (with different scaling there can be a gap)
+                    $inR = New-Object Drawing.Rectangle(($f.Left + 8), $f.Top, [Math]::Max(1, $f.Width - 16), [Math]::Max(1, $f.Height - 8)); $seenA = 0.0
+                    foreach ($sc in [Windows.Forms.Screen]::AllScreens) { $ir = [Drawing.Rectangle]::Intersect($sc.WorkingArea, $inR); if (-not $ir.IsEmpty) { $seenA += [double]$ir.Width * $ir.Height } }
+                    $script:__spanAll = ($seenA -ge [double]$inR.Width * $inR.Height - 1)
                 }
                 $script:__wait = 4
             }

@@ -310,6 +310,21 @@ Describe 'B9 System Info helpers' {
         ConvertTo-SubnetMask 24 | Should Be '255.255.255.0'; ConvertTo-SubnetMask 20 | Should Be '255.255.240.0'; ConvertTo-SubnetMask 0 | Should Be '0.0.0.0'
         Format-Mac '00-11-22-AB-CD-EF' | Should Be '00:11:22:AB:CD:EF'; Format-Mac 'aabbccddeeff' | Should Be 'AA:BB:CC:DD:EE:FF'
     }
+    It 'says where each display is, seen from the main display (1.9 beta 5, two-monitor test PC)' {
+        . ([scriptblock]::Create((Get-BetaFn 'Get-DisplayPlace')))
+        $m = [int[]]@(0, 0, 3840, 2160)
+        Get-DisplayPlace $m $m | Should Be 'main display'
+        Get-DisplayPlace $m ([int[]]@(3840, 0, 2560, 1440)) | Should Be 'right of the main display'
+        Get-DisplayPlace $m ([int[]]@(640, -1440, 2560, 1440)) | Should Be 'above the main display'
+        Get-DisplayPlace $m ([int[]]@(-1920, 0, 1920, 1080)) | Should Be 'left of the main display'
+        Get-DisplayPlace $m ([int[]]@(0, 2160, 1920, 1080)) | Should Be 'below the main display'
+        Get-DisplayPlace $m ([int[]]@(3840, 2160, 1920, 1080)) | Should Be 'right of and below the main display'
+    }
+    It 'lists every display that is part of the desktop on this PC' {
+        . ([scriptblock]::Create((Get-BetaFn 'Get-DisplayRaw')))
+        $script:DispApiLoaded = $false; Add-Type -AssemblyName System.Windows.Forms
+        @(Get-DisplayRaw).Count | Should Be ([Windows.Forms.Screen]::AllScreens.Count)
+    }
     It 'info text lines up keys and indents multi-line values' {
         $t = Format-InfoText @((InfoH 'Net'), (InfoKV 'IPv4 address' @('10.1.1.5 / 24', '10.1.1.6 / 24')), (InfoT 'note'))
         $t | Should Match '(?m)^Net\r?$'

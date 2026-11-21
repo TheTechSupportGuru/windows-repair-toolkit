@@ -74,6 +74,7 @@ Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 # Sharp, unclipped text on 125 % / 150 % / 200 % displays: this process scales its own windows
 # (AutoScaleMode Dpi on every form) instead of Windows stretching a blurry bitmap of them.
 try { Add-Type -Namespace WrtUi -Name Dpi -MemberDefinition '[DllImport("user32.dll")] public static extern bool SetProcessDPIAware();' -ErrorAction Stop; [void][WrtUi.Dpi]::SetProcessDPIAware() } catch {}
+try { Add-Type -Namespace WrtUi -Name Win -MemberDefinition '[DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h); [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h); [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);' -ErrorAction Stop } catch {}
 # The scaling is switched on when the form LOADS: WinForms only scales what exists at that moment, so this way the
 # finished window and every control in it scale together (setting it at creation scaled nothing inside the window).
 function Set-WrtScaling($f) {
@@ -156,10 +157,13 @@ function Initialize-WrtWindow($f, $scroll = @(), [int]$minW = 640, [int]$minH = 
     })
 }
 # Keeps the main window usable when the screen changes while the tool is open: a different resolution, a docked /
-# undocked laptop, or the window dragged to another monitor. The minimum size never exceeds the screen's work area,
-# and a normal (not maximized) window is shrunk and moved back inside it. Checked once a second from a window timer.
+# undocked laptop, a monitor removed, or the window dragged to another monitor. The minimum size never exceeds the
+# screen's work area. A normal (not maximized) window is only shrunk and moved when part of it is on NO screen: a
+# window the user put across two monitors stays there. Checked once a second from a window timer.
 function Update-WrtScreenFit([bool]$force = $false) {
     $f = $script:WrtForm; if (-not $f -or $f.IsDisposed -or -not $f.IsHandleCreated) { return }
+    # never while a mouse button is down: the user may be dragging the window to another monitor (checked next time)
+    if (-not $force -and [Windows.Forms.Control]::MouseButtons -ne [Windows.Forms.MouseButtons]::None) { return }
     $scr = [Windows.Forms.Screen]::FromControl($f); $wa = $scr.WorkingArea
     $key = '{0}|{1}' -f $scr.DeviceName, $wa
     if (-not $force -and $key -eq $script:WrtScreenKey) { return }
@@ -179,10 +183,15 @@ function Update-WrtScreenFit([bool]$force = $false) {
         $f.AutoScrollPosition = New-Object Drawing.Point(0, 0); $f.AutoScrollMinSize = [Drawing.Size]::Empty; $f.AutoScroll = $false
     }
     if ($f.WindowState -eq 'Normal') {
-        if ($f.Width -gt $wa.Width) { $f.Width = $wa.Width }
-        if ($f.Height -gt $wa.Height) { $f.Height = $wa.Height }
-        $x = [Math]::Max($wa.Left, [Math]::Min($f.Left, $wa.Right - $f.Width)); $y = [Math]::Max($wa.Top, [Math]::Min($f.Top, $wa.Bottom - $f.Height))
-        if ($x -ne $f.Left -or $y -ne $f.Top) { $f.Location = New-Object Drawing.Point($x, $y) }
+        # how much of the window (without Windows' invisible 7-8 px resize border) some screen shows
+        $in = New-Object Drawing.Rectangle(($f.Left + 8), $f.Top, [Math]::Max(1, $f.Width - 16), [Math]::Max(1, $f.Height - 8))
+        $seen = 0.0; foreach ($s in [Windows.Forms.Screen]::AllScreens) { $r = [Drawing.Rectangle]::Intersect($s.WorkingArea, $in); if (-not $r.IsEmpty) { $seen += [double]$r.Width * $r.Height } }
+        if ($seen -lt [double]$in.Width * $in.Height - 1) {
+            if ($f.Width -gt $wa.Width) { $f.Width = $wa.Width }
+            if ($f.Height -gt $wa.Height) { $f.Height = $wa.Height }
+            $x = [Math]::Max($wa.Left, [Math]::Min($f.Left, $wa.Right - $f.Width)); $y = [Math]::Max($wa.Top, [Math]::Min($f.Top, $wa.Bottom - $f.Height))
+            if ($x -ne $f.Left -or $y -ne $f.Top) { $f.Location = New-Object Drawing.Point($x, $y) }
+        }
     }
 }
 function Complete-WrtWindow {
@@ -190,6 +199,9 @@ function Complete-WrtWindow {
     foreach ($e in $script:WrtExt) { try { if ($e[1] -gt 0) { $e[0].AutoScroll = $true; $e[0].AutoScrollMinSize = New-Object Drawing.Size([int](($e[1] + 8) * $k), [int](($e[2] + 8) * $k)) } } catch {} }
     try { Update-WrtScreenFit $true } catch {}      # minimum size within the screen (and scrolling only if the screen is too small)
 
+    # Windows applies a minimized or hidden START style (a shortcut set to "Minimized", or a launcher that minimizes its
+    # console) to the first window the tool shows - the main window, when the splash screen does not own it. Show it.
+    try { $h = $f.Handle; if (-not [WrtUi.Win]::IsWindowVisible($h) -or [WrtUi.Win]::IsIconic($h)) { [void][WrtUi.Win]::ShowWindow($h, 9) } } catch {}
     try { $wa = [Windows.Forms.Screen]::FromControl($f).WorkingArea; if ($f.Width -gt $wa.Width -or $f.Height -gt $wa.Height) { $f.WindowState = 'Maximized' } } catch {}
     Close-WrtSplash
     try { $f.Activate() } catch {}
@@ -2324,7 +2336,8 @@ function Show-TaskSummary($task, $res, $v, [bool]$Modeless = $false) {
         $f.TopMost = $true; $f.StartPosition = 'Manual'
         $script:SumOffset = ([int]$script:SumOffset + 30) % 240
         $f.Tag = $script:SumOffset
-        $wa = [Windows.Forms.Screen]::PrimaryScreen.WorkingArea
+        # on the monitor the tool is on, not always the main monitor (1.9 beta 5, found with two monitors)
+        $wa = $(if ($form -and $form.IsHandleCreated) { [Windows.Forms.Screen]::FromControl($form).WorkingArea } else { [Windows.Forms.Screen]::PrimaryScreen.WorkingArea })
         $f.Location = New-Object Drawing.Point(([Math]::Max($wa.Left, $wa.Right - $f.Width - 8 - $script:SumOffset)), ([Math]::Max($wa.Top, $wa.Bottom - $f.Height - 8 - $script:SumOffset)))
         # placed again once shown: on a scaled display the window only reaches its final size when it loads, so the
         # position worked out above would push a 150 % window partly off the screen
@@ -2695,6 +2708,93 @@ function Get-BtInfo {
 }
 
 # ---- A5 Video cards ----
+# ---- Displays (1.9 beta 5): every monitor, not only the main one ----
+# Win32_VideoController reports the main display's resolution only, and WmiMonitorID is empty on many PCs (and in
+# virtual machines), so a second monitor did not appear at all. Windows' own display settings list every display
+# with its real resolution and position; the scaling comes from the same call the Settings app uses.
+$script:DispApiLoaded = $false
+function Get-DisplayRaw {
+    if (-not $script:DispApiLoaded) {
+        try {
+            Add-Type -ErrorAction Stop -TypeDefinition @'
+using System; using System.Collections.Generic; using System.Runtime.InteropServices;
+namespace WinSuperToolDisp {
+  public static class Disp {
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] struct DD {
+      public int cb; [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string DeviceName; [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)] public string DeviceString;
+      public int StateFlags; [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)] public string DeviceID; [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 128)] public string DeviceKey; }
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] struct DM {
+      [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmDeviceName; public short dmSpecVersion, dmDriverVersion, dmSize, dmDriverExtra; public int dmFields;
+      public int dmPositionX, dmPositionY, dmDisplayOrientation, dmDisplayFixedOutput; public short dmColor, dmDuplex, dmYResolution, dmTTOption, dmCollate;
+      [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string dmFormName; public short dmLogPixels; public int dmBitsPerPel, dmPelsWidth, dmPelsHeight, dmDisplayFlags, dmDisplayFrequency;
+      public int dmICMMethod, dmICMIntent, dmMediaType, dmDitherType, dmReserved1, dmReserved2, dmPanningWidth, dmPanningHeight; }
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern bool EnumDisplayDevicesW(string dev, int i, ref DD dd, int flags);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern bool EnumDisplaySettingsW(string dev, int mode, ref DM dm);
+    [DllImport("user32.dll")] static extern int GetDisplayConfigBufferSizes(uint flags, out uint paths, out uint modes);
+    [DllImport("user32.dll")] static extern int QueryDisplayConfig(uint flags, ref uint paths, IntPtr pathArr, ref uint modes, IntPtr modeArr, IntPtr topo);
+    [DllImport("user32.dll")] static extern int DisplayConfigGetDeviceInfo(IntPtr p);
+    static readonly int[] Steps = { 100, 125, 150, 175, 200, 225, 250, 300, 350, 400, 450, 500 };
+    // scaling in percent of a display such as \\.\DISPLAY2, 0 when Windows does not say
+    static int Scale(string dev) {
+      uint np, nm; if (GetDisplayConfigBufferSizes(2, out np, out nm) != 0) return 0;
+      IntPtr pa = Marshal.AllocHGlobal((int)np * 72), ma = Marshal.AllocHGlobal((int)nm * 64), q = Marshal.AllocHGlobal(84);
+      try {
+        if (QueryDisplayConfig(2, ref np, pa, ref nm, ma, IntPtr.Zero) != 0) return 0;
+        for (int i = 0; i < np; i++) {
+          long l = Marshal.ReadInt64(pa, i * 72); int s = Marshal.ReadInt32(pa, i * 72 + 8);
+          Marshal.WriteInt32(q, 0, 1); Marshal.WriteInt32(q, 4, 84); Marshal.WriteInt64(q, 8, l); Marshal.WriteInt32(q, 16, s);
+          if (DisplayConfigGetDeviceInfo(q) != 0 || Marshal.PtrToStringUni(new IntPtr(q.ToInt64() + 20)) != dev) continue;
+          Marshal.WriteInt32(q, 0, -3); Marshal.WriteInt32(q, 4, 32);
+          if (DisplayConfigGetDeviceInfo(q) != 0) return 0;
+          int k = -Marshal.ReadInt32(q, 20) + Marshal.ReadInt32(q, 24);
+          return (k >= 0 && k < Steps.Length) ? Steps[k] : 0;
+        }
+        return 0;
+      } catch { return 0; } finally { Marshal.FreeHGlobal(pa); Marshal.FreeHGlobal(ma); Marshal.FreeHGlobal(q); }
+    }
+    // one line per display that is part of the desktop: device|main(1/0)|x|y|width|height|Hz|scaling %|monitor name
+    public static string[] List() {
+      var o = new List<string>();
+      for (int i = 0; i < 32; i++) {
+        DD d = new DD(); d.cb = Marshal.SizeOf(typeof(DD)); if (!EnumDisplayDevicesW(null, i, ref d, 0)) break;
+        if ((d.StateFlags & 1) == 0) continue;
+        DM m = new DM(); m.dmSize = (short)Marshal.SizeOf(typeof(DM)); if (!EnumDisplaySettingsW(d.DeviceName, -1, ref m)) continue;
+        DD mon = new DD(); mon.cb = Marshal.SizeOf(typeof(DD)); string mn = EnumDisplayDevicesW(d.DeviceName, 0, ref mon, 0) ? mon.DeviceString : "";
+        o.Add(string.Join("|", new string[] { d.DeviceName, ((d.StateFlags & 4) != 0) ? "1" : "0", m.dmPositionX.ToString(), m.dmPositionY.ToString(), m.dmPelsWidth.ToString(), m.dmPelsHeight.ToString(), m.dmDisplayFrequency.ToString(), Scale(d.DeviceName).ToString(), mn }));
+      }
+      return o.ToArray();
+    }
+  }
+}
+'@
+            $script:DispApiLoaded = $true
+        } catch { return @() }
+    }
+    try { @([WinSuperToolDisp.Disp]::List()) } catch { @() }
+}
+# where a display is, seen from the main display (x, y, width, height of both)
+function Get-DisplayPlace([int[]]$main, [int[]]$d) {
+    if ($d[0] -eq $main[0] -and $d[1] -eq $main[1]) { return 'main display' }
+    $w = @()
+    if ($d[0] -ge $main[0] + $main[2]) { $w += 'right of' } elseif ($d[0] + $d[2] -le $main[0]) { $w += 'left of' }
+    if ($d[1] -ge $main[1] + $main[3]) { $w += 'below' } elseif ($d[1] + $d[3] -le $main[1]) { $w += 'above' }
+    if (-not $w.Count) { return 'overlaps the main display (duplicated?)' }
+    ($w -join ' and ') + ' the main display'
+}
+function Get-DisplayRows {
+    $raw = @(Get-DisplayRaw | ForEach-Object { $p = $_ -split '\|'; [pscustomobject]@{ Dev = $p[0]; Main = $p[1] -eq '1'; R = [int[]]@($p[2], $p[3], $p[4], $p[5]); Hz = [int]$p[6]; Scale = [int]$p[7]; Name = $p[8] } })
+    $m = $raw | Where-Object Main | Select-Object -First 1
+    foreach ($d in $raw) {
+        $n = $d.Dev -replace '^\\\\\.\\DISPLAY', ''
+        $v = '{0} x {1}' -f $d.R[2], $d.R[3]
+        if ($d.Hz -gt 1) { $v += " at $($d.Hz) Hz" }
+        if ($d.Scale) { $v += ", scaling $($d.Scale) %" }
+        $lines = @($v)
+        if ($m) { $lines += (Get-DisplayPlace $m.R $d.R) }
+        if ($d.Name) { $lines += $d.Name }
+        InfoKV "Display $n" $lines
+    }
+}
 function Get-GpuInfo {
     $b = New-Object Collections.ArrayList
     $reg = @()
@@ -2720,6 +2820,8 @@ function Get-GpuInfo {
         if ($v.VideoProcessor) { [void]$b.Add((InfoKV 'Graphics chip' $v.VideoProcessor)) }
         if ($v.PNPDeviceID) { [void]$b.Add((InfoKV 'Device ID' (($v.PNPDeviceID -split '\\')[0..1] -join '\'))) }
     }
+    $disp = @(Get-DisplayRows)
+    if ($disp.Count) { [void]$b.Add((InfoH ('Displays ({0})' -f $disp.Count))); foreach ($r in $disp) { [void]$b.Add($r) } }
     $mons = @(Get-SafeCim 'WmiMonitorID' '' 'root\wmi')
     if ($mons.Count) {
         [void]$b.Add((InfoH ('Monitors ({0})' -f $mons.Count)))
@@ -3165,7 +3267,9 @@ dl { display:grid; grid-template-columns:max-content 1fr; gap:3px 14px; margin:8
 code { font-family:Consolas,monospace; font-size:13px; background:#eef2f6; padding:1px 5px; border-radius:4px }
 details { margin-top:8px } summary { cursor:pointer; color:#175cd3 } pre { background:#0f172a; color:#e2e8f0; padding:12px; border-radius:6px; overflow:auto; font:12.5px/1.45 Consolas,monospace; max-height:520px; white-space:pre-wrap }
 footer { color:var(--mute); font-size:13px; margin-top:28px }
-@media print { body { background:#fff } details { display:none } .task, table { break-inside:avoid } }
+.wide { overflow-x:auto; border-radius:8px } h1, .banner, .sub, dd, blockquote, code { overflow-wrap:anywhere }
+@media (max-width:640px) { body { font-size:14px } main { padding:16px 10px 32px } h1 { font-size:20px } .banner { font-size:17px; padding:12px 14px } .facts { gap:4px 16px } th, td { padding:7px 6px } th { font-size:11px } dl { grid-template-columns:1fr } dt { margin-top:4px } .task { padding:12px } }
+@media print { body { background:#fff } details { display:none } .task, table { break-inside:avoid } .wide { overflow:visible } }
 </style></head><body><main>
 '@)
     [void]$sb.Append("<h1>Automation report</h1><p class=""sub"">Windows Repair Toolkit - $(ConvertTo-HtmlText $AppName) &nbsp;|&nbsp; <span class=""beta"">BETA</span></p>")
@@ -3178,14 +3282,14 @@ footer { color:var(--mute); font-size:13px; margin-top:28px }
     if ($A.StopWhy) { [void]$sb.Append("<span class=""res warn"">The queue $(ConvertTo-HtmlText $A.StopWhy).</span>") }
     [void]$sb.Append('</div>')
     # ---- the summary table: one line per task ----
-    [void]$sb.Append('<h2>Summary</h2><table><thead><tr><th>#</th><th>Task</th><th>Status</th><th>Result</th><th>Time</th></tr></thead><tbody>')
+    [void]$sb.Append('<h2>Summary</h2><div class="wide"><table><thead><tr><th>#</th><th>Task</th><th>Status</th><th>Result</th><th>Time</th></tr></thead><tbody>')
     $i = 0
     foreach ($r in $rows) {
         $i++; $c = & $cls $r
         $name = (ConvertTo-HtmlText $r.Name) + $(if ($r.Auto) { " <span class=""auto"">($(ConvertTo-HtmlText $r.Why))</span>" } else { '' })
         [void]$sb.Append("<tr class=""$c""><td>$i</td><td>$name</td><td><span class=""badge $c"">$(ConvertTo-HtmlText $r.Status)</span></td><td class=""res $c"">$(ConvertTo-HtmlText $r.Find)</td><td>$(Format-Dur $r.Started $r.Ended)</td></tr>")
     }
-    [void]$sb.Append('</tbody></table>')
+    [void]$sb.Append('</tbody></table></div>')   # (1.9 beta 5) the table scrolls on its own on a phone, not the whole page
     # ---- details: everything about each task, full output last ----
     [void]$sb.Append('<h2>Details</h2>')
     $i = 0
