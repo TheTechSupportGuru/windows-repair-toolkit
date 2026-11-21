@@ -28,6 +28,12 @@ public static class WstSnap {
   public static List<string> List() { var o = new List<string>(); EnumWindows((h, l) => { if (IsWindowVisible(h)) { var s = new StringBuilder(512); GetWindowText(h, s, 512); if (s.Length > 0) { var c = new StringBuilder(256); GetClassName(h, c, 256); int p; GetWindowThreadProcessId(h, out p); o.Add(h.ToInt64() + "|" + p + "|" + c + "|" + s); } } return true; }, IntPtr.Zero); return o; }
   public static void Close(long h) { PostMessage(new IntPtr(h), 0x10, IntPtr.Zero, IntPtr.Zero); }
   public static bool Exists(long h) { return IsWindow(new IntPtr(h)) && IsWindowVisible(new IntPtr(h)); }
+  [DllImport("user32.dll")] static extern bool EnumChildWindows(IntPtr p, EnumProc f, IntPtr l);
+  [DllImport("user32.dll")] static extern IntPtr SendMessage(IntPtr h, uint m, IntPtr w, IntPtr l);
+  // child windows of a dialog: class|text (buttons and labels)
+  public static List<string> Children(long h) { var o = new List<string>(); EnumChildWindows(new IntPtr(h), (c, l) => { var s = new StringBuilder(1024); GetWindowText(c, s, 1024); var k = new StringBuilder(64); GetClassName(c, k, 64); if (s.Length > 0) o.Add(k + "|" + s); return true; }, IntPtr.Zero); return o; }
+  // answers a Yes/No question box with No (IDNO = 7)
+  public static void PressNo(long h) { SendMessage(new IntPtr(h), 0x111, new IntPtr(7), IntPtr.Zero); }
 }
 '@
 $WstOut = $Out; $WstLog = Join-Path $Out 'log.txt'; $WstCsv = Join-Path $Out 'results.csv'
@@ -78,7 +84,13 @@ $script:WstTimer.Add_Tick({
                 }
                 $b = $script:WstPlan[$script:WstI]; $script:WstBtn = $b
                 if (-not $b.Enabled) { Add-WstResult 'tool' $b.Text 'GREYED OUT' 'button disabled (not available on this PC)'; return }
+                if ($b.Tag -isnot [scriptblock] -and [string]$b.Tag.Exe -match '^ms-settings:') {
+                    # Settings reuses an open Settings window, so close it first or the page would not count as a NEW window
+                    foreach ($w in [WstSnap]::List()) { $q = $w -split '\|', 4; if ($q[3] -eq 'Settings') { [WstSnap]::Close([long]$q[0]) } }
+                    Start-Sleep -Milliseconds 1500
+                }
                 $script:WstBefore = @{}; foreach ($w in [WstSnap]::List()) { $script:WstBefore[($w -split '\|')[0]] = 1 }
+                $script:WstAsked = @()
                 if (-not $script:WstBefore0) { $script:WstBefore0 = $script:WstBefore.Clone() }
                 $script:WstClickAt = Get-Date; $script:WstWait = 0; $script:WstFound = @()
                 $script:WstIsInfo = ($b.Tag -is [scriptblock])
@@ -97,7 +109,10 @@ $script:WstTimer.Add_Tick({
                 $copy = $btns | Where-Object { $_.Text -eq 'Copy all' }; $save = $btns | Where-Object { $_.Text -eq 'Save as...' }; $close = $btns | Where-Object { $_.Text -eq 'Close' }
                 $safe = ($f2.Text -replace '[^A-Za-z0-9]+', '-').Trim('-')
                 try { [Windows.Forms.Clipboard]::Clear() } catch {}
-                $copy.PerformClick(); $clip = ''; try { $clip = [Windows.Forms.Clipboard]::GetText() } catch {}
+                $copy.PerformClick(); $clip = ''
+                # read back with retries: another program (VirtualBox's clipboard sync, a clipboard manager) can hold the clipboard
+                # for a moment, and a single read then returns nothing (seen on the Windows 10 test PC)
+                for ($r = 0; $r -lt 20 -and -not $clip; $r++) { try { $clip = [Windows.Forms.Clipboard]::GetText() } catch {}; if (-not $clip) { Start-Sleep -Milliseconds 100 } }
                 [IO.File]::WriteAllText((Join-Path $WstOut "info-$safe.txt"), $clip)
                 $before = @(Get-ChildItem $WstOut -Filter 'saved-*' -ErrorAction SilentlyContinue).Count
                 $save.PerformClick(); $saved = @(Get-ChildItem $WstOut -Filter 'saved-*' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime | Select-Object -Last 1)
@@ -118,6 +133,17 @@ $script:WstTimer.Add_Tick({
                     if ($script:WstBefore.ContainsKey($p[0]) -or ([int]$p[1] -eq $me -and $p[2] -ne '#32770')) { continue }
                     if ($script:WstFound -notcontains $w) { $script:WstFound += $w }
                 }
+                foreach ($w in @($script:WstFound)) {
+                    $q = $w -split '\|', 4
+                    if ($q[2] -ne '#32770' -or [int]$q[1] -eq $me) { continue }
+                    $kids = @([WstSnap]::Children([long]$q[0]))
+                    if (@($kids | Where-Object { $_ -match '^Button\|&?Yes$' }).Count -and @($kids | Where-Object { $_ -match '^Button\|&?No$' }).Count) {
+                        $txt = (($kids | Where-Object { $_ -match '^Static\|' } | ForEach-Object { ($_ -split '\|', 2)[1] }) -join ' ') -replace '\s+', ' '
+                        $script:WstAsked += "asked first: '$txt' -> answered No"
+                        [WstSnap]::PressNo([long]$q[0]); $script:WstFound = @($script:WstFound | Where-Object { $_ -ne $w })
+                        $script:WstBefore[$q[0]] = 1     # the question is closed; do not count it as the tool's window
+                    }
+                }
                 $own = @($script:WstFound | Where-Object { [int](($_ -split '\|')[1]) -eq $me })
                 $exp = $WstExpect[$script:WstBtn.Text]
                 $hit = @($script:WstFound | Where-Object { ($_ -split '\|', 4)[3] -match $exp })
@@ -126,7 +152,7 @@ $script:WstTimer.Add_Tick({
                     $secs = ((Get-Date) - $script:WstClickAt).TotalSeconds
                     $titles = ($script:WstFound | ForEach-Object { $q = $_ -split '\|', 4; try { $pn = (Get-Process -Id $q[1] -ErrorAction Stop).ProcessName } catch { $pn = '?' }; "'$($q[3])' [$pn]" }) -join ', '
                     $res = $(if ($own.Count) { 'ERROR MESSAGE' } elseif ($hit.Count) { 'PASS' } else { 'NO WINDOW' })
-                    Add-WstResult 'tool' $script:WstBtn.Text $res ("after {0:N1} s: {1}" -f $secs, $(if ($titles) { $titles } else { '(no new window in 15 s)' }))
+                    Add-WstResult 'tool' $script:WstBtn.Text $res ("after {0:N1} s: {1}{2}" -f $secs, $(if ($titles) { $titles } else { '(no new window in 15 s)' }), $(if ($script:WstAsked) { '; ' + ($script:WstAsked -join '; ') } else { '' }))
                     $script:WstState = 'close'; $script:WstWait = 0
                 }
             }

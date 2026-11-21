@@ -74,6 +74,8 @@ W ("Windows      : {0}  {1}  build {2}.{3}  ({4})" -f $os.Caption, $cv.DisplayVe
 W ("Language     : display {0}, format {1}, installed {2}" -f (Get-UICulture).Name, (Get-Culture).Name, ($os.MUILanguages -join ', '))
 W ("PC           : {0} {1}  ({2})" -f $cs.Manufacturer, $cs.Model, $(if ($cs.Model -match 'Virtual|VMware|VirtualBox|KVM|HVM' -or $cs.Manufacturer -match 'QEMU|Xen|innotek|Microsoft Corporation') { 'virtual machine' } else { 'physical PC' }))
 W ("Firmware     : {0}" -f $(if ($env:firmware_type) { $env:firmware_type } else { 'unknown' }))
+$netRel = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\NET Framework Setup\NDP\v4\Full' -ErrorAction SilentlyContinue).Release
+W (".NET         : {0} (release {1})" -f $(if ($netRel -ge 533320) { '4.8.1' } elseif ($netRel -ge 528040) { '4.8' } elseif ($netRel) { 'older than 4.8' } else { 'unknown' }), $netRel)
 W ("PowerShell   : {0}   Pester: {1}   admin: {2}" -f $PSVersionTable.PSVersion, ((Get-Module Pester -ListAvailable | Sort-Object Version -Descending | Select-Object -First 1).Version), $isAdmin)
 $wifi = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.PhysicalMediaType -match '802\.11' -or $_.InterfaceDescription -match 'Wi-?Fi|Wireless|WLAN' })
 $bt = @(Get-PnpDevice -Class Bluetooth -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'OK' -and $_.FriendlyName -match 'Bluetooth|Radio|Adapter' })
@@ -114,8 +116,10 @@ foreach ($n in 'Get-WindowsInfo', 'Get-NetInfo', 'Get-GpuInfo', 'Get-AudioInfo',
 Step '4 Window sizes on this PC (the tools open and close by themselves - please do not use the mouse)'
 $aud = Join-Path $Priv 'resize'
 & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Run-ResizeAudit.ps1') -OutDir $aud -Parallel -Sizes 'min,1280x680,75%,max' *> $null
+# the same at a simulated 150 % display: windows grow when they scale, so this shows where they open on this PC's .NET
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Run-ResizeAudit.ps1') -OutDir "$aud-150" -Parallel -Scale 1.5 -Sizes 'min,75%,max' *> $null
 if ([Windows.Forms.Screen]::AllScreens.Count -gt 1) { & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Run-ResizeAudit.ps1') -OutDir "$aud-monitors" -Sizes 'mon:2,min,maxon:2,mon:1,span,mon:2' *> $null }
-foreach ($o in $aud, "$aud-monitors") { $f = Join-Path $o 'summary.txt'; if (Test-Path $f) { $t = [IO.File]::ReadAllText($f); Save-Both "$(Split-Path $o -Leaf)-summary.txt" $t; W ("{0}: {1}" -f (Split-Path $o -Leaf), (($t -split "`r?`n" | Select-Object -Skip 3 | Where-Object { $_ -and $_ -notmatch 'Sizes actually' } | Select-Object -First 6) -join ' | ')) } }
+foreach ($o in $aud, "$aud-150", "$aud-monitors") { $f = Join-Path $o 'summary.txt'; if (Test-Path $f) { $t = [IO.File]::ReadAllText($f); Save-Both "$(Split-Path $o -Leaf)-summary.txt" $t; W ("{0}: {1}" -f (Split-Path $o -Leaf), (($t -split "`r?`n" | Select-Object -Skip 3 | Where-Object { $_ -and $_ -notmatch 'Sizes actually' } | Select-Object -First 6) -join ' | ')) } }
 
 # ---------- 5 + 6 as administrator ----------
 if ($isAdmin) {

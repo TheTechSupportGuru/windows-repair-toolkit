@@ -258,7 +258,15 @@ $__t = New-Object Windows.Forms.Timer; $__t.Interval = 400
 $__t.Add_Tick({
     $f = $__f
     if ($script:__wait -gt 0) { $script:__wait--; return }      # let a resolution change settle
-    if ($script:__i -ge 0) {
+    if (-not $script:__openChecked) {
+        # where the window OPENED (before any step): fully on its screen, apart from Windows' invisible 8 px resize border.
+        # (A window centred with its size from before scaling grew past the screen edge - 1.8.2; a Windows 10 unit test
+        # suggested .NET 4.8 may scale later than 4.8.1, so this is checked on every PC the audit runs on.)
+        $script:__openChecked = $true
+        $wa0 = [Windows.Forms.Screen]::FromControl($f).WorkingArea; $in0 = [Drawing.Rectangle]::Inflate($f.Bounds, -8, -8)
+        Add-Content $WrtAuditSizesFile ('{0,-36} opened    {1} on a work area of {2} ({3}, .NET release {4})' -f $WrtAudittag, $f.Bounds, $wa0, $f.WindowState, (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\NET Framework Setup\NDP\v4\Full' -ErrorAction SilentlyContinue).Release)
+        if ($f.WindowState -eq 'Normal' -and -not $wa0.Contains($in0)) { Add-Issue 'opened' '-' 'SCREEN' "the window opened partly off the screen: $($f.Bounds), work area $wa0" }
+    }    if ($script:__i -ge 0) {
         $st = $script:__plan[$script:__i]
         $tabName = if ($st[2]) { $st[2].Text } else { '(no tabs)' }
         if ($st[0] -match $script:__screenStep -and $script:__settledFor -ne $st[3]) {

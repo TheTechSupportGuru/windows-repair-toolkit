@@ -1,4 +1,4 @@
-﻿# Suite.Tests.ps1 - Phase 1 unit tests (Pester 3.4, Windows PowerShell 5.1)
+# Suite.Tests.ps1 - Phase 1 unit tests (Pester 3.4, Windows PowerShell 5.1)
 # Run:  powershell -NoProfile -ExecutionPolicy Bypass -Command "Invoke-Pester -Script .\Tests\Suite.Tests.ps1"
 # Nothing here elevates, opens a GUI, or touches the system outside HKCU:\Software\WinFixKitHarnessTest and %TEMP%.
 # diskpart / bcdedit / takeown / icacls / Start-Process are replaced by stub FUNCTIONS (functions win over .exe lookup).
@@ -441,11 +441,12 @@ Describe 'U17 Mount safety (V1.4): MSR refused, empty letter refused' {
         $rbStor = [pscustomobject]@{ Checked = $true }
         $msr = (Get-Partition -DiskNumber 0 | Where-Object Type -eq 'Reserved' | Select-Object -First 1).PartitionNumber
         $esp = (Get-Partition -DiskNumber 0 | Where-Object Type -eq 'System' | Select-Object -First 1).PartitionNumber
-        It "[$src] Test-IsMsr: disk 0 partition $msr (MSR) = true, partition $esp (EFI) = false" {
+        # an MBR disk (Legacy BIOS PC) has no MSR and no EFI partition: nothing to check there (seen on the Windows 10 test PC)
+        It "[$src] Test-IsMsr: disk 0 partition $msr (MSR) = true, partition $esp (EFI) = false" -Skip:(-not $msr) {
             Test-IsMsr 0 $msr | Should Be $true
             Test-IsMsr 0 $esp | Should Be $false
         }
-        It "[$src] Mount-Part refuses the MSR before touching anything" {
+        It "[$src] Mount-Part refuses the MSR before touching anything" -Skip:(-not $msr) {
             function Add-PartitionAccessPath { $global:Assigned++ }
             $global:Assigned = 0
             { Mount-Part 0 $msr 'S' } | Should Throw 'Microsoft Reserved'
@@ -704,7 +705,9 @@ Describe 'U13 firmware + BitLocker helpers (V1.3)' {
             $s = Get-BitLockerState $env:SystemDrive
             $s | Should Not BeNullOrEmpty
             $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-            if (-not $isAdmin) { $s | Should Match '^unknown' } else { $s | Should Match '^(On|Off)$' }
+            # as admin: On / Off - or 'unknown' when BitLocker's WMI really has no entry for the drive (Windows 10 test PC)
+            $ev = $null; try { $ev = Get-CimInstance -Namespace 'root\cimv2\Security\MicrosoftVolumeEncryption' -ClassName Win32_EncryptableVolume -Filter "DriveLetter='$env:SystemDrive'" -ErrorAction Stop } catch {}
+            if (-not $isAdmin) { $s | Should Match '^unknown' } elseif ($ev) { $s | Should Match '^(On|Off)$' } else { $s | Should Match '^unknown \(volume not found' }
         }
         It "[$src] Get-BitLockerState on a drive that does not exist -> unknown, not Off" { Get-BitLockerState 'Q:' | Should Match '^unknown' }
     }
