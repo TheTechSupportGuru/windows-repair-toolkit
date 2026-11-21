@@ -79,6 +79,24 @@ A 10-task report with long output, rendered by Edge (video acceleration) at 3840
 | Popups with the tool on monitor 2 | all on monitor 2 |
 | Start with a minimized / hidden start style, 6 tools at once | 36 / 36 normal |
 
+
+## System Info tab: every button (beta 5, run as administrator)
+
+`tests/Run-SystemInfoButtons.ps1` starts the beta WinSuperTool as administrator and clicks every button on the System Info tab through the real window. For each info window it checks the text, **Copy all** (the clipboard has every line of the window) and **Save as...** (the file has the same text; Windows' own Save dialog is answered with a fixed path). For each Windows-tool button it waits for a new window with the right title, then closes it without touching anything inside.
+
+| Buttons | Result |
+|---|---|
+| 7 info buttons | **7 / 7 pass**: Wi-Fi 0.6 s, Windows version and keys 1.3 s, network 3.6 s, Bluetooth 0.6 s, video 0.5 s (with the new Displays part), audio 1.1 s, everything in one report 1.7 s (78 lines). Copy all and Save as... correct in all 7. |
+| 42 Windows-tool buttons | **42 / 42 open the right tool**. 40 passed in the run. Windows Update and About this PC opened no NEW window because a Settings window was already open (Settings reuses it); run again as administrator with Settings closed, both opened their page. |
+
+Content checked by reading the full report: Windows 11 Pro 26H2, keys decoded, ACTIVATED, UEFI with Secure Boot on, the Ethernet adapter with addresses, gateway, DNS and DHCP, both displays, the default speaker and microphone with driver versions. The VM still has no Wi-Fi or Bluetooth adapter, so only their "none found" text could be checked.
+
+| # | Sev | Bug | Fixed |
+|---|---|---|---|
+| M6 | S4 | In **Everything in one report**, the Wi-Fi note "The WLAN AutoConfig service is not running" had no heading, so it read as part of the Bluetooth part above it. The network part started with a heading called just "Summary". | beta 5: every Wi-Fi note gets a heading ("Wi-Fi service"); "Network summary". |
+
+Notes for the test itself: DirectX Diagnostic ignores a close request while it is still collecting, and Optimize Drives did too; both were closed at the end.
+
 ## Not tested here (needs you at the VM)
 
 P1-P5 in the plan: the **main** monitor at 150 % / 200 % (needs signing out), dragging with the mouse (#M1 will show there), how the stretched text looks on the 150 % monitor, and an Automation run as administrator.

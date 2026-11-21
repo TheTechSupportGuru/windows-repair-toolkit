@@ -2495,10 +2495,11 @@ function ConvertFrom-DigitalProductId([byte[]]$id) {
 # ---- A1 Wi-Fi networks and passwords ----
 function Get-WifiInfo {
     $b = New-Object Collections.ArrayList
-    if (-not (Get-Command netsh.exe -ErrorAction SilentlyContinue)) { [void]$b.Add((InfoT 'netsh is not available here, so Wi-Fi networks cannot be read.' 'Warn')); return $b }
+    # (1.9 beta 5) every note gets a heading: in "Everything in one report" a note without one read as part of the Bluetooth part above it
+    if (-not (Get-Command netsh.exe -ErrorAction SilentlyContinue)) { [void]$b.Add((InfoH 'Wi-Fi')); [void]$b.Add((InfoT 'netsh is not available here, so Wi-Fi networks cannot be read.' 'Warn')); return $b }
     $svc = Get-Service WlanSvc -ErrorAction SilentlyContinue
-    if (-not $svc) { [void]$b.Add((InfoT 'This PC has no Wi-Fi service (WLAN AutoConfig is not installed), so there are no Wi-Fi networks to show.' 'Warn')); return $b }
-    if ($svc.Status -ne 'Running') { [void]$b.Add((InfoT 'The WLAN AutoConfig service is not running. Saved networks are shown if Windows can still read them.' 'Warn')) }
+    if (-not $svc) { [void]$b.Add((InfoH 'Wi-Fi')); [void]$b.Add((InfoT 'This PC has no Wi-Fi service (WLAN AutoConfig is not installed), so there are no Wi-Fi networks to show.' 'Warn')); return $b }
+    if ($svc.Status -ne 'Running') { [void]$b.Add((InfoH 'Wi-Fi service')); [void]$b.Add((InfoT 'The WLAN AutoConfig service is not running. Saved networks are shown if Windows can still read them.' 'Warn')) }
     $ifText = (& netsh.exe wlan show interfaces 2>$null) -join "`n"
     $connected = @([regex]::Matches($ifText, '(?m)^\s*SSID\s*:\s*(.+?)\s*$') | ForEach-Object { $_.Groups[1].Value })
     $tmp = Join-Path $env:windir ('Temp\wst-wifi-' + [guid]::NewGuid().ToString('N'))
@@ -2619,7 +2620,7 @@ function Get-NetInfo {
     $sorted = @($ads | Sort-Object @{ e = { if ($_.Status -eq 'Up') { 0 } else { 1 } } }, @{ e = { if ($metric.ContainsKey([int]$_.ifIndex)) { $metric[[int]$_.ifIndex] } else { 99999 } } }, ifIndex)
     $up = @($sorted | Where-Object { $_.Status -eq 'Up' })
     $inet = $sorted | Where-Object { $_.Status -eq 'Up' -and $metric.ContainsKey([int]$_.ifIndex) } | Select-Object -First 1
-    [void]$b.Add((InfoH 'Summary'))
+    [void]$b.Add((InfoH 'Network summary'))
     [void]$b.Add((InfoKV 'Adapters' ('{0} in total, {1} connected' -f $sorted.Count, $up.Count)))
     [void]$b.Add((InfoKV 'Internet goes through' $(if ($inet) { "$($inet.Name) ($($inet.InterfaceDescription))" } else { 'no default route - this PC is not connected to a network with internet' }) $(if ($inet) { 'Good' } else { 'Warn' })))
     $n = 0
