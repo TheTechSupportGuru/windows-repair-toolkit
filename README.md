@@ -237,4 +237,23 @@ How long this project has taken, as of **1.9 and Test Center 1.0 beta 1** (Novem
 
 *Updated at every major release. If the human column ever drops below the AI column, someone owes someone a coffee.*
 
+<details>
+<summary></summary>
+
+**How long it takes the human to re-read it all**
+
+| What | Words | Just reading (~230 words a minute) | Hunting for mistakes (~100 words a minute) | Marvelling at it |
+|---|---:|---:|---:|---:|
+| This page | ~3,600 | ~16 min | ~36 min | open-ended |
+| Every doc in the repo (change notes, test plans, results) | ~42,500 | ~3 h | ~7 h | open-ended |
+| Every release note | ~5,400 | ~25 min | ~55 min | open-ended |
+| The ~9,600 lines of tool code | - | ~5 h if you skim | ~2 working days | **the rest of your life** |
+| **Everything** | **~51,500** | **~9 h** | **~4 working days** | **forever** |
+
+Marvelling takes so long because, as far as we can tell, nothing else does all of this at once: boot repair, Safe Mode, deployment, log collection, a live monitor, AI log analysis, an automation queue that also repairs a Windows that won't start from Hiren's PE, and a test tool to check all of it. If you find one, please open an issue so we can be a little less smug.
+
+The "hunting for mistakes" column is not theoretical. One proofreading pass found five naming styles on the releases tab, a beta that never existed in the bug form, and a link to a folder that never left the PC.
+
+</details>
+
 </details>
