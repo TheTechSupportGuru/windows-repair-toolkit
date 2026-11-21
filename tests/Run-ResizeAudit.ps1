@@ -44,7 +44,7 @@ if (-not $Child) {
         if ($Shots) { $args2 += '-Shots' }
         # (the console is hidden by PowerShell itself, like the launchers do: a hidden START style would also apply to the
         # tool's window and can start it hidden or minimized)
-        $p = Start-Process powershell.exe -PassThru -ArgumentList $args2 -RedirectStandardError (Join-Path $OutDir "$tag.stderr.txt")
+        $p = Start-Process (Get-Process -Id $PID).Path -PassThru -ArgumentList $args2 -RedirectStandardError (Join-Path $OutDir "$tag.stderr.txt")
         $running += ,@($p, $tag)
         if (-not $Parallel) { $running = @(); if (-not $p.WaitForExit(600000)) { $p | Stop-Process -Force; Add-Content (Join-Path $OutDir 'issues.csv') "`"$tag`",`"-`",`"-`",`"TIMEOUT`",`"the audit did not finish`"" } }
     }

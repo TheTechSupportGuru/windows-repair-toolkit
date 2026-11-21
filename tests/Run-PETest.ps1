@@ -12,19 +12,26 @@
 #   2 boot configuration of each one, READ-ONLY (bcdedit /enum, clones, boot menu timeout, partition letters)
 #   3 real READ-ONLY offline scans read back by the summaries: DISM /image checkhealth + scanhealth,
 #     sfc /verifyonly /offwindir, chkdsk /scan
+#   A Automation on the offline Windows (1.9: the queue works on the Target Windows in WinPE), through the real tab:
+#     checks; options (stop on fail, popups and HTML off); a queue with tasks that need the running Windows must be
+#     refused; repair only if needed (DISM, SFC, chkdsk /f); full repairs (sfc /scannow, DISM restore health, component
+#     cleanup). The repair queues CHANGE the offline Windows when they find something - take a VM snapshot first, or
+#     use -NoRepairs.
 #   4 every GUI tool started for 20 s: does it open, does it report errors
 #   5 window sizes (resize audit, short)
 #   6 unit tests, if Pester is in this PE
 # Changes nothing (no repair, no boot change, no format; letters it adds are removed; every question is answered No) apart from writing the
 # results. Results: <first Windows drive>\WRT-PE-Results-<date> (so they are there after booting that Windows) and a
 # copy in X:\WRT-PE-Results. private\ = unmasked, share\ + WRT-PE-share.zip = masked: send that one.
-param([string]$OutDir = '', [switch]$NoGui)
+param([string]$OutDir = '', [switch]$NoGui, [switch]$NoRepairs)
 $ErrorActionPreference = 'Continue'
 $Repo = Split-Path $PSScriptRoot -Parent
 . (Join-Path $PSScriptRoot 'Harness.ps1')
 $IsWinPE = Test-Path 'HKLM:\SYSTEM\CurrentControlSet\Control\MiniNT'
 $NL = "`r`n"
 $stamp = Get-Date -Format 'yyyyMMdd-HHmm'
+# the PowerShell that runs this script (Windows PowerShell 5.1, or PowerShell 7 = pwsh.exe, as in Hiren's PE 10)
+$PsExe = (Get-Process -Id $PID).Path
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
 # masking: the same functions as the field test
@@ -153,6 +160,46 @@ if ($Win) {
     }
 } else { Step '2 + 3 skipped: no Windows installation to work on' }
 
+# ---------- A Automation on the offline Windows ----------
+if ($Win -and $IsWinPE -and $wf -eq 'loads') {
+    Step "A Automation on the offline Windows $Win (the real Automation tab; do not use the mouse)"
+    $runs = @(
+        @('A1-checks', @('-RealQueue', 'dism-check,dism-scan,sfc-verify,chkdsk-scan'), 'runs'),
+        @('A2-options', @('-RealQueue', 'dism-check,chkdsk-scan', '-StopOnFail', '-NoPopups', '-NoHtml'), 'runs'),
+        @('A3-refused', @('-RealQueue', 'dism-check,winupdate-check,defender'), 'refused')
+    )
+    if (-not $NoRepairs) {
+        $runs += ,@('A4-repair-if-needed', @('-RealQueue', 'dism-scan-fix,sfc-verify-fix,chkdsk-fix'), 'runs')
+        $runs += ,@('A5-full-repairs', @('-RealQueue', 'sfc-scannow,dism-restore,dism-cleanup'), 'runs')
+    } else { W '  repair queues A4 + A5 skipped (-NoRepairs)' }
+    foreach ($r in $runs) {
+        $o = Join-Path $Priv "auto-$($r[0])"
+        $a = @('-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSScriptRoot\Run-AutomationSmoke.ps1`"", '-Script', "`"$(Join-Path $Repo 'beta\WinSuperTool.ps1')`"", '-OutDir', "`"$o`"", '-Target', $Win) + $r[1]
+        $t0 = Get-Date; $pr = Start-Process $PsExe -PassThru -ArgumentList $a
+        if (-not $pr.WaitForExit(7200000)) { Stop-Process -Id $pr.Id -Force -ErrorAction SilentlyContinue; W "  $($r[0]): TIMEOUT after 2 hours"; continue }
+        $sumF = Join-Path $o 'automation-summary.txt'; $notF = Join-Path $o 'not-started.txt'
+        $opt = (Get-Content (Join-Path $o 'options.txt') -ErrorAction SilentlyContinue) -join '; '
+        if ($r[2] -eq 'refused') {
+            $why = @(Get-Content (Join-Path $o 'msgs.txt') -ErrorAction SilentlyContinue | Where-Object { $_ -match ' - needs the running Windows' } | ForEach-Object { $_.Trim() })
+            Check "$($r[0]): a queue with tasks that need the running Windows is refused" { ((Test-Path $notF) -and -not (Test-Path $sumF) -and $why.Count -eq 2), ($why -join ' | ') }
+            continue
+        }
+        $s = @(Get-Content $sumF -ErrorAction SilentlyContinue)
+        Check ("{0}: the queue ran on {1} ({2:N0} min)" -f $r[0], $Win, ((Get-Date) - $t0).TotalMinutes) { ($s.Count -gt 0 -and -not (Test-Path $notF)), (($s | Where-Object { $_ -match 'task\(s\) ran' }) -join '').Trim() }
+        foreach ($l in ($s | Where-Object { $_ -match '^\s+\d+\.\s' })) { W ("      " + (Protect-Text $l.Trim())) }
+        Check "$($r[0]): the summary names the offline Windows" { $w2 = ($s | Where-Object { $_ -match '^\s+Windows\s' }) -join ''; ($w2 -match [regex]::Escape($Win) -and $w2 -match 'offline'), $w2.Trim() }
+        # the commands, from the tool's activity log ("AUTOMATION 1/4: <task>  (<command>)")
+        $cmds = @(Get-Content (Join-Path $o 'WinSuperTool-Data\activity.log') -ErrorAction SilentlyContinue | Where-Object { $_ -match 'AUTOMATION \d+/\d+: .*\((.+)\)\s*$' } | ForEach-Object { $Matches[1] })
+        Check "$($r[0]): every task used the offline form (no /online)" { (@($cmds | Where-Object { $_ -match '/online' }).Count -eq 0 -and $cmds.Count -gt 0), ($cmds -join ' | ') }
+        $html = @(Get-ChildItem (Join-Path $o 'WinSuperTool-Data\Task-Results') -Filter '*Automation-report.html' -ErrorAction SilentlyContinue)
+        if ($opt -match 'html False') { Check "$($r[0]): no HTML report (option off)" { ($html.Count -eq 0), "$($html.Count) report(s)" } }
+        else { Check "$($r[0]): HTML report written and names the offline Windows" { ($html.Count -eq 1 -and ([IO.File]::ReadAllText($html[0].FullName) -match 'offline, from WinPE')), $(if ($html) { $html[0].Name } else { 'none' }) } }
+        $pops = @(Get-Content (Join-Path $o 'bounds.txt') -ErrorAction SilentlyContinue | Where-Object { $_ -match '^Task summary' }).Count
+        if ($opt -match 'popups False') { Check "$($r[0]): no per-task popups (option off)" { ($pops -eq 0), "$pops popup(s)" } } else { W "      per-task popups: $pops" }
+        Save-Both "auto-$($r[0]).txt" (($s -join "`r`n") + "`r`n`r`noptions: $opt`r`ncommands: " + ($cmds -join ' | '))
+    }
+} elseif ($Win) { Step 'A Automation skipped: needs WinPE and WinForms' }
+
 # ---------- 4 GUI tools start ----------
 if (-not $NoGui -and $wf -eq 'loads') {
     Step '4 Every GUI tool started for 20 s (do not use the mouse)'
@@ -160,7 +207,7 @@ if (-not $NoGui -and $wf -eq 'loads') {
     foreach ($g in $gui) {
         $name = "$($g.Directory.Name)\$($g.Name)"; $tr = Join-Path $Priv ("start-" + ($name -replace '\\', '-') + '.txt')
         $extra = if ($g.Name -eq 'WinFixKit.ps1') { " -DataRoot '$Priv\wfk-data'" } else { '' }
-        $p = Start-Process powershell.exe -PassThru -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-STA', '-Command', "Start-Transcript -Path '$tr' | Out-Null; & '$($g.FullName)'$extra; Stop-Transcript | Out-Null"
+        $p = Start-Process $PsExe -PassThru -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-STA', '-Command', "Start-Transcript -Path '$tr' | Out-Null; & '$($g.FullName)'$extra; Stop-Transcript | Out-Null"
         Start-Sleep -Seconds 20
         $p.Refresh(); $alive = -not $p.HasExited; $title = $p.MainWindowTitle
         if ($alive) { [void]$p.CloseMainWindow(); if (-not $p.WaitForExit(8000)) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue } }
@@ -171,7 +218,7 @@ if (-not $NoGui -and $wf -eq 'loads') {
     }
     # ---------- 5 window sizes ----------
     Step '5 Window sizes (short resize audit)'
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Run-ResizeAudit.ps1') -OutDir (Join-Path $Priv 'resize') -Parallel -Sizes 'min,75%,max' *> $null
+    & $PsExe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'Run-ResizeAudit.ps1') -OutDir (Join-Path $Priv 'resize') -Parallel -Sizes 'min,75%,max' *> $null
     $f = Join-Path $Priv 'resize\summary.txt'
     if (Test-Path $f) { $t = [IO.File]::ReadAllText($f); Save-Both 'resize-summary.txt' $t; W ("  " + (($t -split "`r?`n" | Select-Object -Skip 3 | Where-Object { $_ -and $_ -notmatch 'Sizes actually' } | Select-Object -First 8) -join ' | ')) } else { W '  no result' }
 } else { Step '4 + 5 skipped: WinForms does not load in this PE (or -NoGui)' }
@@ -180,7 +227,7 @@ if (-not $NoGui -and $wf -eq 'loads') {
 if (Get-Module Pester -ListAvailable) {
     Step '6 Unit tests'
     foreach ($s in 'Beta', 'Toolkit', 'Suite') {
-        $o = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "$s.Tests.ps1") 2>&1 | Out-String
+        $o = & $PsExe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "$s.Tests.ps1") 2>&1 | Out-String
         Save-Both "unit-$s.txt" $o
         $fail = @([regex]::Matches($o, '(?m)^\s*\[-\].*$') | ForEach-Object { $_.Value.Trim() })
         W ("  {0,-8} passed {1}, failed {2}" -f $s, ([regex]::Matches($o, '\[\+\]')).Count, $fail.Count); foreach ($x in $fail) { W "     $(Protect-Text $x)" }

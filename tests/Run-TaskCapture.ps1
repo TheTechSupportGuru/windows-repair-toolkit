@@ -38,7 +38,8 @@ if ($Elevated -and -not $Windows) {
     $jobs += @{ N = 'sfc-verifyonly';  K = 'sfc-verify'; Exe = 'sfc.exe';  A = @('/verifyonly') }
     $jobs += @{ N = 'dism-scanhealth'; K = 'dism-check'; Exe = 'dism.exe'; A = @('/online', '/cleanup-image', '/scanhealth') }
 }
-$ps = Join-Path $PSHOME 'powershell.exe'
+# the PowerShell that runs this script (Windows PowerShell 5.1, or PowerShell 7 = pwsh.exe, as in Hiren's PE 10)
+$ps = (Get-Process -Id $PID).Path
 foreach ($j in $jobs) {
     $line = $j.Exe + ' ' + ($j.A -join ' ')
     $call = "& '" + (Esc-Sq $j.Exe) + "' " + (($j.A | ForEach-Object { "'" + (Esc-Sq $_) + "'" }) -join ' ')

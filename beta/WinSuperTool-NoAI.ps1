@@ -2473,7 +2473,8 @@ $AutoCatalog = @(
     New-AutoTask 'dism-scan-fix' 'DISM: scan, repair only if corruption is found' 'dism-check' 'Runs DISM scan health. If it finds repairable corruption, DISM restore health is added right after it.' @('dism.log', 'CBS.log (full)') { param($o) @{ Call = (Get-ExeCall 'dism.exe' @('/online', '/cleanup-image', '/scanhealth')); Line = 'dism.exe /online /cleanup-image /scanhealth' } } @{ If = 'can be repaired'; Add = 'dism-restore'; Why = 'added because DISM found repairable corruption' }
     New-AutoTask 'dism-restore' 'DISM: restore health (repair)' 'dism-restore' 'Repairs the component store, downloading good files from Windows Update.' @('dism.log', 'CBS.log (full)') { param($o) @{ Call = (Get-ExeCall 'dism.exe' @('/online', '/cleanup-image', '/restorehealth')); Line = 'dism.exe /online /cleanup-image /restorehealth' } }
     New-AutoTask 'dism-cleanup' 'DISM: clean up the component store' 'dism-cleanup' 'Removes superseded versions of updated components (frees disk space). Old updates can no longer be uninstalled afterwards.' @('dism.log') { param($o) @{ Call = (Get-ExeCall 'dism.exe' @('/online', '/cleanup-image', '/startcomponentcleanup')); Line = 'dism.exe /online /cleanup-image /startcomponentcleanup' } }
-    New-AutoTask 'chkdsk-scan' 'Check disk: read-only scan of the system drive' 'chkdsk-scan' 'chkdsk <system drive> /scan - checks the file system online without fixing anything.' @() { param($o) @{ Call = (Get-ExeCall 'chkdsk.exe' @($env:SystemDrive, '/scan')); Line = "chkdsk.exe $env:SystemDrive /scan" } }
+    New-AutoTask 'chkdsk-scan' 'Check disk: read-only scan of the system drive' 'chkdsk-scan' 'chkdsk <system drive> /scan - checks the file system online without fixing anything. In WinPE: the drive of the Target Windows.' @() { param($o) @{ Call = (Get-ExeCall 'chkdsk.exe' @($env:SystemDrive, '/scan')); Line = "chkdsk.exe $env:SystemDrive /scan" } }
+    New-AutoTask 'chkdsk-fix' 'Check disk and REPAIR (WinPE only: chkdsk /f)' 'chkdsk-fix' 'WinPE only: chkdsk <drive> /f on the Target Windows while it is not running - checks the file system and fixes the errors it finds, straight away. On the running Windows use the Recovery tab instead (it schedules the repair for the next restart).' @() { param($o) throw 'only for an offline Windows (WinPE)' }
     New-AutoTask 'winupdate-check' 'Windows Update: check for updates (list only)' 'winupdate-check' 'Lists the updates Windows Update offers, without installing them.' @('Event: WindowsUpdateClient/Operational') { param($o) @{ Call = $AutoScriptWU.Replace('__INSTALL__', '$false'); Line = 'Windows Update API: search' } }
     New-AutoTask 'winupdate' 'Windows Update: download and install updates' 'winupdate' 'Downloads and installs the updates Windows Update offers (not optional driver updates). Updates that need you to click something are skipped. Some need a restart.' @('Event: WindowsUpdateClient/Operational') { param($o) @{ Call = $AutoScriptWU.Replace('__INSTALL__', '$true'); Line = 'Windows Update API: search, download, install' } }
     New-AutoTask 'winget-check' 'winget: list available app upgrades' 'winget-check' 'winget upgrade - lists the installed apps that have a newer version. Changes nothing.' @() { param($o) @{ Call = $AutoScriptWinget.Replace('upgrade --all --accept-source-agreements --accept-package-agreements --silent', 'upgrade --accept-source-agreements'); Line = 'winget upgrade --accept-source-agreements' } }
@@ -2485,6 +2486,35 @@ $AutoPresets = [ordered]@{
     'Repair Windows (restore point, DISM, SFC)'  = @('restore-point', 'dism-scan-fix', 'sfc-scannow', 'chkdsk-scan')
     'Update everything'                           = @('restore-point', 'winupdate', 'winget', 'defender')
     'Full maintenance'                            = @('restore-point', 'dism-scan-fix', 'sfc-verify-fix', 'winupdate', 'winget', 'defender', 'dism-cleanup')
+    'Offline repair (WinPE)'                      = @('dism-check', 'dism-scan-fix', 'sfc-verify-fix', 'chkdsk-scan', 'chkdsk-fix')
+}
+# ---- offline Automation (1.9): in WinPE the queue works on the Target Windows, which is not running ----
+# Only tasks that work on an offline Windows, with the same commands the Recovery tab uses for an offline install
+# (sfc /offbootdir /offwindir, dism /image: ... /scratchdir, chkdsk on that drive). Restore point, Windows Update, winget
+# and Defender need the running Windows.
+$AutoOffline = @{
+    'sfc-verify'     = { param($w) @{ Exe = 'sfc.exe'; Args = @('/verifyonly', "/offbootdir=$w\", "/offwindir=$w\Windows") } }
+    'sfc-verify-fix' = { param($w) @{ Exe = 'sfc.exe'; Args = @('/verifyonly', "/offbootdir=$w\", "/offwindir=$w\Windows") } }
+    'sfc-scannow'    = { param($w) @{ Exe = 'sfc.exe'; Args = @('/scannow', "/offbootdir=$w\", "/offwindir=$w\Windows") } }
+    'dism-check'     = { param($w) @{ Exe = 'dism.exe'; Args = @("/image:$w\", '/cleanup-image', '/checkhealth') } }
+    'dism-scan'      = { param($w) @{ Exe = 'dism.exe'; Args = @("/image:$w\", '/cleanup-image', '/scanhealth', "/scratchdir:$w\Windows\Temp") } }
+    'dism-scan-fix'  = { param($w) @{ Exe = 'dism.exe'; Args = @("/image:$w\", '/cleanup-image', '/scanhealth', "/scratchdir:$w\Windows\Temp") } }
+    'dism-restore'   = { param($w) @{ Exe = 'dism.exe'; Args = @("/image:$w\", '/cleanup-image', '/restorehealth', "/scratchdir:$w\Windows\Temp") } }
+    'dism-cleanup'   = { param($w) @{ Exe = 'dism.exe'; Args = @("/image:$w\", '/cleanup-image', '/startcomponentcleanup', "/scratchdir:$w\Windows\Temp") } }
+    'chkdsk-scan'    = { param($w) @{ Exe = 'chkdsk.exe'; Args = @($w, '/scan') } }
+    'chkdsk-fix'     = { param($w) @{ Exe = 'chkdsk.exe'; Args = @($w, '/f') } }
+}
+$AutoOfflineOnly = @('chkdsk-fix')
+# why a task cannot run here ('' = it can): in WinPE only the offline tasks, on a running Windows not the WinPE-only ones
+function Get-AutoWhyNot([string]$id) {
+    if ($IsWinPE) { if (-not $AutoOffline.ContainsKey($id)) { return 'needs the running Windows - it cannot run on an offline Windows from WinPE' } }
+    elseif ($AutoOfflineOnly -contains $id) { return 'only for an offline Windows: start WinSuperTool in WinPE (on the running Windows use the Recovery tab)' }
+    return ''
+}
+# the command of a task: the offline form when the run works on an offline Windows ($win = its drive)
+function Get-AutoCode($c, $opt, [string]$win = '') {
+    if ($win) { $w = $win.TrimEnd('\'); $x = & $AutoOffline[$c.Id] $w; return @{ Call = (Get-ExeCall $x.Exe $x.Args); Line = ('{0} {1}' -f $x.Exe, ($x.Args -join ' ')) } }
+    return (& $c.Code $opt)
 }
 $AutoMax = 10
 $AutoStateFile = Join-Path $DataDir 'automation.json'
@@ -2536,20 +2566,29 @@ function Update-AutoList {
 }
 function Set-AutoEditing([bool]$on) {
     foreach ($c in @($btnAutoAdd, $btnAutoUp, $btnAutoDown, $btnAutoRemove, $btnAutoClear, $btnAutoPreset, $cmbAutoPreset, $lstAutoCat, $chkAutoPop, $chkAutoStop, $chkAutoMon, $chkAutoSR, $chkAutoHtml)) { $c.Enabled = $on }
-    $btnAutoStart.Enabled = $on -and -not $IsWinPE; $btnAutoStopReq.Enabled = -not $on
+    $btnAutoStart.Enabled = $on; $btnAutoStopReq.Enabled = -not $on
 }
 function Start-AutoRun {
-    if ($IsWinPE) { Msg 'Automation runs on the running Windows only, not in WinPE.' 'Automation' 'Warning'; return }
     if (-not $script:AutoQueue.Count) { Msg 'Add at least one task to the queue first.' 'Automation' 'Warning'; return }
+    # WinPE: the queue works on the Target Windows (offline); only the tasks that can run on an offline Windows
+    $win = ''
+    if ($IsWinPE) {
+        $tw = Get-TargetWin
+        if (-not $tw) { Msg 'Select the Target Windows at the top first. In WinPE the queue works on that Windows, which is not running.' 'Automation' 'Warning'; return }
+        $win = [string]$tw.Drive
+    }
+    $bad = @($script:AutoQueue | Where-Object { Get-AutoWhyNot $_ })
+    if ($bad.Count) { Msg ("These tasks cannot run here:${NL}${NL}" + (($bad | ForEach-Object { '  ' + (Get-AutoCat $_).Name + ' - ' + (Get-AutoWhyNot $_) }) -join $NL) + "${NL}${NL}Remove them from the queue, then start again.") 'Automation' 'Warning'; return }
+    $where = if ($win) { "the OFFLINE Windows on $win (from WinPE)" } else { "THIS PC ($env:COMPUTERNAME)" }
     $names = (@($script:AutoQueue) | ForEach-Object { '  ' + (Get-AutoCat $_).Name }) -join $NL
-    if (-not (Ask "Run these $($script:AutoQueue.Count) task(s) on THIS PC ($env:COMPUTERNAME), one after another?${NL}${NL}$names${NL}${NL}Each task opens its own window. Some tasks change the system (repairs, updates, app upgrades). BETA feature." 'Start automation' 'Question' 'Button2')) { return }
+    if (-not (Ask "Run these $($script:AutoQueue.Count) task(s) on $where, one after another?${NL}${NL}$names${NL}${NL}Each task opens its own window. Some tasks change the system (repairs, updates, app upgrades). BETA feature." 'Start automation' 'Question' 'Button2')) { return }
     $script:AutoRun = New-Object Collections.ArrayList
     foreach ($id in $script:AutoQueue) { $c = Get-AutoCat $id; [void]$script:AutoRun.Add([pscustomobject]@{ Id = $id; Name = $c.Name; Auto = $false; Why = ''; Status = 'Waiting'; Find = ''; Ok = $null; Tone = ''; Rc = $null; Started = $null; Ended = $null; OutFile = ''; Quote = @(); Line = ''; Next = '' }) }
-    $script:Auto = @{ Running = $true; StopReq = $false; Index = -1; Started = (Get-Date); StopWhy = ''
+    $script:Auto = @{ Running = $true; StopReq = $false; Index = -1; Started = (Get-Date); StopWhy = ''; Win = $win
         Opt = @{ Popups = $chkAutoPop.Checked; StopOnFail = $chkAutoStop.Checked; Monitor = $chkAutoMon.Checked; EnableSR = $chkAutoSR.Checked } }
     Save-AutoState
     Set-AutoEditing $false
-    Log "AUTOMATION: started, $($script:AutoRun.Count) task(s)."
+    Log ("AUTOMATION: started, $($script:AutoRun.Count) task(s)." + $(if ($win) { " Offline Windows: $win (WinPE)." } else { '' }))
     Start-AutoNext
 }
 function Start-AutoNext {
@@ -2567,7 +2606,7 @@ function Start-AutoNext {
     Update-AutoList
     try {
         if ($A.Opt.Monitor) { [void](Start-TaskMonitors $c) }
-        $code = & $c.Code $A.Opt
+        $code = Get-AutoCode $c $A.Opt ([string]$A.Win)
         $r.Line = $code.Line
         Log "AUTOMATION $($A.Index + 1)/$($script:AutoRun.Count): $($c.Name)  ($($code.Line))"
         [void](Start-TaskWindow $c.Name $c.Kind $code.Line $code.Call $true $r)
@@ -2613,8 +2652,10 @@ function Get-AutoSummaryBlocks {
     if ($A.StopWhy) { [void]$b.Add((InfoT ('The queue ' + $A.StopWhy + '.') 'Warn')) }
     [void]$b.Add((InfoKV 'Started' ('{0:yyyy-MM-dd HH:mm:ss}' -f $A.Started)))
     [void]$b.Add((InfoKV 'Finished' ('{0:yyyy-MM-dd HH:mm:ss}  (took {1})' -f (Get-Date), (Format-Dur $A.Started (Get-Date)))))
-    $rb = @(Get-RebootPending)
-    [void]$b.Add((InfoKV 'Restart needed' $(if ($rb.Count) { 'YES - ' + ($rb -join ', ') } else { 'no' }) $(if ($rb.Count) { 'Warn' } else { 'Good' })))
+    if ($A.Win) { [void]$b.Add((InfoKV 'Windows' "$($A.Win) - offline, from WinPE")) }
+    $rb = if ($A.Win) { @() } else { @(Get-RebootPending) }
+    if ($A.Win) { [void]$b.Add((InfoKV 'Restart needed' 'not checked (offline Windows) - start it to finish any repair it still has pending')) }
+    else { [void]$b.Add((InfoKV 'Restart needed' $(if ($rb.Count) { 'YES - ' + ($rb -join ', ') } else { 'no' }) $(if ($rb.Count) { 'Warn' } else { 'Good' }))) }
     [void]$b.Add((InfoH 'Tasks'))
     $i = 0
     foreach ($r in $rows) {
@@ -2635,7 +2676,7 @@ function Export-AutoHtml([string]$path) {
     $pass = @($rows | Where-Object { $_.Status -eq 'PASSED' }).Count; $fail = @($rows | Where-Object { $_.Status -eq 'FAILED' }).Count
     $nr = @($rows | Where-Object { $_.Status -eq 'NOT RUN' }).Count; $skip = @($rows | Where-Object { $_.Status -eq 'Skipped' }).Count
     $attn = @($rows | Where-Object { $_.Status -eq 'PASSED' -and $_.Tone -ne 'Good' }).Count
-    $rb = @(Get-RebootPending)
+    $rb = if ($A.Win) { @() } else { @(Get-RebootPending) }
     # (parentheses: in @(a, b + c) the comma binds tighter than +, which split the text into separate items)
     $overall = if ($fail -or $nr) { @('bad', ("$fail FAILED" + $(if ($nr) { ", $nr DID NOT RUN" } else { '' }) + ", $pass passed - see the red rows")) }
                elseif ($attn) { @('warn', "ALL $pass TASKS RAN - $attn result(s) need attention (orange / red results)") }
@@ -2678,9 +2719,9 @@ footer { color:var(--mute); font-size:13px; margin-top:28px }
     [void]$sb.Append("<div class=""banner $($overall[0])"">$(ConvertTo-HtmlText $overall[1])</div>")
     $took = Format-Dur $A.Started $now
     [void]$sb.Append('<div class="facts">')
-    [void]$sb.Append("<span>PC: <b>$(ConvertTo-HtmlText $env:COMPUTERNAME)</b></span><span>Started: <b>$('{0:yyyy-MM-dd HH:mm:ss}' -f $A.Started)</b></span><span>Finished: <b>$('{0:yyyy-MM-dd HH:mm:ss}' -f $now)</b> ($took)</span>")
+    [void]$sb.Append("<span>$(if ($A.Win) { 'Windows: <b>' + (ConvertTo-HtmlText $A.Win) + ' (offline, from WinPE)</b>' } else { 'PC: <b>' + (ConvertTo-HtmlText $env:COMPUTERNAME) + '</b>' })</span><span>Started: <b>$('{0:yyyy-MM-dd HH:mm:ss}' -f $A.Started)</b></span><span>Finished: <b>$('{0:yyyy-MM-dd HH:mm:ss}' -f $now)</b> ($took)</span>")
     [void]$sb.Append("<span>Tasks: <b>$($rows.Count)</b> - $pass passed, $fail failed$(if ($nr) { ", $nr did not run" })$(if ($skip) { ", $skip skipped" })</span>")
-    [void]$sb.Append("<span>Restart needed: <b class=""res $(if ($rb.Count) { 'warn' } else { 'good' })"">$(if ($rb.Count) { 'YES - ' + (ConvertTo-HtmlText ($rb -join ', ')) } else { 'no' })</b></span>")
+    [void]$sb.Append("<span>Restart needed: <b class=""res $(if ($rb.Count) { 'warn' } else { 'good' })"">$(if ($A.Win) { 'not checked (offline Windows)' } elseif ($rb.Count) { 'YES - ' + (ConvertTo-HtmlText ($rb -join ', ')) } else { 'no' })</b></span>")
     if ($A.StopWhy) { [void]$sb.Append("<span class=""res warn"">The queue $(ConvertTo-HtmlText $A.StopWhy).</span>") }
     [void]$sb.Append('</div>')
     # ---- the summary table: one line per task ----
@@ -3451,6 +3492,7 @@ function Edit-AutoQueue([scriptblock]$change) {
 }
 function Add-AutoTask {
     $c = $lstAutoCat.SelectedItem; if (-not $c) { Msg 'Select a task on the left first.' 'Automation'; return }
+    $why = Get-AutoWhyNot $c.Id; if ($why) { Msg "$($c.Name): $why." 'Automation' 'Warning'; return }
     if ($script:AutoQueue.Count -ge $AutoMax) { Msg "The queue holds at most $AutoMax tasks." 'Automation' 'Warning'; return }
     Edit-AutoQueue { [void]$script:AutoQueue.Add($c.Id) }
     $lvAuto.Items[$lvAuto.Items.Count - 1].Selected = $true
@@ -3461,7 +3503,9 @@ $btnAutoAdd.Add_Click({ Safe { Add-AutoTask } })
 $btnAutoPreset.Add_Click({ Safe {
     $p = $AutoPresets[[string]$cmbAutoPreset.SelectedItem]; if (-not $p) { return }
     if ($script:AutoQueue.Count -and -not (Ask "Replace the $($script:AutoQueue.Count) queued task(s) with the preset '$($cmbAutoPreset.SelectedItem)'?" 'Automation')) { return }
+    $left = @($p | Where-Object { Get-AutoWhyNot $_ }); $p = @($p | Where-Object { -not (Get-AutoWhyNot $_) })
     Edit-AutoQueue { $script:AutoQueue.Clear(); foreach ($id in $p) { [void]$script:AutoQueue.Add($id) } }
+    if ($left.Count) { Msg ("Left out because they cannot run here:${NL}${NL}" + (($left | ForEach-Object { '  ' + (Get-AutoCat $_).Name + ' - ' + (Get-AutoWhyNot $_) }) -join $NL)) 'Automation' }
 } })
 # after a run the list shows its results (rows can include added repair tasks): the first edit click switches back to the queue
 function Test-AutoQueueShown { if ($script:AutoRun) { $script:AutoRun = $null; Update-AutoList; return $false }; return $true }

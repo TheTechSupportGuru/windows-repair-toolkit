@@ -9,8 +9,12 @@
 #   -RealQueue 'dism-check,sfc-verify,...' : real catalog tasks (needs admin; repairs / installs change the PC!)
 # Output: -OutDir (msgs.txt, popups.txt, automation-summary.txt, bounds.txt, timing.txt, WinSuperTool-Data\Task-Results)
 #   .\tests\Run-AutomationSmoke.ps1 -Script .\beta\WinSuperTool.ps1 -OutDir $env:TEMP\wrt-auto
+#   in WinPE: -Target C: -RealQueue 'dism-check,sfc-verify,chkdsk-scan'   (the queue works on that offline Windows)
+# A queue the tool refuses to start (for example a task that needs the running Windows, in WinPE) ends the run at once;
+# the refusal is in msgs.txt and not-started.txt is written.
 param([string]$Script = (Join-Path (Split-Path $PSScriptRoot -Parent) 'beta\WinSuperTool.ps1'), [string]$OutDir = (Join-Path $env:TEMP 'wrt-auto'),
-      [string]$RealQueue = '', [double]$Scale = 1.0, [switch]$StopOnFail, [switch]$NoPopups, [switch]$NoHtml)
+      [string]$RealQueue = '', [double]$Scale = 1.0, [switch]$StopOnFail, [switch]$NoPopups, [switch]$NoHtml,
+      [string]$Target = '')     # WinPE: the drive of the Target Windows to work on (offline), e.g. C:
 New-Item -ItemType Directory -Force $OutDir | Out-Null
 Set-Location $OutDir
 $src = [IO.File]::ReadAllText($Script)
@@ -80,7 +84,13 @@ $form.Add_Shown({
     $form.Refresh(); Save-Png $form 'tab-automation-before.png'
     $tpAuto.Controls | Sort-Object Top, Left | ForEach-Object { Add-Content (Join-Path $SmokeDir 'auto-layout.txt') ('{0,-12} {1,-45} y {2,4}-{3,4}  x {4,4}-{5,4}  anchor {6}' -f $_.GetType().Name, ($_.Text -replace '\s+', ' ').Substring(0, [Math]::Min(45, ($_.Text -replace '\s+', ' ').Length)), $_.Top, $_.Bottom, $_.Left, $_.Right, $_.Anchor) }; Add-Content (Join-Path $SmokeDir 'auto-layout.txt') ('page client {0}  display {1}  minsize {2}  form {3}' -f $tpAuto.ClientSize, $tpAuto.DisplayRectangle, $tpAuto.AutoScrollMinSize, $form.Size)
     $chkAutoPop.Checked = -not $NoPopups; $chkAutoStop.Checked = [bool]$StopOnFail; if (Get-Variable chkAutoHtml -ErrorAction SilentlyContinue) { $chkAutoHtml.Checked = -not $NoHtml }
+    if ($Target) {
+        Update-Windows
+        for ($k = 0; $k -lt $cmbWin.Items.Count; $k++) { if ($cmbWin.Items[$k].Drive -eq $Target.TrimEnd('\')) { $cmbWin.SelectedIndex = $k } }
+        Add-Content (Join-Path $SmokeDir 'options.txt') ("target: " + $(if ($cmbWin.SelectedItem) { $cmbWin.SelectedItem.Text } else { "$Target NOT FOUND in the Target Windows list" }))
+    }
     Start-AutoRun
+    if (-not $script:Auto.Running) { Set-Content (Join-Path $SmokeDir 'not-started.txt') 'the queue was not started (see msgs.txt)'; $script:Grab.Done = $true }
     $script:AutoShot = New-Object Windows.Forms.Timer; $script:AutoShot.Interval = 9000
     $script:AutoShot.Add_Tick({ Save-Png $form ('tab-automation-running-{0:HHmmss}.png' -f (Get-Date)); if (-not $script:Auto.Running) { $this.Stop() } })
     $script:AutoShot.Start()

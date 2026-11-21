@@ -22,7 +22,7 @@ $WinDir = $env:windir
 foreach ($v in 'tplFile', 'tplFilter', 'tplEvt', 'tplDir') { . ([scriptblock]::Create((Get-A $v))) }
 . ([scriptblock]::Create((Get-F 'New-MonItem'))); . ([scriptblock]::Create((Get-F 'Esc-Sq'))); . ([scriptblock]::Create((Get-F 'Start-Monitor')))
 . ([scriptblock]::Create((Get-A 'MonItems')))
-$script:MonProcs = New-Object Collections.ArrayList; $PsExePath = 'powershell.exe'
+$script:MonProcs = New-Object Collections.ArrayList; $PsExePath = (Get-Process -Id $PID).Path
 # capture the code Start-Monitor would launch instead of opening a window
 function Start-Process { param($FilePath, [switch]$PassThru, $ArgumentList) $global:LastEnc = $ArgumentList[-1]; [pscustomobject]@{ Id = 0; HasExited = $true } }
 function Get-MonCode($item, $tail) { $global:LastEnc = $null; Start-Monitor $item $tail; if (-not $global:LastEnc) { throw 'Start-Monitor was not captured' }; [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($global:LastEnc)) }
@@ -50,7 +50,7 @@ foreach ($a in $all) {
     $code = Get-MonCode $a.Item 20
     $enc = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($code))
     $o = Join-Path $OutDir ('{0:D2}.out.txt' -f $a.N); $e = Join-Path $OutDir ('{0:D2}.err.txt' -f $a.N)
-    $p = Microsoft.PowerShell.Management\Start-Process -FilePath powershell.exe -PassThru -WindowStyle Hidden -RedirectStandardOutput $o -RedirectStandardError $e -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $enc
+    $p = Microsoft.PowerShell.Management\Start-Process -FilePath $PsExePath -PassThru -WindowStyle Hidden -RedirectStandardOutput $o -RedirectStandardError $e -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $enc
     $a.P = $p; $a.Out = $o; $a.Err = $e
 }
 # wait until every window has printed its header (many PowerShell windows start at once, that can take a while)

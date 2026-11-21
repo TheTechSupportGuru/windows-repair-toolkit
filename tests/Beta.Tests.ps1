@@ -214,11 +214,13 @@ Describe 'B5 fallbacks and result file' {
 Describe 'B7 Automation catalog, presets and task scripts' {
     . ([scriptblock]::Create((Get-BetaFn 'Esc-Sq'))); . ([scriptblock]::Create((Get-BetaFn 'Get-ExeCall'))); . ([scriptblock]::Create((Get-BetaFn 'New-AutoTask')))
     . ([scriptblock]::Create((Get-BetaFn 'New-MonItem'))); $WinDir = 'C:\Windows'; . ([scriptblock]::Create((Get-BetaAssign 'MonItems')))
-    foreach ($v in 'AutoScriptRestore', 'AutoScriptWU', 'AutoScriptWinget', 'AutoScriptDefender', 'CbsSr', 'AutoCatalog', 'AutoPresets') { . ([scriptblock]::Create((Get-BetaAssign $v))) }
+    foreach ($v in 'AutoScriptRestore', 'AutoScriptWU', 'AutoScriptWinget', 'AutoScriptDefender', 'CbsSr', 'AutoCatalog', 'AutoPresets', 'AutoOffline', 'AutoOfflineOnly') { . ([scriptblock]::Create((Get-BetaAssign $v))) }
+    . ([scriptblock]::Create((Get-BetaFn 'Get-AutoWhyNot'))); . ([scriptblock]::Create((Get-BetaFn 'Get-AutoCode')))
     It 'every catalog task has rules, valid log names, and code that builds a call that parses' {
         foreach ($c in $AutoCatalog) {
             $TaskRules.ContainsKey($c.Kind) | Should Be $true
             foreach ($l in @($c.Logs)) { if ($l) { @($MonItems | Where-Object Name -eq $l).Count | Should Be 1 } }
+            if ($AutoOfflineOnly -contains $c.Id) { continue }       # WinPE only: no command on a running Windows
             $code = & $c.Code @{ EnableSR = $false }
             $code.Line | Should Not BeNullOrEmpty
             $tk2 = $null; $pe2 = $null; [void][Management.Automation.Language.Parser]::ParseInput($code.Call, [ref]$tk2, [ref]$pe2)
@@ -253,6 +255,35 @@ Describe 'B7 Automation catalog, presets and task scripts' {
             $names = @($a4.FindAll({ param($x) $x -is [Management.Automation.Language.VariableExpressionAst] }, $true) | ForEach-Object { $_.VariablePath.UserPath })
             @($names | Where-Object { $_ -match '^Wst' }).Count | Should Be 0
         }
+    }
+    It 'offline (WinPE, 1.9): every offline task builds a valid command for the Target Windows, never /online' {
+        foreach ($id in $AutoOffline.Keys) {
+            @($AutoCatalog | Where-Object Id -eq $id).Count | Should Be 1
+            $code = Get-AutoCode ($AutoCatalog | Where-Object Id -eq $id) @{} 'D:'
+            $tk2 = $null; $pe2 = $null; [void][Management.Automation.Language.Parser]::ParseInput($code.Call, [ref]$tk2, [ref]$pe2)
+            $pe2.Count | Should Be 0
+            $code.Line | Should Not Match '/online'
+            $code.Line | Should Match '/image:D:\\|/offwindir=D:\\Windows|^chkdsk\.exe D: /'
+        }
+        (Get-AutoCode ($AutoCatalog | Where-Object Id -eq 'sfc-scannow') @{} 'D:\').Line | Should Be 'sfc.exe /scannow /offbootdir=D:\ /offwindir=D:\Windows'
+        (Get-AutoCode ($AutoCatalog | Where-Object Id -eq 'dism-restore') @{} 'D:').Line | Should Be 'dism.exe /image:D:\ /cleanup-image /restorehealth /scratchdir:D:\Windows\Temp'
+        (Get-AutoCode ($AutoCatalog | Where-Object Id -eq 'dism-check') @{} '').Line | Should Match '/online'     # no Target: the running Windows
+    }
+    It 'offline: tasks that need the running Windows are refused in WinPE; the WinPE-only repair is refused on a running Windows' {
+        $IsWinPE = $true
+        foreach ($id in 'restore-point', 'winupdate-check', 'winupdate', 'winget-check', 'winget', 'defender') { Get-AutoWhyNot $id | Should Match 'running Windows' }
+        foreach ($id in $AutoOffline.Keys) { Get-AutoWhyNot $id | Should Be '' }
+        $IsWinPE = $false
+        Get-AutoWhyNot 'chkdsk-fix' | Should Match 'offline Windows'
+        foreach ($c in @($AutoCatalog | Where-Object { $AutoOfflineOnly -notcontains $_.Id })) { Get-AutoWhyNot $c.Id | Should Be '' }
+    }
+    It 'offline: "repair only if needed" chains stay offline, and the offline preset holds offline tasks only' {
+        foreach ($c in @($AutoCatalog | Where-Object { $_.Then -and $AutoOffline.ContainsKey($_.Id) })) { $AutoOffline.ContainsKey($c.Then.Add) | Should Be $true }
+        foreach ($id in $AutoPresets['Offline repair (WinPE)']) { $AutoOffline.ContainsKey($id) | Should Be $true }
+    }
+    It 'offline: chkdsk /f on an offline drive - its result wording (no restart question there)' {
+        (Get-TaskVerdict 'chkdsk-fix' "Windows has scanned the file system and found no problems.`r`nNo further action is required." 0).Find | Should Be 'NO PROBLEMS FOUND'
+        (Get-TaskVerdict 'chkdsk-fix' "Windows has made corrections to the file system.`r`nNo further action is required." 0).Find | Should Match 'FIX WORKED'
     }
     It 'winget list-only task does not upgrade' {
         (& ($AutoCatalog | Where-Object Id -eq 'winget-check').Code @{}).Call | Should Not Match '--all'
