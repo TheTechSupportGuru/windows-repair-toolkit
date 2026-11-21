@@ -125,7 +125,15 @@ $Win = if ($target.Count) { $target[0].Drive } else { '' }
 W ("  Target for the offline tests: {0}" -f $(if ($Win) { $Win } else { 'none - steps 2 and 3 are skipped' }))
 
 # where the results go: the target Windows (still there after booting it), else X:
-if (-not $OutDir) { $OutDir = $(if ($Win) { Join-Path "$Win\" "WRT-PE-Results-$stamp" } else { "X:\WRT-PE-Results-$stamp" }) }   # (a letter the test added is removed at the end, but the files stay on that volume)
+# results go to the RAM drive X: WHILE the test runs and are copied to the Windows drive only at the end: an open file on
+# the Windows drive keeps it in use, and "Check disk and REPAIR" (chkdsk /f) then has to ask to force a dismount (found in
+# the first Hiren's runs - answering No was right, the logs were being written there)
+$FinalDir = ''
+if (-not $OutDir) {
+    $OutDir = "X:\WRT-PE-Results-$stamp"
+    if (-not (Test-Path 'X:\')) { $OutDir = Join-Path $env:TEMP "WRT-PE-Results-$stamp" }
+    if ($Win) { $FinalDir = Join-Path "$Win\" "WRT-PE-Results-$stamp" }
+}
 $Priv = Join-Path $OutDir 'private'; $Share = Join-Path $OutDir 'share'
 New-Item -ItemType Directory -Force $Priv, $Share | Out-Null
 
@@ -188,7 +196,11 @@ if ($Win -and $IsWinPE -and $wf -eq 'loads') {
         $s = @(Get-Content $sumF -ErrorAction SilentlyContinue)
         Check ("{0}: the queue ran on {1} ({2:N0} min)" -f $r[0], $Win, ((Get-Date) - $t0).TotalMinutes) { ($s.Count -gt 0 -and -not (Test-Path $notF)), (($s | Where-Object { $_ -match 'task\(s\) ran' }) -join '').Trim() }
         foreach ($l in ($s | Where-Object { $_ -match '^\s+\d+\.\s' })) { W ("      " + (Protect-Text $l.Trim())) }
-        Check "$($r[0]): the summary names the offline Windows" { $w2 = ($s | Where-Object { $_ -match '^\s+Windows\s' }) -join ''; ($w2 -match [regex]::Escape($Win) -and $w2 -match 'offline'), $w2.Trim() }
+        if ($r[0] -eq 'A4-repair-if-needed') {
+            # the test's files are on X: now, so nothing holds the Windows drive open: chkdsk /f must run without a dismount question
+            $ck = ($s | Where-Object { $_ -match 'Check disk and REPAIR' }) -join ''
+            Check "$($r[0]): chkdsk /f ran on $Win straight away (the drive was free)" { ($ck -match 'NO PROBLEMS FOUND|FIX WORKED'), $ck.Trim() }
+        }        Check "$($r[0]): the summary names the offline Windows" { $w2 = ($s | Where-Object { $_ -match '^\s+Windows\s' }) -join ''; ($w2 -match [regex]::Escape($Win) -and $w2 -match 'offline'), $w2.Trim() }
         # the commands, from the tool's activity log ("AUTOMATION 1/4: <task>  (<command>)")
         $cmds = @(Get-Content (Join-Path $o 'WinSuperTool-Data\activity.log') -ErrorAction SilentlyContinue | Where-Object { $_ -match 'AUTOMATION \d+/\d+: .*\((.+)\)\s*$' } | ForEach-Object { $Matches[1] })
         Check "$($r[0]): every task used the offline form (no /online)" { (@($cmds | Where-Object { $_ -match '/online' }).Count -eq 0 -and $cmds.Count -gt 0), ($cmds -join ' | ') }
@@ -243,9 +255,11 @@ $all = $log -join "`r`n"
 [IO.File]::WriteAllText((Join-Path $Priv 'summary.txt'), $all); [IO.File]::WriteAllText((Join-Path $Share 'summary.txt'), (Protect-Text $all))
 $zip = Join-Path $OutDir 'WRT-PE-share.zip'
 try { Compress-Archive -Path (Join-Path $Share '*') -DestinationPath $zip -Force -ErrorAction Stop } catch { W "Could not zip (copy the share folder instead): $($_.Exception.Message)" }
-if ($OutDir -notlike 'X:*') { try { Copy-Item $OutDir "X:\WRT-PE-Results-$stamp" -Recurse -Force -ErrorAction Stop } catch {} }
-W "Results: $OutDir  (send WRT-PE-share.zip; private\ stays with you)"
-if ($Win) { W "After booting $Win normally, the folder is at $($OutDir -replace '^[A-Z]:', 'C:') (the drive letter may change)." }
+# everything is finished: now copy the results to the Windows drive, so they are there after booting it
+if ($FinalDir) {
+    try { Copy-Item $OutDir $FinalDir -Recurse -Force -ErrorAction Stop; W "Results: $FinalDir  (send WRT-PE-share.zip; private\ stays with you). A copy stays in $OutDir."; W "After booting $Win normally, the folder is at $($FinalDir -replace '^[A-Z]:', 'C:') (the drive letter may change)." }
+    catch { W "Could not copy the results to $FinalDir ($($_.Exception.Message)) - copy $OutDir to a USB stick before shutting down: X: is lost at shutdown." }
+} else { W "Results: $OutDir  (send WRT-PE-share.zip; private\ stays with you) - copy it to a USB stick before shutting down: X: is lost at shutdown." }
 
 # ---------- clean up: remove every letter this test added ----------
 foreach ($a in @($script:Added)) {

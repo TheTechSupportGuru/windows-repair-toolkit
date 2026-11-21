@@ -9,6 +9,9 @@ $ST  = 'WinSuperTool.ps1'
 $WRT = 'PS suite V1.1\WinRepairTool-startup.ps1'
 $WFK = 'WinFixKit.ps1'
 
+# WinPE (Hiren's): no user profile, no readable event logs, X: is a RAM drive - tests that need a running Windows are skipped there
+$InWinPE = Test-Path 'HKLM:\SYSTEM\CurrentControlSet\Control\MiniNT'
+
 function Log($m) { }
 function Msg($t, $c, $i) { $global:LastMsg = $t }
 
@@ -323,13 +326,13 @@ Describe 'U8a Take ownership + reset permissions refuses protected folders' {
             Test-ProtectedFolder "$L\Data" | Should BeNullOrEmpty
         } finally { $null = & subst.exe $L /D; Remove-Item $fq -Recurse -Force }
     }
-    It 'allows a normal data folder (Documents subfolder)' {
+    It 'allows a normal data folder (Documents subfolder)' -Skip:$InWinPE {
         $global:Took = @()
         $f = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'wfk-own-test'; New-Item -ItemType Directory $f -Force | Out-Null
         [void](& $run $f); $global:Took.Count | Should Be 1
         Remove-Item $f -Force
     }
-    It 'allows a data folder on the Desktop' {
+    It 'allows a data folder on the Desktop' -Skip:$InWinPE {
         $global:Took = @()
         $f = Join-Path ([Environment]::GetFolderPath('Desktop')) 'wfk-own-test2'; New-Item -ItemType Directory $f -Force | Out-Null
         [void](& $run $f); $global:Took.Count | Should Be 1
@@ -622,7 +625,7 @@ Describe 'U22 V1.7 WinFixKit safety: failed value restore, take-ownership backup
         (Get-Content "$script:RegKeyDir\v.json" -Raw | ConvertFrom-Json).RestoredAt | Should BeNullOrEmpty
     }
     Remove-Item $script:RegKeyDir -Recurse -Force
-    It 'take ownership aborts BEFORE takeown when the permission backup fails' {
+    It 'take ownership aborts BEFORE takeown when the permission backup fails' -Skip:$InWinPE {
         $run = Get-ActionRun $WFK 'Take ownership + reset permissions of a folder...'
         . ([scriptblock]::Create((Get-FnText $WFK 'Resolve-RealPath', 'Test-ProtectedFolder')))
         $script:ReportDir = $env:TEMP
@@ -655,7 +658,7 @@ Describe 'U23 V1.7 WinSuperTool: AI request survives bad files; mount ownership 
         [IO.File]::WriteAllBytes("$d\broken.evtx", [byte[]](1..200))
         (Read-LogForAi "$d\broken.evtx" 1000).Text | Should Match 'could not be read here'
     }
-    It 'empty .evtx is read as "(this event log contains no events)", not an exception' {
+    It 'empty .evtx is read as "(this event log contains no events)", not an exception' -Skip:$InWinPE {
         (Read-LogForAi "$d\empty.evtx" 1000).Text | Should Match 'contains no events'
     }
     It 'a broken image and an empty log do not cancel the request; the image is listed as not sent' {
@@ -686,7 +689,8 @@ Describe 'U23 V1.7 WinSuperTool: AI request survives bad files; mount ownership 
         function Log($m) { $global:LastLog = $m }
         $global:Unmounted = $null
         $script:Mounts = New-Object Collections.ArrayList
-        $m = [pscustomobject]@{ Letter = 'D'; Disk = 1; Partition = 2 }; [void]$script:Mounts.Add($m)   # D: exists on this VM (CD)
+        $other = @([IO.DriveInfo]::GetDrives() | ForEach-Object { $_.Name.Substring(0, 1) } | Where-Object { $_ -ne $env:SystemDrive.Substring(0, 1) })[0]   # an existing letter (D: = the CD on the test VM)
+        $m = [pscustomobject]@{ Letter = $other; Disk = 1; Partition = 2 }; [void]$script:Mounts.Add($m)
         Dismount-One $m | Should Be $false
         $global:Unmounted | Should BeNullOrEmpty
         $script:Mounts.Count | Should Be 0
@@ -768,7 +772,9 @@ Describe 'U15 QR pairing: a silent client cannot hold the GUI thread for long (V
 Describe 'U12 remembered mounts are only trusted if the letter still points at the same partition' {
     . ([scriptblock]::Create((Get-FnText $ST 'Load-Mounts', 'Test-LetterUsed', 'Test-MountStillOurs')))
     try { . ([scriptblock]::Create((Get-FnText $ST 'Sync-StorageCache', 'Get-LetterPartition'))) } catch { function Sync-StorageCache { } }   # V1.4+
-    $sys = Get-Partition -DriveLetter ($env:SystemDrive.Substring(0, 1))   # the real C: on this VM (read-only)
+    $sys = Get-Partition -DriveLetter ($env:SystemDrive.Substring(0, 1)) -ErrorAction SilentlyContinue   # the real C: on this VM (read-only)
+    if (-not $sys) { $sys = Get-Partition | Where-Object { [int][char]$_.DriveLetter -gt 0 } | Select-Object -First 1 }   # WinPE: X: is a RAM drive
+    $sysL = [string]$sys.DriveLetter
     $StateFile = Join-Path $env:TEMP ('wst-mounts-' + [guid]::NewGuid().ToString('N') + '.json')
     # Remembered from an earlier run: E-like mount on Disk 1 / Partition 2 ... but on THIS VM, D: is the CD-ROM drive.
     '[{"Letter":"D","Disk":1,"Partition":2}]' | Set-Content -LiteralPath $StateFile -Encoding UTF8
@@ -780,20 +786,20 @@ Describe 'U12 remembered mounts are only trusted if the letter still points at t
     foreach ($n in 1, 2, 3) {
         It "remembers $n mount(s) across a restart (Save-Mounts -> Load-Mounts)" {
             $script:Mounts = New-Object Collections.ArrayList
-            foreach ($i in 1..$n) { [void]$script:Mounts.Add([pscustomobject]@{ Letter = 'C'; Disk = [int]$sys.DiskNumber; Partition = [int]$sys.PartitionNumber }) }
+            foreach ($i in 1..$n) { [void]$script:Mounts.Add([pscustomobject]@{ Letter = $sysL; Disk = [int]$sys.DiskNumber; Partition = [int]$sys.PartitionNumber }) }
             Save-Mounts; Load-Mounts
             $script:Mounts.Count | Should Be $n
         }
     }
     It 'drops a remembered mount whose letter now belongs to a DIFFERENT partition' {
-        "[{`"Letter`":`"C`",`"Disk`":$($sys.DiskNumber),`"Partition`":$([int]$sys.PartitionNumber + 1)}]" | Set-Content -LiteralPath $StateFile -Encoding UTF8
+        "[{`"Letter`":`"$sysL`",`"Disk`":$($sys.DiskNumber),`"Partition`":$([int]$sys.PartitionNumber + 1)}]" | Set-Content -LiteralPath $StateFile -Encoding UTF8
         Load-Mounts
         $script:Mounts.Count | Should Be 0
     }
     It 'WinRepairTool copy: remembers 2 mounts and drops a stale one' {
         . ([scriptblock]::Create((Get-FnText $WRT 'Load-Mounts', 'Save-Mounts', 'Test-MountStillOurs')))
         $script:Mounts = New-Object Collections.ArrayList
-        1..2 | ForEach-Object { [void]$script:Mounts.Add([pscustomobject]@{ Letter = 'C'; Disk = [int]$sys.DiskNumber; Partition = [int]$sys.PartitionNumber }) }
+        1..2 | ForEach-Object { [void]$script:Mounts.Add([pscustomobject]@{ Letter = $sysL; Disk = [int]$sys.DiskNumber; Partition = [int]$sys.PartitionNumber }) }
         [void]$script:Mounts.Add([pscustomobject]@{ Letter = 'D'; Disk = 1; Partition = 2 })
         Save-Mounts; Load-Mounts
         $script:Mounts.Count | Should Be 2
@@ -890,7 +896,7 @@ Describe 'U26 standalone Monitor-Logs (V1.8)' {
         Start-Monitor ([pscustomobject]@{ Name = 'x'; Type = 'File'; Target = 'C:\x.log'; Extra = $null }) 20
         $script:procs.Count | Should Be 1
     }
-    It 'the event poller asks only for records newer than the last one (XPath), on the real System log' {
+    It 'the event poller asks only for records newer than the last one (XPath), on the real System log' -Skip:$InWinPE {
         $top = (Get-WinEvent -LogName System -MaxEvents 1).RecordId
         $n = @(Get-WinEvent -LogName System -FilterXPath "*[System[EventRecordID>$($top - 3)]]" -ErrorAction SilentlyContinue)
         $n.Count | Should BeLessThan 4

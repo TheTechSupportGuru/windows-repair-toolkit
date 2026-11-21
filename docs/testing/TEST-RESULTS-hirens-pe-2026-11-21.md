@@ -34,6 +34,25 @@
 
 The other stable unit tests that failed in PE 11 (protected profile folders, mount history, Dismount-One letter ownership, the live event poller) assume a running Windows with a user profile, a mount history and event logs - which a WinPE does not have. They are not tool problems; P2 also covers the folder tests' real concern.
 
-## Next
+## Second run (kit 08:55, with the fixes above)
 
-Run the kit again (ISO written 08:55, both folders): PE 11 for the Automation part, PE 10 for the Automation tasks under PowerShell 7.
+**Automation works on the offline Windows in both PEs - PE 10 under PowerShell 7 too** (the P1 fix).
+
+| Automation queue on C: (offline, from WinPE) | PE 11 | PE 10 (PowerShell 7) |
+|---|---|---|
+| A1 checks: DISM check health, DISM scan health, sfc /verifyonly, chkdsk /scan | 4 / 4 passed | 4 / 4 passed |
+| A2 options: stop on fail, no popups, no HTML report | 2 / 2 passed; no popups, no report | same |
+| A3 a queue with Windows Update + Defender | refused, both named with the reason | same |
+| A4 repair only if needed: DISM scan-fix, SFC verify-fix, chkdsk /f | DISM and SFC passed (nothing to repair); chkdsk /f **not run** (below) | same |
+| A5 full repairs: sfc /scannow, DISM restore health, component cleanup | 3 / 3 passed | 3 / 3 passed |
+| Every task used the offline form, summary + HTML report name the offline Windows | yes | yes |
+
+Also both: `bcdedit` reads the offline Windows' store (119 lines from `C:\Boot\BCD`), all offline scans 4 / 4, all 9 GUI scripts open, no window-size issues. Unit tests in PE 11: beta 54 / 54, toolkit 23 / 23, stable 260 / 270.
+
+| # | Finding | Fix |
+|---|---|---|
+| P5 | chkdsk /f asked to force a dismount of C:, and the person running the test rightly answered No: **the test was writing its results and logs to C:** (a test oversight). The tool reported it correctly as "NOT RUN - the volume is in use". | The test writes to the RAM drive X: while it runs and copies the results to the Windows drive at the very end; it now checks that chkdsk /f ran straight away. |
+| P6 | The same can happen to a person: WinSuperTool keeps its data and task logs next to itself, and when it is started from the Windows drive that chkdsk /f should repair, that drive is in use. | Starting a queue with "Check disk and REPAIR" warns first when the data folder is on that drive (answer N to chkdsk's question, or start WinSuperTool from a USB stick or X:). |
+| P7 | The 10 stable unit tests that failed in PE 11 assume a running Windows: user profile folders (in WinPE `X:\Users\Default`, which the new protection rightly refuses), an event log WinPE can read, the live System log, and the running system drive as a real partition (X: is a RAM drive; the CD drive letter differs). | In WinPE those tests use the first real partition / an existing letter, or are skipped with the reason. Not tool problems. |
+
+Next run (kit 10:15, both folders): A4 should now show chkdsk /f running on C:, and PE 11's stable unit tests should pass apart from the skipped ones.

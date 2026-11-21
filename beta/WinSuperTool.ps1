@@ -3182,6 +3182,11 @@ function Start-AutoRun {
     $bad = @($script:AutoQueue | Where-Object { Get-AutoWhyNot $_ })
     if ($bad.Count) { Msg ("These tasks cannot run here:${NL}${NL}" + (($bad | ForEach-Object { '  ' + (Get-AutoCat $_).Name + ' - ' + (Get-AutoWhyNot $_) }) -join $NL) + "${NL}${NL}Remove them from the queue, then start again.") 'Automation' 'Warning'; return }
     $where = if ($win) { "the OFFLINE Windows on $win (from WinPE)" } else { "THIS PC ($env:COMPUTERNAME)" }
+    # chkdsk /f needs the drive to itself: when this tool's own data folder (its task logs) is on that drive, chkdsk has to ask
+    # whether to force a dismount (found in the Hiren's PE test). Say so before starting.
+    if ($win -and (@($script:AutoQueue) -contains 'chkdsk-fix') -and ([IO.Path]::GetPathRoot($DataDir).TrimEnd('\') -ieq $win.TrimEnd('\'))) {
+        if (-not (Ask ("WinSuperTool keeps its data and task logs in $DataDir - on $win, the drive that 'Check disk and REPAIR' needs to itself.${NL}${NL}chkdsk will ask whether to force a dismount of ${win}: answer N (the task is then reported as not run). Better: start WinSuperTool from a USB stick or from X:.${NL}${NL}Start the queue anyway?") 'Check disk and REPAIR' 'Warning' 'Button2')) { return }
+    }
     $names = (@($script:AutoQueue) | ForEach-Object { '  ' + (Get-AutoCat $_).Name }) -join $NL
     if (-not (Ask "Run these $($script:AutoQueue.Count) task(s) on $where, one after another?${NL}${NL}$names${NL}${NL}Each task opens its own window. Some tasks change the system (repairs, updates, app upgrades). BETA feature." 'Start automation' 'Question' 'Button2')) { return }
     $script:AutoRun = New-Object Collections.ArrayList
