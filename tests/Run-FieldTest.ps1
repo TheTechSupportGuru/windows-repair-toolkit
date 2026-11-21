@@ -23,7 +23,7 @@ if ($Elevate -and -not $isAdmin) {
     try { Start-Process powershell.exe -Verb RunAs -ArgumentList $a -ErrorAction Stop; return } catch { Write-Host 'No administrator rights - running the checks that do not need them.' -ForegroundColor Yellow }
 }
 $Repo = Split-Path $PSScriptRoot -Parent
-$Beta = Join-Path $Repo 'beta\WinSuperTool.ps1'
+$Beta = Join-Path $Repo 'tools\WinSuperTool.ps1'
 if (-not $OutDir) { $OutDir = Join-Path ([Environment]::GetFolderPath('Desktop')) ('WRT-FieldTest-' + (Get-Date -Format 'yyyyMMdd-HHmm')) }
 $Priv = Join-Path $OutDir 'private'; $Share = Join-Path $OutDir 'share'
 New-Item -ItemType Directory -Force $Priv, $Share | Out-Null

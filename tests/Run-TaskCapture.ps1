@@ -6,8 +6,8 @@
 # file, then gives the output to the beta's Get-TaskVerdict - exactly what the Recovery tab and the Automation tab do.
 # Shows the verdict, the quoted lines and whether the wording was recognised ("matched") or the exit code decided
 # (matched=False: for example Windows in another display language). Run as administrator for sfc and DISM scanhealth.
-#   .\tests\Run-TaskCapture.ps1 -Script .\beta\WinSuperTool.ps1 -OutDir $env:TEMP\wrt-capture -Elevated
-param([string]$Script = (Join-Path (Split-Path $PSScriptRoot -Parent) 'beta\WinSuperTool.ps1'), [string]$OutDir = (Join-Path $env:TEMP 'wrt-capture'), [switch]$Elevated,
+#   .\tests\Run-TaskCapture.ps1 -Script .\tools\WinSuperTool.ps1 -OutDir $env:TEMP\wrt-capture -Elevated
+param([string]$Script = (Join-Path (Split-Path $PSScriptRoot -Parent) 'tools\WinSuperTool.ps1'), [string]$OutDir = (Join-Path $env:TEMP 'wrt-capture'), [switch]$Elevated,
       [string]$Windows = '')     # offline: the drive of a Windows that is not running (WinPE), e.g. D: - uses the tools' offline forms
 $ErrorActionPreference = 'Stop'
 $t = $null; $e = $null

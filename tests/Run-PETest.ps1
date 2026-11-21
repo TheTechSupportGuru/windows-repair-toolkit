@@ -163,7 +163,7 @@ if ($Win) {
     # ---------- 3 offline scans ----------
     Step "3 Offline scans of $Win read back by the summaries (read-only, 10-30 minutes)"
     if (-not $IsWinPE) { W "  skipped: this is not WinPE, so $Win is the RUNNING Windows (offline scans need it not running)"; $cap = '' } else {
-    $cap = & (Join-Path $PSScriptRoot 'Run-TaskCapture.ps1') -Script (Join-Path $Repo 'beta\WinSuperTool.ps1') -OutDir (Join-Path $Priv 'capture') -Windows $Win 2>&1 | Out-String
+    $cap = & (Join-Path $PSScriptRoot 'Run-TaskCapture.ps1') -Script (Join-Path $Repo 'tools\WinSuperTool.ps1') -OutDir (Join-Path $Priv 'capture') -Windows $Win 2>&1 | Out-String
     Save-Both 'scans.txt' $cap
     foreach ($l in ($cap -split "`r?`n" | Where-Object { $_ -match '^=== |FIND:|QUOTE:' })) { W "  $l" }
     }
@@ -183,7 +183,7 @@ if ($Win -and $IsWinPE -and $wf -eq 'loads') {
     } else { W '  repair queues A4 + A5 skipped (-NoRepairs)' }
     foreach ($r in $runs) {
         $o = Join-Path $Priv "auto-$($r[0])"
-        $a = @('-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSScriptRoot\Run-AutomationSmoke.ps1`"", '-Script', "`"$(Join-Path $Repo 'beta\WinSuperTool.ps1')`"", '-OutDir', "`"$o`"", '-Target', $Win) + $r[1]
+        $a = @('-NoProfile', '-STA', '-ExecutionPolicy', 'Bypass', '-File', "`"$PSScriptRoot\Run-AutomationSmoke.ps1`"", '-Script', "`"$(Join-Path $Repo 'tools\WinSuperTool.ps1')`"", '-OutDir', "`"$o`"", '-Target', $Win) + $r[1]
         $t0 = Get-Date; $pr = Start-Process $PsExe -PassThru -ArgumentList $a
         if (-not $pr.WaitForExit(7200000)) { Stop-Process -Id $pr.Id -Force -ErrorAction SilentlyContinue; W "  $($r[0]): TIMEOUT after 2 hours"; continue }
         $sumF = Join-Path $o 'automation-summary.txt'; $notF = Join-Path $o 'not-started.txt'
@@ -216,7 +216,7 @@ if ($Win -and $IsWinPE -and $wf -eq 'loads') {
 # ---------- 4 GUI tools start ----------
 if (-not $NoGui -and $wf -eq 'loads') {
     Step '4 Every GUI tool started for 20 s (do not use the mouse)'
-    $gui = @(Get-ChildItem (Join-Path $Repo 'tools'), (Join-Path $Repo 'beta') -Filter *.ps1 | Where-Object { [IO.File]::ReadAllText($_.FullName) -match 'Windows\.Forms\.Form' })
+    $gui = @(Get-ChildItem (Join-Path $Repo 'tools') -Filter *.ps1 | Where-Object { [IO.File]::ReadAllText($_.FullName) -match 'Windows\.Forms\.Form' })
     foreach ($g in $gui) {
         $name = "$($g.Directory.Name)\$($g.Name)"; $tr = Join-Path $Priv ("start-" + ($name -replace '\\', '-') + '.txt')
         $extra = if ($g.Name -eq 'WinFixKit.ps1') { " -DataRoot '$Priv\wfk-data'" } else { '' }

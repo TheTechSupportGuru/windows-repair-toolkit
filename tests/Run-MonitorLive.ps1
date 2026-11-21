@@ -5,7 +5,7 @@
 # folder, and a pasted path that only appears after the window opened.
 # Start elevated (CBS.log and the Security log need admin). Writes one test event (ID 9999 / 9998) to the
 # "Windows PowerShell" log with its existing "PowerShell" source; everything else is temp files.
-param([string]$Script = (Join-Path (Split-Path $PSScriptRoot -Parent) 'beta\WinSuperTool.ps1'),
+param([string]$Script = (Join-Path (Split-Path $PSScriptRoot -Parent) 'tools\WinSuperTool.ps1'),
       [string]$OutDir = 'C:\Users\Public\wst-monitor-test', [int]$Seconds = 14)
 $ErrorActionPreference = 'Continue'
 Remove-Item $OutDir -Recurse -Force -ErrorAction SilentlyContinue; New-Item -ItemType Directory -Force $OutDir | Out-Null

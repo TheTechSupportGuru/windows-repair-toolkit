@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
 # Run-SystemInfoButtons.ps1 - run AS ADMINISTRATOR:
-#   powershell -STA -ExecutionPolicy Bypass -File .\tests\Run-SystemInfoButtons.ps1 -Beta .\beta\WinSuperTool.ps1 -Out C:\Users\Public\wst-sysinfo-test
+#   powershell -STA -ExecutionPolicy Bypass -File .\tests\Run-SystemInfoButtons.ps1 -Beta .\tools\WinSuperTool.ps1 -Out C:\Users\Public\wst-sysinfo-test
 # Close any open Settings window first (a Settings page reuses it, and the test only counts NEW windows).
 # System Info test: runs the beta WinSuperTool (as administrator) and drives its System Info tab through the real buttons.
 #  - every info button: its window opens, text, timing, "Copy all" (clipboard = window text), "Save as..." (file written)

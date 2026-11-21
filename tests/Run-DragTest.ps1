@@ -11,7 +11,7 @@
 # (about 30 s per tool). Output: %TEMP%\wrt-drag-test\summary.txt
 #   .\tests\Run-DragTest.ps1                         (Collect-Logs, WinSuperTool and the beta)
 #   .\tests\Run-DragTest.ps1 -Scripts tools\WinFixKit.ps1
-param([string[]]$Scripts = @('tools\Collect-Logs.ps1', 'tools\WinSuperTool.ps1', 'beta\WinSuperTool.ps1'),
+param([string[]]$Scripts = @('tools\Collect-Logs.ps1', 'tools\WinSuperTool.ps1', 'tools\WinSuperTool.ps1'),
       [string]$OutDir = (Join-Path $env:TEMP 'wrt-drag-test'), [string]$Child = '')
 $ErrorActionPreference = 'Continue'
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing

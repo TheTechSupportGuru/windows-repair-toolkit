@@ -1,7 +1,7 @@
 # Beta.Tests.ps1 - unit tests for the WinSuperTool 1.9 BETA (beta\WinSuperTool.ps1): Recovery tab task summaries.
 # Reads the beta script with the PowerShell parser only (no GUI, no admin, no system changes).
 #   Invoke-Pester .\tests\Beta.Tests.ps1
-$BetaPath = Join-Path (Split-Path $PSScriptRoot -Parent) 'beta\WinSuperTool.ps1'
+$BetaPath = Join-Path (Split-Path $PSScriptRoot -Parent) 'tools\WinSuperTool.ps1'
 $tk = $null; $pe = $null
 $BetaAst = [Management.Automation.Language.Parser]::ParseFile($BetaPath, [ref]$tk, [ref]$pe)
 function Get-BetaFn([string]$n) {
@@ -27,10 +27,10 @@ Describe 'B1 beta script basics' {
         $pe.Count | Should Be 0
         @([IO.File]::ReadAllBytes($BetaPath) | Where-Object { $_ -gt 127 }).Count | Should Be 0
     }
-    It 'says BETA in its version line and window title' {
+    It 'is the stable 1.9: no BETA in its version line or window title (promoted from the beta)' {
         $t = [IO.File]::ReadAllText($BetaPath)
-        $t | Should Match '# Version 1\.9 BETA \d'
-        (Get-BetaAssign 'AppName') | Should Match 'BETA'
+        $t | Should Match '# Version 1\.9[ .]'; $t | Should Not Match '# Version 1\.9 BETA'
+        (Get-BetaAssign 'AppName') | Should Not Match 'BETA'
     }
     It 'every Recovery tool Kind has rules, and every Logs name is a Live Monitor item' {
         . ([scriptblock]::Create((Get-BetaFn 'New-MonItem'))); $WinDir = 'C:\Windows'

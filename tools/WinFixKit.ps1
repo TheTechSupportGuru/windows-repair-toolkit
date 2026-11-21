@@ -1,4 +1,4 @@
-# Version 1.8.4 (2026-11-20). What changed: docs/changes/V1.8.4.md
+# Version 1.9 (2026-11-21). What changed: docs/changes/V1.9.md
 # Windows Repair Toolkit - https://github.com/TheTechSupportGuru/windows-repair-toolkit
 # Copyright (C) 2026 TheTechSupportGuru
 # SPDX-License-Identifier: GPL-3.0-or-later

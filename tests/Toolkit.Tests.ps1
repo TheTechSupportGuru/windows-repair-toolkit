@@ -3,8 +3,8 @@
 # Reads the scripts with the PowerShell parser only (no GUI, no admin, no system changes).
 #   Invoke-Pester .\tests\Toolkit.Tests.ps1
 $Root = Split-Path $PSScriptRoot -Parent
-$Ps1 = @(Get-ChildItem (Join-Path $Root 'tools'), (Join-Path $Root 'beta') -Filter *.ps1)
-$Bat = @(Get-ChildItem (Join-Path $Root 'tools'), (Join-Path $Root 'beta') -Filter *.bat)
+$Ps1 = @(Get-ChildItem (Join-Path $Root 'tools') -Filter *.ps1)
+$Bat = @(Get-ChildItem (Join-Path $Root 'tools') -Filter *.bat)
 $GuiTools = @($Ps1 | Where-Object { [IO.File]::ReadAllText($_.FullName) -match 'Windows\.Forms\.Form' })
 function Get-HelperBlock([string]$text) {
     $m = [regex]::Match($text, '(?s)#  Window helpers - the same block in every Windows Repair Toolkit tool.*?\nfunction Complete-WrtWindow \{.*?\n\}')
@@ -39,7 +39,7 @@ Describe 'T2 window helpers: display scaling, splash, resizing (all GUI tools)' 
         $first = Get-HelperBlock ([IO.File]::ReadAllText($GuiTools[0].FullName))
         $first.Length | Should BeGreaterThan 1000
         foreach ($f in $GuiTools) { if ((Get-HelperBlock ([IO.File]::ReadAllText($f.FullName))) -ne $first) { throw "$($f.Name): helper block differs" } }
-        $GuiTools.Count | Should BeGreaterThan 7
+        $GuiTools.Count | Should BeGreaterThan 6        # 7 in tools\ (and a beta's scripts, when there is one)
     }
     It 'the process is made DPI-aware before any window, and every form scales with the display' {
         foreach ($f in $GuiTools) {
@@ -128,7 +128,7 @@ Describe 'T2 window helpers: display scaling, splash, resizing (all GUI tools)' 
 }
 
 Describe 'T3 no-AI edition of WinSuperTool' {
-    foreach ($dir in 'tools', 'beta') {
+    foreach ($dir in 'tools') {
         It "$dir\WinSuperTool-NoAI.ps1 is up to date with $dir\WinSuperTool.ps1 (rebuilt and compared)" {
             $tmp = Join-Path $env:TEMP ('wst-noai-' + [guid]::NewGuid().ToString('N')); New-Item -ItemType Directory $tmp | Out-Null
             try {
@@ -165,22 +165,22 @@ Describe 'T3 no-AI edition of WinSuperTool' {
 
 Describe 'T5 PowerShell for task windows (1.9: WinPE with PowerShell 7 only, as in Hiren''s PE 10)' {
     It 'every tool that starts task / log windows falls back to the PowerShell it runs in when Windows PowerShell is missing' {
-        foreach ($f in 'tools\WinSuperTool.ps1', 'tools\WinRepairTool-startup.ps1', 'tools\Monitor-Logs.ps1', 'beta\WinSuperTool.ps1') {
+        foreach ($f in @('tools\WinSuperTool.ps1', 'tools\WinRepairTool-startup.ps1', 'tools\Monitor-Logs.ps1', 'beta\WinSuperTool.ps1') | Where-Object { Test-Path (Join-Path $Root $_) }) {
             $t = [IO.File]::ReadAllText((Join-Path $Root $f))
             $t | Should Match '\$PsExePath = [^\r\n]*powershell\.exe''; if \(-not \[IO\.File\]::Exists\(\$PsExePath\)\) \{ \$PsExePath = \(Get-Process -Id \$PID\)\.Path \}'
         }
         [IO.File]::ReadAllText((Join-Path $Root 'tools\WinFixKit.ps1')) | Should Match 'Start-Process \$wfkPs -ArgumentList'
     }
     It 'WinSuperTool minimizes its console WITHOUT activating another window (with 6 the main window was minimized when a monitor was removed)' {
-        foreach ($f in 'tools\WinSuperTool.ps1', 'tools\WinSuperTool-NoAI.ps1', 'beta\WinSuperTool.ps1', 'beta\WinSuperTool-NoAI.ps1') {
+        foreach ($f in @('tools\WinSuperTool.ps1', 'tools\WinSuperTool-NoAI.ps1', 'beta\WinSuperTool.ps1', 'beta\WinSuperTool-NoAI.ps1') | Where-Object { Test-Path (Join-Path $Root $_) }) {
             $t = [IO.File]::ReadAllText((Join-Path $Root $f))
             $t | Should Match 'ShowWindow\(\$hCon, 7\)'
             $t | Should Not Match 'ShowWindow\(\$hCon, 6\)'
         }
     }
 }
-Describe 'T4 beta: HTML Automation report' {
-    $tk = $null; $pe = $null; $ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $Root 'beta\WinSuperTool.ps1'), [ref]$tk, [ref]$pe)
+Describe 'T4 WinSuperTool: HTML Automation report' {
+    $tk = $null; $pe = $null; $ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $Root 'tools\WinSuperTool.ps1'), [ref]$tk, [ref]$pe)
     foreach ($n in 'ConvertTo-HtmlText', 'Export-AutoHtml', 'Format-Dur', 'Read-TaskResult') { . ([scriptblock]::Create($ast.Find({ param($x) $x -is [Management.Automation.Language.FunctionDefinitionAst] -and $x.Name -eq $n }, $true).Extent.Text)) }
     function Get-RebootPending { @('Windows Update') }
     $AppName = 'Windows Super Tool TEST'

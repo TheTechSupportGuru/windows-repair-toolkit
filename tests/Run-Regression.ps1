@@ -18,7 +18,7 @@
 #   .\tests\Run-Regression.ps1                                   (the beta)
 #   .\tests\Run-Regression.ps1 -Script .\tools\WinSuperTool.ps1  (after the beta is promoted)
 #   .\tests\Run-Regression.ps1 -Parts A,C,F                      (some parts only)
-param([string]$Script = (Join-Path (Split-Path $PSScriptRoot -Parent) 'beta\WinSuperTool.ps1'),
+param([string]$Script = (Join-Path (Split-Path $PSScriptRoot -Parent) 'tools\WinSuperTool.ps1'),
       [string]$OutDir = ('C:\Users\Public\wrt-regression-' + (Get-Date -Format 'yyyyMMdd-HHmm')),
       [string[]]$Parts = @('A', 'B', 'C', 'C2', 'D', 'E', 'F'), [switch]$Repairs, [switch]$Installs)
 $ErrorActionPreference = 'Continue'

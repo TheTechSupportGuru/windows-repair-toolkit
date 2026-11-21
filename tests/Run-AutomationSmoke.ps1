@@ -8,11 +8,11 @@
 #   no -RealQueue : harmless TEST tasks (one finds "repairable corruption" -> the repair is added, one fails)
 #   -RealQueue 'dism-check,sfc-verify,...' : real catalog tasks (needs admin; repairs / installs change the PC!)
 # Output: -OutDir (msgs.txt, popups.txt, automation-summary.txt, bounds.txt, timing.txt, WinSuperTool-Data\Task-Results)
-#   .\tests\Run-AutomationSmoke.ps1 -Script .\beta\WinSuperTool.ps1 -OutDir $env:TEMP\wrt-auto
+#   .\tests\Run-AutomationSmoke.ps1 -Script .\tools\WinSuperTool.ps1 -OutDir $env:TEMP\wrt-auto
 #   in WinPE: -Target C: -RealQueue 'dism-check,sfc-verify,chkdsk-scan'   (the queue works on that offline Windows)
 # A queue the tool refuses to start (for example a task that needs the running Windows, in WinPE) ends the run at once;
 # the refusal is in msgs.txt and not-started.txt is written.
-param([string]$Script = (Join-Path (Split-Path $PSScriptRoot -Parent) 'beta\WinSuperTool.ps1'), [string]$OutDir = (Join-Path $env:TEMP 'wrt-auto'),
+param([string]$Script = (Join-Path (Split-Path $PSScriptRoot -Parent) 'tools\WinSuperTool.ps1'), [string]$OutDir = (Join-Path $env:TEMP 'wrt-auto'),
       [string]$RealQueue = '', [double]$Scale = 1.0, [switch]$StopOnFail, [switch]$NoPopups, [switch]$NoHtml,
       [string]$Target = '')     # WinPE: the drive of the Target Windows to work on (offline), e.g. C:
 New-Item -ItemType Directory -Force $OutDir | Out-Null

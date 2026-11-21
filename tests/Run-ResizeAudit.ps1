@@ -32,7 +32,7 @@ $Root = Split-Path $PSScriptRoot -Parent
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 
 if (-not $Child) {
-    if (-not $Scripts.Count) { $Scripts = @(Get-ChildItem (Join-Path $Root 'tools'), (Join-Path $Root 'beta') -Filter *.ps1 | Where-Object { [IO.File]::ReadAllText($_.FullName) -match 'Windows\.Forms\.Form' } | ForEach-Object { $_.FullName }) }
+    if (-not $Scripts.Count) { $Scripts = @(Get-ChildItem (Join-Path $Root 'tools') -Filter *.ps1 | Where-Object { [IO.File]::ReadAllText($_.FullName) -match 'Windows\.Forms\.Form' } | ForEach-Object { $_.FullName }) }
     Remove-Item $OutDir -Recurse -Force -ErrorAction SilentlyContinue; New-Item -ItemType Directory -Force $OutDir | Out-Null
     $screenSteps = @($Sizes -split ',' | Where-Object { $_ -match '^(res|mon|span|maxon|dpi\d|solo|extend)' })
     if ($Parallel -and $screenSteps.Count) { Write-Warning "screen steps ($($screenSteps -join ', ')) change the screen for every tool: running one tool at a time"; $Parallel = $false }
