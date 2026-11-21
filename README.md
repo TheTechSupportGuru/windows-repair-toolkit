@@ -157,7 +157,16 @@ Earlier phases also ran every WinFixKit fix and undo as admin, the network reset
 
 ### Test Center: run the tests yourself
 
-**Test Center** ([`tests/TestCenter.ps1`](tests/TestCenter.ps1)) is one window for every test that is run regularly. It has a tab per tool (Whole toolkit, WinSuperTool, WinFixKit, Log tools, Other PCs / WinPE) with a tick box per test. Tick what you want and press **Run selected**. The tests then run one after the other, and each one's results and a `report.txt` go to `C:\Users\Public\wrt-testcenter-<date>`. A test that can't run on the PC is greyed out, for example the two-monitor tests on one monitor or the WinPE test outside WinPE. Tests that change the PC ask first.
+**Test Center** ([`tests/TestCenter.ps1`](tests/TestCenter.ps1)) is one window for every test that is run regularly. It has a tab per tool (Whole toolkit, WinSuperTool, WinFixKit, Log tools, Other PCs / WinPE) with a tick box per test. Tick what you want and press **Run selected**. The tests then run one after the other.
+
+- **What to test:**
+  - **Offline:** any folder with the toolkit scripts, including **your own edited build**.
+  - **Online:** pick a release, a beta or `main` from GitHub and download it into a folder. Test Center then shows which of the downloaded scripts you have edited since.
+- **Reports:** results go to `C:\Users\Public\wrt-testcenter-<date>`, as an **HTML report** and a **Markdown summary for GitHub**. The summary contains the tools version, the edited files, Windows and PowerShell versions, a results table and the script hashes, with no PC or user names. **Copy summary for GitHub** and **Report on GitHub** make it easy to post.
+- **Scripted runs:** `TestCenter.ps1 -ToolsFolder <dir> -Run unit-suite,unit-toolkit -ExitWhenDone`.
+- **Greyed out:** a test that can't run on the PC or with the chosen tools, for example the two-monitor tests on one monitor. Tests that change the PC ask first.
+
+Details: [`docs/changes/TestCenter-1.0.md`](docs/changes/TestCenter-1.0.md).
 
 Download `TestCenter-v<x.y>.zip` from the [release](https://github.com/TheTechSupportGuru/windows-repair-toolkit/releases/latest), extract it and double-click `Start-TestCenter.bat`. Start it as administrator to get only one admin prompt. Test Center has its own version number and is updated only when the test procedures or the test scripts change.
 

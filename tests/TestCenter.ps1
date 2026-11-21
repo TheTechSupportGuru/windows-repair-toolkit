@@ -3,13 +3,19 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
 # TestCenter.ps1 - one window for every test we run regularly: a tab per tool, a tick box per test, "Run selected".
-# The tests themselves are the scripts in this folder; they test the tools in ..\tools.
-# Each test runs in its own (minimized) PowerShell window, one after the other. Tests marked [admin] ask for
-# administrator rights (start Test Center as administrator to get only one prompt).
-# Results: C:\Users\Public\wrt-testcenter-<date-time>\<test>\ plus report.txt for the whole run.
+# Tools to test: Offline = any folder with the toolkit scripts (your own edited build too), Online = download a
+# version (release, beta or main) from GitHub into a folder of your choice. Test Center shows which downloaded
+# scripts you have edited since.
+# Each test runs in its own (minimized) PowerShell window, one after the other, on a copy of the tests + chosen tools.
+# Tests marked [admin] ask for administrator rights (start Test Center as administrator to get only one prompt).
+# Results: C:\Users\Public\wrt-testcenter-<date-time>\ : a folder per test, report.txt, report.html and
+# summary-for-github.md (Markdown without PC or user names, to paste into a GitHub issue or discussion).
 #
 # Update this tool only when the test procedures change or a test script is fixed - not with every toolkit release.
 #   Start-TestCenter.bat   or   powershell -STA -ExecutionPolicy Bypass -File .\tests\TestCenter.ps1
+#   Scripted (e.g. your own build):  ... TestCenter.ps1 -ToolsFolder D:\my-build\tools -Run unit-suite,unit-toolkit,sizes -ExitWhenDone
+#   (test ids: the Id values in $Tests below; -Run all = every test that can run here)
+param([string]$ToolsFolder, [string[]]$Run, [switch]$ExitWhenDone)
 $TestCenterVersion = '1.0'
 $ErrorActionPreference = 'Continue'
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
@@ -95,55 +101,227 @@ $Tests = @(
 )
 
 # ---------------------------------------------------------------- helpers
+$RepoUrl  = 'https://github.com/TheTechSupportGuru/windows-repair-toolkit'
+$ApiUrl   = 'https://api.github.com/repos/TheTechSupportGuru/windows-repair-toolkit'
+$NeedsByTab = @{ 'WinSuperTool' = 'WinSuperTool.ps1'; 'WinFixKit' = 'WinFixKit.ps1'; 'Log tools' = 'Collect-Logs.ps1' }
+$SourceFile = '.wrt-source.json'     # written next to a downloaded tools folder: version + original hashes
+$script:Stage = $null                   # the staged copy of one run: Repo, Tests, Tools
+$script:Results = New-Object Collections.ArrayList
+
 function ConvertTo-PsLiteral($v) {
     if ($v -is [bool]) { if ($v) { return '$true' } else { return '$false' } }
     if ($v -is [array]) { return '@(' + (($v | ForEach-Object { ConvertTo-PsLiteral $_ }) -join ', ') + ')' }
     "'" + ([string]$v -replace "'", "''") + "'"
 }
 function Expand-Value($v, [string]$out) {
-    if ($v -is [string]) { return $v.Replace('{out}', $out).Replace('{tools}', $ToolsDir) }
+    if ($v -is [string]) { return $v.Replace('{out}', $out).Replace('{tools}', $script:Stage.Tools) }
     if ($v -is [array]) { return @($v | ForEach-Object { Expand-Value $_ $out }) }
     $v
 }
 function Get-TestCommand($t, [string]$out) {
-    $path = Join-Path $TestsDir $t.Script
+    $path = Join-Path $script:Stage.Tests $t.Script
     $log  = Join-Path $out 'console.txt'
     if ($t.Kind -eq 'pester') {
         $run = "Import-Module Pester; `$r = Invoke-Pester -Script $(ConvertTo-PsLiteral $path) -PassThru; " +
-               "('Passed {0}  Failed {1}  Skipped {2}' -f `$r.PassedCount, `$r.FailedCount, `$r.SkippedCount) | Set-Content -LiteralPath $(ConvertTo-PsLiteral (Join-Path $out 'summary.txt')); `$code = `$r.FailedCount"
+               "('Passed {0}  Failed {1}  Skipped {2}' -f `$r.PassedCount, `$r.FailedCount, `$r.SkippedCount) | Set-Content -LiteralPath $(ConvertTo-PsLiteral (Join-Path $out 'summary.txt')); " +
+               "`$r.TestResult | Where-Object { -not `$_.Passed -and `$_.Result -ne 'Skipped' } | ForEach-Object { 'FAILED: ' + `$_.Describe + ' > ' + `$_.Name } | Add-Content -LiteralPath $(ConvertTo-PsLiteral (Join-Path $out 'summary.txt')); `$code = `$r.FailedCount"
     } else {
         $pairs = @(); if ($t.Args) { foreach ($k in $t.Args.Keys) { $pairs += "$k = $(ConvertTo-PsLiteral (Expand-Value $t.Args[$k] $out))" } }
         $run = "`$p = @{ $($pairs -join '; ') }; & $(ConvertTo-PsLiteral $path) @p; `$code = [int]`$LASTEXITCODE"
     }
-    "Set-Location $(ConvertTo-PsLiteral $RepoDir); try { Start-Transcript -Path $(ConvertTo-PsLiteral $log) -Force | Out-Null } catch {}; `$code = 0; $run; try { Stop-Transcript | Out-Null } catch {}; exit `$code"
+    "Set-Location $(ConvertTo-PsLiteral $script:Stage.Repo); try { Start-Transcript -Path $(ConvertTo-PsLiteral $log) -Force | Out-Null } catch {}; `$code = 0; $run; try { Stop-Transcript | Out-Null } catch {}; exit `$code"
+}
+
+# what is in a tools folder: version, script hashes, and (for a downloaded folder) which scripts were edited since
+function Get-ToolsInfo([string]$dir) {
+    $i = [ordered]@{ Folder = $dir; Ok = $false; Version = 'unknown'; Source = 'local folder'; Files = [ordered]@{}; Edited = @() }
+    if (-not $dir -or -not (Test-Path -LiteralPath $dir -PathType Container)) { return $i }
+    foreach ($f in Get-ChildItem -LiteralPath $dir -File | Where-Object { $_.Extension -in '.ps1', '.bat' } | Sort-Object Name) {
+        $i.Files[$f.Name] = (Get-FileHash -LiteralPath $f.FullName -Algorithm SHA256).Hash.Substring(0, 12).ToLower()
+    }
+    $i.Ok = $i.Files.Count -gt 0
+    foreach ($n in 'WinSuperTool.ps1', 'WinFixKit.ps1', 'WinRepairTool-startup.ps1') {
+        $p = Join-Path $dir $n
+        if (Test-Path -LiteralPath $p) { $m = Get-Content -LiteralPath $p -TotalCount 8 | Select-String '#\s*Version\s+([0-9][0-9.]*(\s+beta\s+\d+)?)' | Select-Object -First 1; if ($m) { $i.Version = $m.Matches[0].Groups[1].Value; break } }
+    }
+    $sf = Join-Path $dir $SourceFile
+    if (Test-Path -LiteralPath $sf) {
+        try {
+            $s = Get-Content -LiteralPath $sf -Raw | ConvertFrom-Json
+            $i.Source = "GitHub $($s.Ref)"
+            foreach ($p in $s.Hashes.PSObject.Properties) { if ($i.Files[$p.Name] -ne $p.Value) { $i.Edited += $p.Name } }
+            foreach ($n in $i.Files.Keys) { if (-not $s.Hashes.PSObject.Properties[$n]) { $i.Edited += "$n (new)" } }
+            if ($i.Edited.Count) { $i.Source += ' + local edits' }
+        } catch {}
+    }
+    $i
+}
+# paths and names that identify this PC or person are replaced before anything is exported
+function Hide-Identity([string]$s) {
+    if (-not $s) { return $s }
+    foreach ($p in @(@($script:Stage.Repo, '<run folder>'), @($env:USERPROFILE, '%USERPROFILE%'), @($env:COMPUTERNAME, '<PC>'), @($env:USERNAME, '<user>'))) {
+        if ($p[0] -and $p[0].Length -gt 2) { $s = [regex]::Replace($s, [regex]::Escape($p[0]), $p[1], 'IgnoreCase') }
+    }
+    $s
+}
+function Get-EnvInfo {
+    $os = Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue
+    [ordered]@{
+        Windows    = $(if ($InWinPE) { 'WinPE ' } else { '' }) + $(if ($os) { "$($os.Caption) $($os.Version) $($os.OSArchitecture)" } else { [Environment]::OSVersion.VersionString })
+        PowerShell = "$($PSVersionTable.PSVersion) ($($PSVersionTable.PSEdition))"
+        Language   = (Get-Culture).Name
+        Admin      = $IsAdmin
+        Monitors   = ([Windows.Forms.Screen]::AllScreens | ForEach-Object { '{0}x{1}' -f $_.Bounds.Width, $_.Bounds.Height }) -join ' + '
+    }
+}
+
+# ---------------------------------------------------------------- online: versions + download
+function Get-OnlineVersions {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+    $rel = Invoke-RestMethod -Uri "$ApiUrl/releases?per_page=100" -Headers @{ 'User-Agent' = 'WRT-TestCenter' } -UseBasicParsing -ErrorAction Stop
+    $list = @()
+    $latest = ($rel | Where-Object { -not $_.prerelease -and -not $_.draft } | Select-Object -First 1).tag_name
+    foreach ($r in $rel | Where-Object { -not $_.draft }) {
+        $label = $r.tag_name + $(if ($r.tag_name -eq $latest) { '  (latest)' } elseif ($r.prerelease) { '  (beta)' } else { '' })
+        $list += [pscustomobject]@{ Label = $label; Ref = $r.tag_name; Zip = "$RepoUrl/archive/refs/tags/$($r.tag_name).zip" }
+    }
+    $list += [pscustomobject]@{ Label = 'main  (newest code, may be unreleased)'; Ref = 'main'; Zip = "$RepoUrl/archive/refs/heads/main.zip" }
+    $list
+}
+function Get-OnlineTools($ver, [string]$into) {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+    $dest = Join-Path $into ('windows-repair-toolkit-' + ($ver.Ref -replace '[^A-Za-z0-9.\-]', '_'))
+    if (Test-Path -LiteralPath $dest) {
+        if ([Windows.Forms.MessageBox]::Show("$dest already exists. Replace it with a fresh download? (Your edits in it are lost.)", $form.Text, 'YesNo', 'Question') -ne 'Yes') { return (Join-Path $dest 'tools') }
+        Remove-Item -LiteralPath $dest -Recurse -Force
+    }
+    $tmpZip = Join-Path $env:TEMP ("wrt-dl-{0}.zip" -f [guid]::NewGuid().ToString('N'))
+    $tmpDir = $tmpZip -replace '\.zip$', ''
+    try {
+        Invoke-WebRequest -Uri $ver.Zip -OutFile $tmpZip -Headers @{ 'User-Agent' = 'WRT-TestCenter' } -UseBasicParsing -ErrorAction Stop
+        Expand-Archive -LiteralPath $tmpZip -DestinationPath $tmpDir -Force
+        $top = Get-ChildItem -LiteralPath $tmpDir -Directory | Select-Object -First 1
+        if (-not $top -or -not (Test-Path (Join-Path $top.FullName 'tools'))) { throw "this version has no tools folder" }
+        New-Item -ItemType Directory -Force $into | Out-Null
+        Move-Item -LiteralPath $top.FullName -Destination $dest
+        Get-ChildItem -LiteralPath $dest -Recurse -File | Unblock-File -ErrorAction SilentlyContinue
+    } finally { Remove-Item $tmpZip, $tmpDir -Recurse -Force -ErrorAction SilentlyContinue }
+    $tools = Join-Path $dest 'tools'
+    $info = Get-ToolsInfo $tools
+    @{ Ref = $ver.Ref; Downloaded = (Get-Date).ToString('s'); Hashes = $info.Files } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $tools $SourceFile) -Encoding UTF8
+    $tools
+}
+
+# ---------------------------------------------------------------- reports
+function Get-ResultStatus($t, $code, [string[]]$lines) {
+    if ($t.Kind -eq 'pester') { if ($code -eq 0) { return 'PASSED' } else { return 'FAILED' } }
+    if (-not $lines) { return 'NO SUMMARY' }
+    $bad = @($lines | Where-Object { $_ -match '(?i)\b(fail(ed|s|ures?)?|errors?|NO RESULT|not ok|wrong|missing)\b' -and $_ -notmatch '(?i)\b0\s+(fail|error)|(fail\w*|errors?)\s*[:=]\s*0\b|no (failures|errors|issues)' })
+    if ($bad.Count) { 'CHECK' } else { 'OK' }
+}
+function Get-MarkdownSummary {
+    $ti = $script:RunTools; $e = Get-EnvInfo
+    $sb = New-Object Text.StringBuilder
+    [void]$sb.AppendLine("### Test Center $TestCenterVersion results")
+    [void]$sb.AppendLine('')
+    [void]$sb.AppendLine("- **Tools:** version $($ti.Version), source: $($ti.Source)" + $(if ($ti.Edited.Count) { " (edited: $($ti.Edited -join ', '))" } else { '' }))
+    [void]$sb.AppendLine("- **Windows:** $($e.Windows), language $($e.Language)")
+    [void]$sb.AppendLine("- **PowerShell:** $($e.PowerShell); admin: $($e.Admin); monitors: $($e.Monitors)")
+    [void]$sb.AppendLine("- **Run:** $($script:RunStarted)")
+    [void]$sb.AppendLine('')
+    [void]$sb.AppendLine('| Test | Result | Minutes | Summary |')
+    [void]$sb.AppendLine('|---|---|---|---|')
+    foreach ($r in $script:Results) {
+        $first = (@($r.Lines) | Select-Object -First 3) -join '; '
+        $cell = (Hide-Identity $first) -replace '\|', '/' ; if ($cell.Length -gt 160) { $cell = $cell.Substring(0, 157) + '...' }
+        [void]$sb.AppendLine("| $($r.Name) | **$($r.Status)** | $($r.Minutes) | $cell |")
+    }
+    $fails = @($script:Results | Where-Object { $_.Status -in 'FAILED', 'CHECK', 'NO SUMMARY', 'NOT STARTED', 'STOPPED' })
+    if ($fails.Count) {
+        [void]$sb.AppendLine(''); [void]$sb.AppendLine('<details><summary>Details of tests that need a look</summary>'); [void]$sb.AppendLine(''); [void]$sb.AppendLine('```')
+        foreach ($r in $fails) { [void]$sb.AppendLine("== $($r.Name): $($r.Status)"); foreach ($l in @($r.Lines) | Select-Object -First 25) { [void]$sb.AppendLine((Hide-Identity $l)) } }
+        [void]$sb.AppendLine('```'); [void]$sb.AppendLine('</details>')
+    }
+    [void]$sb.AppendLine(''); [void]$sb.AppendLine('<details><summary>Script hashes (SHA-256, first 12)</summary>'); [void]$sb.AppendLine('')
+    foreach ($k in $ti.Files.Keys) { [void]$sb.AppendLine("- ``$k`` $($ti.Files[$k])") }
+    [void]$sb.AppendLine('</details>')
+    $sb.ToString()
+}
+function Get-HtmlReport {
+    function Get-SafeHtml($s) { [Net.WebUtility]::HtmlEncode((Hide-Identity ([string]$s))) }
+    $ti = $script:RunTools; $e = Get-EnvInfo
+    $colors = @{ PASSED = '#1a7f37'; OK = '#1a7f37'; FAILED = '#cf222e'; CHECK = '#bf8700'; 'NO SUMMARY' = '#6e7781'; 'NOT STARTED' = '#6e7781'; STOPPED = '#6e7781' }
+    $rows = foreach ($r in $script:Results) {
+        "<tr><td>$(Get-SafeHtml $r.Tab)</td><td>$(Get-SafeHtml $r.Name)</td><td style='color:$($colors[$r.Status]);font-weight:bold'>$(Get-SafeHtml $r.Status)</td><td>$($r.Minutes)</td><td>$(Get-SafeHtml $r.Code)</td>" +
+        "<td><details><summary>$(Get-SafeHtml ((@($r.Lines) | Select-Object -First 1) -join ''))</summary><pre>$(Get-SafeHtml ((@($r.Lines)) -join "`n"))</pre></details></td></tr>"
+    }
+    $envRows = ($e.Keys | ForEach-Object { "<tr><th>$_</th><td>$(Get-SafeHtml $e[$_])</td></tr>" }) -join ''
+    $hashRows = ($ti.Files.Keys | ForEach-Object { "<tr><td>$(Get-SafeHtml $_)</td><td><code>$($ti.Files[$_])</code></td><td>$(if ($ti.Edited -contains $_) { 'edited' })</td></tr>" }) -join ''
+    $counts = ($script:Results | Group-Object Status | ForEach-Object { "$($_.Name): $($_.Count)" }) -join ' &nbsp; '
+    @"
+<!doctype html><html><head><meta charset="utf-8"><title>Test Center results</title>
+<style>body{font-family:Segoe UI,Arial,sans-serif;margin:24px;color:#1f2328;background:#fff}table{border-collapse:collapse;margin:8px 0 20px}td,th{border:1px solid #d0d7de;padding:4px 8px;text-align:left;vertical-align:top}th{background:#f6f8fa}pre{white-space:pre-wrap;font-size:12px;margin:4px 0}h1{font-size:22px}h2{font-size:17px;margin-top:24px}</style></head><body>
+<h1>Windows Repair Toolkit - Test Center $TestCenterVersion</h1>
+<p>Run started $(Get-SafeHtml $script:RunStarted). Tools version <b>$(Get-SafeHtml $ti.Version)</b>, source: $(Get-SafeHtml $ti.Source). &nbsp; $counts</p>
+<h2>Results</h2><table><tr><th>Tab</th><th>Test</th><th>Result</th><th>Minutes</th><th>Exit</th><th>Summary</th></tr>$($rows -join "`n")</table>
+<h2>Environment</h2><table>$envRows</table>
+<h2>Scripts tested</h2><table><tr><th>File</th><th>SHA-256 (first 12)</th><th></th></tr>$hashRows</table>
+<h2>Run log</h2><pre>$(Get-SafeHtml $logBox.Text)</pre>
+<p>OK / CHECK for script tests are read from each test's summary.txt (CHECK = words like "failed" or "error" were found - read the summary). PASSED / FAILED come from Pester.</p>
+</body></html>
+"@
+}
+function Save-Reports {
+    if (-not $script:RunRoot -or -not $script:Results.Count) { return }
+    [IO.File]::WriteAllText((Join-Path $script:RunRoot 'report.html'), (Get-HtmlReport), (New-Object Text.UTF8Encoding($false)))
+    [IO.File]::WriteAllText((Join-Path $script:RunRoot 'summary-for-github.md'), (Get-MarkdownSummary), (New-Object Text.UTF8Encoding($false)))
 }
 
 # ---------------------------------------------------------------- window
 $form = New-Object Windows.Forms.Form
 $form.Text = "Windows Repair Toolkit - Test Center $TestCenterVersion"
-$form.Size = New-Object Drawing.Size(980, 760); $form.MinimumSize = New-Object Drawing.Size(720, 560)
+$form.Size = New-Object Drawing.Size(1000, 820); $form.MinimumSize = New-Object Drawing.Size(760, 620)
 $form.StartPosition = 'CenterScreen'; $form.Font = New-Object Drawing.Font('Segoe UI', 9)
 $form.AutoScaleMode = 'Dpi'
 
-$head = New-Object Windows.Forms.Label; $head.Dock = 'Top'; $head.Height = 54; $head.Padding = New-Object Windows.Forms.Padding(8, 6, 8, 0)
-$head.Text = "Tests the tools in: $ToolsDir`r`n" + $(if ($IsAdmin) { 'Running as administrator.' } else { 'Not administrator: every [admin] test asks for permission separately. Use "Restart as administrator" for one prompt.' }) +
-             "  Monitors: $Monitors.  While tests run, leave the mouse and keyboard alone."
+# --- source of the tools: offline folder or online download
+$src = New-Object Windows.Forms.GroupBox; $src.Text = 'Tools to test'; $src.Dock = 'Top'; $src.Height = 168; $src.Padding = New-Object Windows.Forms.Padding(8, 4, 8, 4)
+$grid = New-Object Windows.Forms.TableLayoutPanel; $grid.Dock = 'Fill'; $grid.ColumnCount = 4; $grid.RowCount = 4
+[void]$grid.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle('AutoSize'))); [void]$grid.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle('Percent', 100)))
+[void]$grid.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle('AutoSize'))); [void]$grid.ColumnStyles.Add((New-Object Windows.Forms.ColumnStyle('AutoSize')))
+function New-Lbl([string]$t) { $l = New-Object Windows.Forms.Label; $l.Text = $t; $l.AutoSize = $true; $l.Anchor = 'Left'; $l }
+function New-Btn([string]$t) { $b = New-Object Windows.Forms.Button; $b.Text = $t; $b.AutoSize = $true; $b }
+$modeFlow = New-Object Windows.Forms.FlowLayoutPanel; $modeFlow.AutoSize = $true; $modeFlow.Dock = 'Fill'
+$rbOff = New-Object Windows.Forms.RadioButton; $rbOff.Text = 'Offline: use a folder on this PC'; $rbOff.AutoSize = $true; $rbOff.Checked = $true
+$rbOn  = New-Object Windows.Forms.RadioButton; $rbOn.Text = 'Online: download a version from GitHub'; $rbOn.AutoSize = $true
+$modeFlow.Controls.AddRange(@($rbOff, $rbOn))
+$grid.Controls.Add((New-Lbl 'Mode:'), 0, 0); $grid.Controls.Add($modeFlow, 1, 0); $grid.SetColumnSpan($modeFlow, 3)
+$tbTools = New-Object Windows.Forms.TextBox; $tbTools.Dock = 'Fill'; $tbTools.Text = $ToolsDir
+$bBrowse = New-Btn 'Browse...'; $bReload = New-Btn 'Re-check'
+$grid.Controls.Add((New-Lbl 'Tools folder:'), 0, 1); $grid.Controls.Add($tbTools, 1, 1); $grid.Controls.Add($bBrowse, 2, 1); $grid.Controls.Add($bReload, 3, 1)
+$cbVer = New-Object Windows.Forms.ComboBox; $cbVer.DropDownStyle = 'DropDownList'; $cbVer.Dock = 'Fill'; $cbVer.DisplayMember = 'Label'
+$bList = New-Btn 'Get version list'; $bDl = New-Btn 'Download'
+$grid.Controls.Add((New-Lbl 'Version:'), 0, 2); $grid.Controls.Add($cbVer, 1, 2); $grid.Controls.Add($bList, 2, 2); $grid.Controls.Add($bDl, 3, 2)
+$tbDl = New-Object Windows.Forms.TextBox; $tbDl.Dock = 'Fill'; $tbDl.Text = Join-Path ([Environment]::GetFolderPath('MyDocuments')) 'WRT-TestCenter'
+if (-not [Environment]::GetFolderPath('MyDocuments')) { $tbDl.Text = 'C:\Users\Public\WRT-TestCenter' }
+$bDlBrowse = New-Btn 'Browse...'
+$grid.Controls.Add((New-Lbl 'Download into:'), 0, 3); $grid.Controls.Add($tbDl, 1, 3); $grid.Controls.Add($bDlBrowse, 2, 3)
+$lbInfo = New-Object Windows.Forms.Label; $lbInfo.AutoSize = $true; $lbInfo.Anchor = 'Left'; $grid.Controls.Add($lbInfo, 3, 3)
+$src.Controls.Add($grid)
+
+$head = New-Object Windows.Forms.Label; $head.Dock = 'Top'; $head.Height = 60; $head.Padding = New-Object Windows.Forms.Padding(8, 4, 8, 0)
+$head.Text = $(if ($IsAdmin) { 'Running as administrator.' } else { 'Not administrator: every [admin] test asks for permission separately. Use "Restart as administrator" for one prompt.' }) +
+             "  Monitors: $Monitors.  While tests run, leave the mouse and keyboard alone.`r`nThe tests check the newest toolkit features, so an older version fails the tests of features it does not have yet."
 
 $tabs = New-Object Windows.Forms.TabControl; $tabs.Dock = 'Fill'
-$Boxes = @{}
+$Boxes = @{}; $BaseText = @{}
 foreach ($tabName in ($Tests | ForEach-Object { $_.Tab } | Select-Object -Unique)) {
     $page = New-Object Windows.Forms.TabPage $tabName
     $flow = New-Object Windows.Forms.FlowLayoutPanel; $flow.Dock = 'Fill'; $flow.FlowDirection = 'TopDown'; $flow.WrapContents = $false; $flow.AutoScroll = $true; $flow.Padding = New-Object Windows.Forms.Padding(6)
     foreach ($t in ($Tests | Where-Object { $_.Tab -eq $tabName })) {
         $cb = New-Object Windows.Forms.CheckBox; $cb.AutoSize = $true; $cb.Font = New-Object Drawing.Font('Segoe UI', 9, [Drawing.FontStyle]::Bold)
         $tags = @(); if ($t.Admin) { $tags += 'admin' }; if ($t.Monitors) { $tags += "$($t.Monitors) monitors" }; if ($t.WinPE) { $tags += 'WinPE only' }; $tags += "~$($t.Min) min"
-        $cb.Text = "$($t.Name)   [$($tags -join ', ')]"; $cb.Tag = $t.Id; $cb.Checked = [bool]$t.Default
-        $why = $null
-        if ($t.Monitors -and $Monitors -lt $t.Monitors) { $why = "needs $($t.Monitors) monitors" }
-        if ($t.WinPE -and -not $InWinPE) { $why = 'only inside WinPE' }
-        if (-not $t.WinPE -and $InWinPE -and $t.Id -ne 'unit-suite' -and $t.Id -ne 'unit-toolkit') { $why = 'needs a running Windows' }
-        if (-not (Test-Path (Join-Path $TestsDir $t.Script))) { $why = "missing $($t.Script)" }
-        if ($why) { $cb.Checked = $false; $cb.Enabled = $false; $cb.Text += "  - not available here: $why" }
+        $BaseText[$t.Id] = "$($t.Name)   [$($tags -join ', ')]"; $cb.Text = $BaseText[$t.Id]; $cb.Tag = $t.Id; $cb.Checked = [bool]$t.Default
         $lb = New-Object Windows.Forms.Label; $lb.AutoSize = $true; $lb.MaximumSize = New-Object Drawing.Size(880, 0); $lb.Text = $t.Desc
         $lb.Margin = New-Object Windows.Forms.Padding(22, 0, 3, 10); $lb.ForeColor = [Drawing.SystemColors]::GrayText
         $flow.Controls.AddRange(@($cb, $lb)); $Boxes[$t.Id] = $cb
@@ -152,37 +330,85 @@ foreach ($tabName in ($Tests | ForEach-Object { $_.Tab } | Select-Object -Unique
     $page.Controls.Add($flow); $tabs.TabPages.Add($page)
 }
 
-$bottom = New-Object Windows.Forms.Panel; $bottom.Dock = 'Bottom'; $bottom.Height = 250
-$btns = New-Object Windows.Forms.FlowLayoutPanel; $btns.Dock = 'Top'; $btns.Height = 38; $btns.Padding = New-Object Windows.Forms.Padding(4)
-function New-Button([string]$text) { $b = New-Object Windows.Forms.Button; $b.Text = $text; $b.AutoSize = $true; $b.Height = 28; $btns.Controls.Add($b); $b }
+$bottom = New-Object Windows.Forms.Panel; $bottom.Dock = 'Bottom'; $bottom.Height = 240
+$btns = New-Object Windows.Forms.FlowLayoutPanel; $btns.Dock = 'Top'; $btns.AutoSize = $true; $btns.AutoSizeMode = 'GrowAndShrink'; $btns.Padding = New-Object Windows.Forms.Padding(4)
+function New-Button([string]$text) { $b = New-Btn $text; $b.Height = 28; $btns.Controls.Add($b); $b }
 $bRun = New-Button 'Run selected'; $bStop = New-Button 'Stop'; $bAll = New-Button 'Tick all on this tab'; $bNone = New-Button 'Untick all'
-$bOpen = New-Button 'Open results folder'; $bAdmin = New-Button 'Restart as administrator'
-$bStop.Enabled = $false; $bOpen.Enabled = $false; $bAdmin.Visible = -not $IsAdmin
+$bOpen = New-Button 'Open results'; $bHtml = New-Button 'Export HTML...'; $bMd = New-Button 'Copy summary for GitHub'; $bGh = New-Button 'Report on GitHub'
+$bAdmin = New-Button 'Restart as administrator'
+$bStop.Enabled = $false; foreach ($b in $bOpen, $bHtml, $bMd) { $b.Enabled = $false }; $bAdmin.Visible = -not $IsAdmin
 $logBox = New-Object Windows.Forms.TextBox; $logBox.Multiline = $true; $logBox.ReadOnly = $true; $logBox.ScrollBars = 'Vertical'; $logBox.Dock = 'Fill'
 $logBox.Font = New-Object Drawing.Font('Consolas', 9)
 $bottom.Controls.Add($logBox); $bottom.Controls.Add($btns)
-$form.Controls.Add($tabs); $form.Controls.Add($bottom); $form.Controls.Add($head)
+$form.Controls.Add($tabs); $form.Controls.Add($bottom); $form.Controls.Add($head); $form.Controls.Add($src)
 
-$script:RunRoot = $null; $script:Queue = $null; $script:Current = $null; $script:Report = $null
+$script:RunRoot = $null; $script:Queue = $null; $script:Current = $null; $script:Report = $null; $script:Versions = @()
 function Write-Log([string]$m) {
     $line = '{0:HH:mm:ss}  {1}' -f (Get-Date), $m
     $logBox.AppendText($line + "`r`n")
     if ($script:Report) { Add-Content -LiteralPath $script:Report -Value $line -Encoding UTF8 }
 }
 
-$timer = New-Object Windows.Forms.Timer; $timer.Interval = 1000
-function Start-NextTest {
-    if (-not $script:Queue -or $script:Queue.Count -eq 0) {
-        $timer.Stop(); $script:Current = $null; $bRun.Enabled = $true; $bStop.Enabled = $false
-        Write-Log "ALL DONE. Results: $script:RunRoot"; $form.Activate(); return
+# grey out what cannot run here or with these tools
+function Update-Availability {
+    $dir = $tbTools.Text.Trim()
+    $script:Tools = Get-ToolsInfo $dir
+    foreach ($t in $Tests) {
+        $cb = $Boxes[$t.Id]; $why = $null
+        if ($t.Monitors -and $Monitors -lt $t.Monitors) { $why = "needs $($t.Monitors) monitors" }
+        if ($t.WinPE -and -not $InWinPE) { $why = 'only inside WinPE' }
+        if (-not $t.WinPE -and $InWinPE -and $t.Id -ne 'unit-suite' -and $t.Id -ne 'unit-toolkit') { $why = 'needs a running Windows' }
+        if (-not (Test-Path (Join-Path $TestsDir $t.Script))) { $why = "missing tests\$($t.Script)" }
+        $need = $NeedsByTab[$t.Tab]
+        if (-not $why -and $need -and -not $script:Tools.Files.Contains($need)) { $why = "this tools folder has no $need" }
+        if (-not $script:Tools.Ok) { $why = 'choose a tools folder' }
+        $cb.Enabled = -not $why; if ($why) { $cb.Checked = $false; $cb.Text = "$($BaseText[$t.Id])  - not available: $why" } else { $cb.Text = $BaseText[$t.Id] }
     }
+    $lbInfo.Text = if ($script:Tools.Ok) { "Version $($script:Tools.Version), $($script:Tools.Files.Count) scripts" + $(if ($script:Tools.Edited.Count) { ", $($script:Tools.Edited.Count) edited" } else { '' }) } else { 'No scripts in that folder' }
+}
+function Update-Mode {
+    $on = $rbOn.Checked
+    foreach ($c in $cbVer, $bList, $bDl, $tbDl, $bDlBrowse) { $c.Enabled = $on }
+}
+
+# copy tests + chosen tools into one folder for the run, so every test finds ..\tools whatever folder was chosen
+function New-RunCopy([string]$root) {
+    $w = Join-Path $root '_run'
+    $r = @{ Repo = $w; Tests = Join-Path $w 'tests'; Tools = Join-Path $w 'tools' }
+    New-Item -ItemType Directory -Force $r.Tests, $r.Tools | Out-Null
+    Copy-Item (Join-Path $TestsDir '*') $r.Tests -Recurse -Force
+    Copy-Item (Join-Path $tbTools.Text.Trim() '*') $r.Tools -Recurse -Force
+    # build\ and LICENSE (the Toolkit unit tests use them): from the tested version when it has them, else from Test Center's
+    $toolsParent = Split-Path $tbTools.Text.Trim() -Parent
+    foreach ($n in 'build', 'LICENSE') {
+        $s = Join-Path $toolsParent $n; if (-not (Test-Path $s)) { $s = Join-Path $RepoDir $n }
+        if (Test-Path $s) { Copy-Item $s (Join-Path $w $n) -Recurse -Force }
+    }
+    $r
+}
+
+$timer = New-Object Windows.Forms.Timer; $timer.Interval = 1000
+function Complete-Run {
+    $timer.Stop(); $script:Current = $null; $bRun.Enabled = $true; $bStop.Enabled = $false
+    foreach ($b in $bHtml, $bMd) { $b.Enabled = $script:Results.Count -gt 0 }
+    Save-Reports
+    $c = ($script:Results | Group-Object Status | ForEach-Object { "$($_.Name) $($_.Count)" }) -join ', '
+    Write-Log "ALL DONE ($c). Results: $script:RunRoot  (report.html, summary-for-github.md)"; $form.Activate()
+    if ($ExitWhenDone) { $form.Close() }
+}
+function Start-NextTest {
+    if (-not $script:Queue -or $script:Queue.Count -eq 0) { Complete-Run; return }
     $t = $script:Queue[0]; $script:Queue = @($script:Queue | Select-Object -Skip 1)
     $out = Join-Path $script:RunRoot $t.Id; New-Item -ItemType Directory -Force $out | Out-Null
     $enc = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes((Get-TestCommand $t $out)))
     $sp = @{ FilePath = $PsExe; ArgumentList = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-STA', '-EncodedCommand', $enc); PassThru = $true; WindowStyle = 'Minimized' }
     if ($t.Admin -and -not $IsAdmin) { $sp.Verb = 'RunAs' }
     try { $p = Start-Process @sp -ErrorAction Stop }
-    catch { Write-Log "SKIPPED $($t.Name): could not start ($($_.Exception.Message))"; Start-NextTest; return }
+    catch {
+        Write-Log "NOT STARTED  $($t.Name): $($_.Exception.Message)"
+        [void]$script:Results.Add([pscustomobject]@{ Tab = $t.Tab; Name = $t.Name; Status = 'NOT STARTED'; Minutes = 0; Code = ''; Lines = @($_.Exception.Message); Folder = $out })
+        Start-NextTest; return
+    }
     $script:Current = @{ Test = $t; Proc = $p; Start = Get-Date; Out = $out }
     Write-Log "START   $($t.Name)  (about $($t.Min) min)"
     $timer.Start()
@@ -192,18 +418,52 @@ $timer.Add_Tick({
     if (-not $c.Proc.HasExited) { return }
     $timer.Stop()
     $mins = [Math]::Round(((Get-Date) - $c.Start).TotalMinutes, 1)
-    $code = try { $c.Proc.ExitCode } catch { '?' }
+    $code = try { $c.Proc.ExitCode } catch { '' }
     $t = $c.Test
-    $where = if ($t.Results) { [Environment]::ExpandEnvironmentVariables($t.Results) + '  (and ' + $c.Out + ')' } else { $c.Out }
-    $state = if ($t.Kind -eq 'pester') { if ($code -eq 0) { 'PASSED' } else { "FAILED ($code failing)" } } else { 'FINISHED' }
-    Write-Log "$state  $($t.Name)  after $mins min, exit code $code"
-    $sum = Join-Path $c.Out 'summary.txt'
-    if (Test-Path $sum) { Get-Content $sum -TotalCount 15 | Where-Object { $_.Trim() } | ForEach-Object { Write-Log "          $_" } }
-    Write-Log "          results: $where"
+    $sums = @(Join-Path $c.Out 'summary.txt'); if ($t.Results) { $sums += Join-Path ([Environment]::ExpandEnvironmentVariables($t.Results)) 'summary.txt' }
+    $sum = $sums | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+    $lines = @(); if ($sum) { $lines = @(Get-Content -LiteralPath $sum | Where-Object { $_.Trim() }) }
+    elseif (Test-Path -LiteralPath (Join-Path $c.Out 'console.txt')) {
+        # no summary.txt: the last lines the test printed (the transcript's own header/footer left out)
+        $tx = @(Get-Content -LiteralPath (Join-Path $c.Out 'console.txt') | Where-Object { $_.Trim() })
+        $body = @(); $inHead = $false
+        foreach ($l in $tx) { if ($l -match '^\*{10,}') { $inHead = -not $inHead; continue }; if (-not $inHead -and $l -notmatch '^(Transcript started|Windows PowerShell transcript)') { $body += $l } }
+        $lines = @($body | Select-Object -Last 15)
+    }
+    if ($sum -and $sum -notlike "$($c.Out)*") { Copy-Item -LiteralPath $sum (Join-Path $c.Out 'summary.txt') -ErrorAction SilentlyContinue }
+    $status = if ($c.Stopped) { 'STOPPED' } else { Get-ResultStatus $t $code $lines }
+    [void]$script:Results.Add([pscustomobject]@{ Tab = $t.Tab; Name = $t.Name; Status = $status; Minutes = $mins; Code = $code; Lines = $lines; Folder = $c.Out })
+    Write-Log "$status  $($t.Name)  after $mins min, exit code $code"
+    $lines | Select-Object -First 12 | ForEach-Object { Write-Log "          $_" }
+    Save-Reports
     Start-NextTest
 })
 
+$rbOff.Add_CheckedChanged({ Update-Mode }); Update-Mode
+$bBrowse.Add_Click({
+    $d = New-Object Windows.Forms.FolderBrowserDialog; $d.Description = 'The folder with the toolkit scripts (WinSuperTool.ps1, WinFixKit.ps1, ...)'
+    if (Test-Path $tbTools.Text) { $d.SelectedPath = $tbTools.Text }
+    if ($d.ShowDialog($form) -eq 'OK') { $tbTools.Text = $d.SelectedPath; Update-Availability }
+})
+$bReload.Add_Click({ Update-Availability })
+$tbTools.Add_Leave({ Update-Availability })
+$bDlBrowse.Add_Click({ $d = New-Object Windows.Forms.FolderBrowserDialog; $d.Description = 'Where to put downloaded versions'; if ($d.ShowDialog($form) -eq 'OK') { $tbDl.Text = $d.SelectedPath } })
+$bList.Add_Click({
+    $form.Cursor = 'WaitCursor'
+    try { $script:Versions = @(Get-OnlineVersions); $cbVer.Items.Clear(); foreach ($v in $script:Versions) { [void]$cbVer.Items.Add($v) }; if ($cbVer.Items.Count) { $cbVer.SelectedIndex = 0 }; Write-Log "GitHub: $($script:Versions.Count) versions found." }
+    catch { Write-Log "Could not read the version list from GitHub: $($_.Exception.Message)" }
+    finally { $form.Cursor = 'Default' }
+})
+$bDl.Add_Click({
+    $v = $cbVer.SelectedItem; if (-not $v) { [void][Windows.Forms.MessageBox]::Show('Press "Get version list" and pick a version first.', $form.Text); return }
+    $form.Cursor = 'WaitCursor'; Write-Log "Downloading $($v.Ref) from GitHub ..."
+    try { $tools = Get-OnlineTools $v $tbDl.Text.Trim(); $tbTools.Text = $tools; Update-Availability; Write-Log "Downloaded $($v.Ref) to $(Split-Path $tools -Parent). You can edit the scripts there; Test Center shows which ones were edited." }
+    catch { Write-Log "Download failed: $($_.Exception.Message)" }
+    finally { $form.Cursor = 'Default' }
+})
+
 $bRun.Add_Click({
+    Update-Availability
     $sel = @($Tests | Where-Object { $Boxes[$_.Id].Checked })
     if (-not $sel.Count) { [void][Windows.Forms.MessageBox]::Show('Tick at least one test.', $form.Text); return }
     foreach ($t in @($sel | Where-Object { $_.Warn })) {
@@ -212,18 +472,21 @@ $bRun.Add_Click({
     if (-not $sel.Count) { return }
     # the sign-out test goes last
     $sel = @($sel | Where-Object { $_.Id -ne 'scaling' }) + @($sel | Where-Object { $_.Id -eq 'scaling' })
-    $script:RunRoot = 'C:\Users\Public\wrt-testcenter-' + (Get-Date -Format 'yyyyMMdd-HHmm')
-    if ($InWinPE) { $script:RunRoot = 'X:\wrt-testcenter-' + (Get-Date -Format 'yyyyMMdd-HHmm') }
+    $base = if ($InWinPE) { 'X:\' } else { 'C:\Users\Public\' }
+    $script:RunRoot = $base + 'wrt-testcenter-' + (Get-Date -Format 'yyyyMMdd-HHmmss')
     New-Item -ItemType Directory -Force $script:RunRoot | Out-Null
-    $script:Report = Join-Path $script:RunRoot 'report.txt'
-    $total = ($sel | Measure-Object -Property Min -Sum).Sum
-    Write-Log "Test Center ${TestCenterVersion}: $($sel.Count) tests, about $total min. Tools: $ToolsDir  Admin: $IsAdmin"
+    $script:Report = Join-Path $script:RunRoot 'report.txt'; $script:Results.Clear(); $script:RunStarted = (Get-Date).ToString('yyyy-MM-dd HH:mm')
+    try { $script:Stage = New-RunCopy $script:RunRoot } catch { Write-Log "Could not copy the tests and tools for the run: $($_.Exception.Message)"; return }
+    $script:RunTools = $script:Tools
+    $total = ($sel | ForEach-Object { $_.Min } | Measure-Object -Sum).Sum
+    Write-Log "Test Center ${TestCenterVersion}: $($sel.Count) tests, about $total min. Tools: version $($script:Tools.Version) from $($tbTools.Text) ($($script:Tools.Source))  Admin: $IsAdmin"
     $script:Queue = $sel; $bRun.Enabled = $false; $bStop.Enabled = $true; $bOpen.Enabled = $true
     Start-NextTest
 })
 $bStop.Add_Click({
     $script:Queue = @()
     if ($script:Current -and -not $script:Current.Proc.HasExited) {
+        $script:Current.Stopped = $true
         try { Stop-Process -Id $script:Current.Proc.Id -Force -ErrorAction Stop; Write-Log "STOPPED $($script:Current.Test.Name)" }
         catch { Write-Log "Could not stop $($script:Current.Test.Name) (it runs as administrator) - close its window yourself. No further tests start." }
     }
@@ -231,6 +494,15 @@ $bStop.Add_Click({
 $bAll.Add_Click({ foreach ($c in $tabs.SelectedTab.Controls[0].Controls) { if ($c -is [Windows.Forms.CheckBox] -and $c.Enabled) { $c.Checked = $true } } })
 $bNone.Add_Click({ foreach ($cb in $Boxes.Values) { $cb.Checked = $false } })
 $bOpen.Add_Click({ if ($script:RunRoot) { Start-Process explorer.exe $script:RunRoot } })
+$bHtml.Add_Click({
+    $d = New-Object Windows.Forms.SaveFileDialog; $d.Filter = 'HTML report (*.html)|*.html'; $d.FileName = "TestCenter-report-$(Get-Date -Format 'yyyyMMdd-HHmm').html"
+    if ($d.ShowDialog($form) -eq 'OK') { [IO.File]::WriteAllText($d.FileName, (Get-HtmlReport), (New-Object Text.UTF8Encoding($false))); Start-Process $d.FileName }
+})
+$bMd.Add_Click({
+    $md = Get-MarkdownSummary; [Windows.Forms.Clipboard]::SetText($md)
+    Write-Log 'Summary copied (Markdown, no PC or user names). Paste it into a GitHub issue or discussion.'
+})
+$bGh.Add_Click({ Start-Process "$RepoUrl/issues/new/choose" })
 $bAdmin.Add_Click({
     try { Start-Process $PsExe -Verb RunAs -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-STA', '-File', "`"$PSCommandPath`"" -ErrorAction Stop; $form.Close() } catch {}
 })
@@ -239,8 +511,15 @@ $form.Add_FormClosing({ param($s, $e)
         if ([Windows.Forms.MessageBox]::Show('A test is still running. Close Test Center anyway? (The running test continues; later tests do not start.)', $form.Text, 'YesNo', 'Question') -ne 'Yes') { $e.Cancel = $true }
     }
 })
-if (-not (Test-Path (Join-Path $ToolsDir 'WinSuperTool.ps1'))) {
-    [void][Windows.Forms.MessageBox]::Show("The tools folder was not found next to the tests folder:`r`n$ToolsDir`r`n`r`nKeep the 'tests' and 'tools' folders together.", $form.Text, 'OK', 'Warning')
+if ($ToolsFolder) { $tbTools.Text = (Resolve-Path -LiteralPath $ToolsFolder -ErrorAction SilentlyContinue).Path; if (-not $tbTools.Text) { $tbTools.Text = $ToolsFolder } }
+Update-Availability
+if (-not $script:Tools.Ok) { Write-Log "No tools found in $ToolsDir - choose a folder (Offline) or download a version (Online)." }
+Write-Log "Choose the tools (top), tick the tests (a tab per tool), then press Run selected."
+if ($Run) {
+    $form.Add_Shown({
+        foreach ($cb in $Boxes.Values) { $cb.Checked = $false }
+        foreach ($id in ($Run -split ",") | ForEach-Object { $_.Trim() }) { foreach ($t in $Tests) { if (($id -eq "all" -and -not $t.Warn) -or $t.Id -eq $id) { if ($Boxes[$t.Id].Enabled) { $Boxes[$t.Id].Checked = $true } else { Write-Log "Skipped $($t.Id): not available here" } } } }
+        $bRun.PerformClick()
+    })
 }
-Write-Log "Tick the tests to run (a tab per tool), then press Run selected."
 [void]$form.ShowDialog()
