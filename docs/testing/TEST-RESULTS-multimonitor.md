@@ -97,6 +97,17 @@ Content checked by reading the full report: Windows 11 Pro 26H2, keys decoded, A
 
 Notes for the test itself: DirectX Diagnostic ignores a close request while it is still collecting, and Optimize Drives did too; both were closed at the end.
 
-## Not tested here (needs you at the VM)
+## Dragging with the real mouse (P3, automated)
 
-P1-P5 in the plan: the **main** monitor at 150 % / 200 % (needs signing out), dragging with the mouse (#M1 will show there), how the stretched text looks on the 150 % monitor, and an Automation run as administrator.
+`tests/Run-DragTest.ps1` drags a tool's window by its title bar with the real mouse, the way a person does: from monitor 1 to monitor 2 with the button held for 3 s while about 65 % of the window is already on monitor 2, then dropped across the edge, then back.
+
+| Code | Result |
+|---|---|
+| before the M1 fix | **FAIL**: while the button was held, the window was pulled away from under the mouse (to X=3840) |
+| now (Collect-Logs, WinSuperTool, beta) | **pass, 9 of 9 drags**: the window follows the mouse, does not move while held, and stays exactly where it is dropped |
+
+The Automation run as administrator (P5) is done too, see [TEST-RESULTS-regression-2026-11-20.md](TEST-RESULTS-regression-2026-11-20.md).
+
+## Not tested here
+
+The **main** monitor at 150 % / 200 % (needs signing out; prepared as `tests/Start-ScaleTest.ps1`) and how the stretched text looks on the 150 % monitor. See [REMAINING-TESTS.md](REMAINING-TESTS.md).

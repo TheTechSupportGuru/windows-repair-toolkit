@@ -1,4 +1,4 @@
-# Run-Phase3.ps1 - Phase 3 / 7a + 7b: runs WinFixKit (newest Edited version) FIX buttons headlessly AS ADMIN on this VM.
+# Run-Phase3.ps1 - Phase 3 / 7a + 7b: runs WinFixKit (tools\WinFixKit.ps1) FIX buttons headlessly AS ADMIN on this VM.
 # For every fix: capture state -> run -> capture -> restore with WinFixKit's own Restore-RegBackup -> capture -> compare to baseline.
 # NOT run here (see report): network resets / DHCP renew (cut the network, need a reboot), "Open ..." UI launchers,
 # Re-register ALL apps / DISM+SFC / chkdsk / energy report (long console windows), Empty Recycle Bin when it is not empty.
@@ -115,7 +115,7 @@ Invoke-Fix 'Audio|Restart Windows Audio services'
 Invoke-Fix 'Audio|Re-enable disabled audio devices'
 Invoke-Fix 'Hardware and Devices|Rescan for hardware changes'
 Invoke-Fix 'Hardware and Devices|Enable all disabled devices'
-Invoke-Fix 'Hardware and Devices|Export installed driver list to the logs folder'
+Invoke-Fix 'Hardware and Devices|Export installed driver list to the Reports folder'
 Invoke-Fix 'Network|Flush DNS cache'
 Invoke-Fix 'Network|Clear ARP cache'
 Invoke-Fix 'Network|Reset WinHTTP proxy'
