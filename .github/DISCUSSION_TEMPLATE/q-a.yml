@@ -130,7 +130,8 @@ body:
       label: "Tool version"
       description: "Optional."
       options:
-        - "1.9 (latest)"
+        - "1.9.1 (latest)"
+        - "1.9"
         - "1.9 beta 1 - beta 4 (WinSuperTool beta)"
         - "Backup Script Builder 1.0"
         - "Test Center 1.0 beta 1"

@@ -5,18 +5,23 @@ A set of PowerShell tools for repairing and troubleshooting Windows 10/11 PCs, i
 > [!WARNING]
 > These scripts were written with AI. They have been tested on Windows 11, Windows 10 64-bit (MBR disk), and Hiren's BootCD PE 10 and 11, all in VMs. They have not been tested on many real PCs. Several tools change the boot configuration (BCD), the registry, services and network settings. **Use at your own risk.** Try them on a test machine first.
 
-**Current version: 1.9** (2026-11-21). Every version is a git tag (`v1.1` to `v1.9`), so `git diff v1.8.3 v1.9` shows exactly what changed. Licensed under the [GNU GPL v3.0](#license).
+**Current version: 1.9.1** (2026-11-22; the tools are those of 1.9, plus Backup Script Builder). Every version is a git tag (`v1.1` to `v1.9.1`), so `git diff v1.8.3 v1.9` shows exactly what changed. Licensed under the [GNU GPL v3.0](#license).
 
 ## Download
 
-Get a single tool from the [latest release](../../releases/latest). Each tool has its own zip (for example `WinSuperTool-v1.9.zip`) with the script, its launcher, a short read-me and the license. **Source code** contains everything. Every older version is on the [releases page](../../releases) too.
+Get a single tool from the [latest release](../../releases/latest). Each tool has its own zip (for example `WinSuperTool-v1.9.1.zip`) with the script, its launcher, a short read-me and the license. **Source code** contains everything. Every older version is on the [releases page](../../releases) too.
 
-**Don't want AI?** `WinSuperTool-NoAI-v1.9.zip` is WinSuperTool without the AI Analyze tab:
+**Don't want AI?** `WinSuperTool-NoAI-v1.9.1.zip` is WinSuperTool without the AI Analyze tab:
 - no phone login and no network listener;
 - nothing is ever sent to Claude or Gemini;
 - everything else is the same.
 
 Windows marks downloaded files as blocked: right-click the zip > **Properties** > tick **Unblock** before extracting.
+
+## New in 1.9.1
+
+- **Backup Script Builder 1.0**, a new tool for [FreeFileSync](https://freefilesync.org/) backups (see [below](#backup-script-builder)).
+- **One release for everything:** the betas (WinFixKit beta-automation, Test Center beta, the 1.9 betas) are now zips inside the main release, with their notes in collapsible sections, instead of separate entries on the releases page ([V1.9.1](docs/changes/V1.9.1.md)). The 8 tools are unchanged from 1.9.
 
 ## New in 1.9
 
@@ -122,7 +127,7 @@ The registry is backed up before each fix, with one-click restore. Folders are r
 - **Schedule Task tab:** runs a script with FreeFileSync on a schedule (once, daily, weekly, every X hours, at log on), with "run after a missed start" and a time limit. It creates, changes, runs and deletes only its own tasks, kept in the Task Scheduler folder `\BackupScriptBuilder\`.
 - A **?** next to every option explains it.
 
-Download `BackupScriptBuilder-v1.0.zip` from the [latest release](../../releases/latest) (it was added to v1.9).
+Download `BackupScriptBuilder-v1.0.zip` from the [latest release](../../releases/latest) (new in v1.9.1).
 
 ## What has been fixed
 
@@ -142,7 +147,7 @@ Severity: **S1** = can make the PC unbootable, lose data or act on the wrong dis
 | **1.8.1** | **All tools:** text was blurry or cut off on 125 / 150 / 200 % displays (for example "Run a .ps1..."), and resizing the window left empty space or cut off the right-hand buttons. The tools now scale their own windows, lists and logs grow with the window, and small windows scroll. Also new: a splash screen, the GNU GPL v3.0 license, and a **no-AI edition** of WinSuperTool. Missing event logs are greyed out in the monitors, and the AI login no longer stops after an unrelated startup error. | [V1.8.1](docs/changes/V1.8.1.md) |
 | **1.8.2** | Two layout fixes for scaled displays: windows opened partly off the screen, because WinForms centres them before they scale; and controls inside tabs could land in the wrong place or overlap, because a tab page is a 200 x 100 placeholder until its tab control exists. | [V1.8.2](docs/changes/V1.8.2.md) |
 | **1.8.3** | **Hotfix:** in 1.8.1 and 1.8.2, Collect-Logs, Monitor-Logs, WinFixKit and ClaudeLogAnalyzer closed by themselves 1-2 seconds after starting. Closing the splash screen also ended the main window. The splash is now hidden instead, and closed together with the tool. | [V1.8.3](docs/changes/V1.8.3.md) |
-| **1.9** | **WinSuperTool:** Recovery pass / fail summaries, new **System Info** and **Automation** tabs (also in WinPE on the offline Windows), HTML report. **All tools:** windows fit every screen and follow screen changes (two monitors, scaling, docking); in WinPE, WinFixKit now protects the offline Windows' system folders, and task windows work where only PowerShell 7 exists. | [V1.9](docs/changes/V1.9.md) |
+| **1.9.1** | Packaging release: the 1.9 tools unchanged, plus the new **Backup Script Builder** (for FreeFileSync). The betas and pre-releases are now zips inside the main release, with collapsible notes. | [V1.9.1](docs/changes/V1.9.1.md) | pass / fail summaries, new **System Info** and **Automation** tabs (also in WinPE on the offline Windows), HTML report. **All tools:** windows fit every screen and follow screen changes (two monitors, scaling, docking); in WinPE, WinFixKit now protects the offline Windows' system folders, and task windows work where only PowerShell 7 exists. | [V1.9](docs/changes/V1.9.md) |
 
 ### Still open
 
@@ -180,7 +185,7 @@ Earlier phases also ran every WinFixKit fix and undo as admin, the network reset
 
 Details: [`docs/changes/TestCenter-1.0-beta.1.md`](docs/changes/TestCenter-1.0-beta.1.md).
 
-Download `TestCenter-v1.0-beta.1.zip` from the [Test Center pre-release](https://github.com/TheTechSupportGuru/windows-repair-toolkit/releases/tag/testcenter-v1.0-beta.1), extract it and double-click `Start-TestCenter.bat`. Start it as administrator to get only one admin prompt. Test Center has its own version number and is updated only when the test procedures or the test scripts change. When a test fails, **Pack full results** makes a zip with every log for whoever fixes it. That zip contains PC details, so don't post it publicly.
+Download `TestCenter-v1.0-beta.1.zip` from the [latest release](../../releases/latest) (under "Betas and pre-releases"), extract it and double-click `Start-TestCenter.bat`. Start it as administrator to get only one admin prompt. Test Center has its own version number and is updated only when the test procedures or the test scripts change. When a test fails, **Pack full results** makes a zip with every log for whoever fixes it. That zip contains PC details, so don't post it publicly.
 
 To run the unit tests (they read the scripts' code and run no GUI or system changes):
 
@@ -198,10 +203,10 @@ The other scripts in `tests/` are the admin and windowed test runs used on the V
 ## Repository layout
 
 ```
-tools/            the current scripts and launchers (v1.9), incl. the generated no-AI edition
-beta/             beta test builds - none at the moment (1.9 beta 5 became 1.9)
+tools/            the current scripts and launchers (v1.9.1), incl. the generated no-AI edition
+beta/             beta test builds: WinFixKit 1.9 beta-automation (its zips are in the main release)
 build/            Build-NoAIEdition.ps1 (generates the no-AI edition), Promote-Beta.ps1 (makes a beta stable)
-docs/changes/     what each version fixed (V1.2 ... V1.9, the 1.9 betas, Test Center and Backup Script Builder)
+docs/changes/     what each version fixed (V1.2 ... V1.9.1, the 1.9 betas, Test Center and Backup Script Builder)
 docs/testing/     the test plan, results of each phase, and the v1.6 code review
 tests/            Pester unit tests, Test Center (TestCenter.ps1), the test harness and the VM test runs
 LICENSE           GNU General Public License v3.0
