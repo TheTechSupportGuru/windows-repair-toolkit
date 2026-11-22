@@ -16,7 +16,7 @@
 #   Scripted (e.g. your own build):  ... TestCenter.ps1 -ToolsFolder D:\my-build\tools -Run unit-suite,unit-toolkit,sizes -ExitWhenDone
 #   (test ids: the Id values in $Tests below; -Run all = every test that can run here)
 param([string]$ToolsFolder, [string[]]$Run, [switch]$ExitWhenDone)
-$TestCenterVersion = '1.0 beta 1'
+$TestCenterVersion = '1.0 beta 2'
 $ErrorActionPreference = 'Continue'
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 [Windows.Forms.Application]::EnableVisualStyles()
@@ -186,6 +186,15 @@ function Get-OnlineVersions {
         $label = $r.tag_name + $(if ($r.tag_name -eq $latest) { '  (latest)' } elseif ($r.prerelease) { '  (beta)' } else { '' })
         $list += [pscustomobject]@{ Label = $label; Ref = $r.tag_name; Zip = "$RepoUrl/archive/refs/tags/$($r.tag_name).zip" }
     }
+    # Since 1.9.1 betas have no release entry of their own (they ship inside the main release), so beta builds are
+    # found by their git tags. A failure here only hides the betas, never the releases.
+    try {
+        $tags = Invoke-RestMethod -Uri "$ApiUrl/tags?per_page=100" -Headers @{ 'User-Agent' = 'WRT-TestCenter' } -UseBasicParsing -ErrorAction Stop
+        $known = @($list | ForEach-Object { $_.Ref })
+        foreach ($t in @($tags | Where-Object { $_.name -match 'beta' -and $known -notcontains $_.name } | Sort-Object name -Descending)) {
+            $list += [pscustomobject]@{ Label = $t.name + '  (beta)'; Ref = $t.name; Zip = "$RepoUrl/archive/refs/tags/$($t.name).zip" }
+        }
+    } catch {}
     $list += [pscustomobject]@{ Label = 'main  (newest code, may be unreleased)'; Ref = 'main'; Zip = "$RepoUrl/archive/refs/heads/main.zip" }
     $list
 }

@@ -183,9 +183,9 @@ Earlier phases also ran every WinFixKit fix and undo as admin, the network reset
 - **Scripted runs:** `TestCenter.ps1 -ToolsFolder <dir> -Run unit-suite,unit-toolkit -ExitWhenDone`.
 - **Greyed out:** a test that can't run on the PC or with the chosen tools, for example the two-monitor tests on one monitor. Tests that change the PC ask first.
 
-Details: [`docs/changes/TestCenter-1.0-beta.1.md`](docs/changes/TestCenter-1.0-beta.1.md).
+Details: [beta 1](docs/changes/TestCenter-1.0-beta.1.md), [beta 2](docs/changes/TestCenter-1.0-beta.2.md) (Online mode lists the beta tags).
 
-Download `TestCenter-v1.0-beta.1.zip` from the [latest release](../../releases/latest) (under "Betas and pre-releases"), extract it and double-click `Start-TestCenter.bat`. Start it as administrator to get only one admin prompt. Test Center has its own version number and is updated only when the test procedures or the test scripts change. When a test fails, **Pack full results** makes a zip with every log for whoever fixes it. That zip contains PC details, so don't post it publicly.
+Download `TestCenter-v1.0-beta.2.zip` from the [latest release](../../releases/latest) (under "Betas and pre-releases"), extract it and double-click `Start-TestCenter.bat`. Start it as administrator to get only one admin prompt. Test Center has its own version number and is updated only when the test procedures or the test scripts change. When a test fails, **Pack full results** makes a zip with every log for whoever fixes it. That zip contains PC details, so don't post it publicly.
 
 To run the unit tests (they read the scripts' code and run no GUI or system changes):
 
