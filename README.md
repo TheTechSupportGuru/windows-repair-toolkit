@@ -147,7 +147,8 @@ Severity: **S1** = can make the PC unbootable, lose data or act on the wrong dis
 | **1.8.1** | **All tools:** text was blurry or cut off on 125 / 150 / 200 % displays (for example "Run a .ps1..."), and resizing the window left empty space or cut off the right-hand buttons. The tools now scale their own windows, lists and logs grow with the window, and small windows scroll. Also new: a splash screen, the GNU GPL v3.0 license, and a **no-AI edition** of WinSuperTool. Missing event logs are greyed out in the monitors, and the AI login no longer stops after an unrelated startup error. | [V1.8.1](docs/changes/V1.8.1.md) |
 | **1.8.2** | Two layout fixes for scaled displays: windows opened partly off the screen, because WinForms centres them before they scale; and controls inside tabs could land in the wrong place or overlap, because a tab page is a 200 x 100 placeholder until its tab control exists. | [V1.8.2](docs/changes/V1.8.2.md) |
 | **1.8.3** | **Hotfix:** in 1.8.1 and 1.8.2, Collect-Logs, Monitor-Logs, WinFixKit and ClaudeLogAnalyzer closed by themselves 1-2 seconds after starting. Closing the splash screen also ended the main window. The splash is now hidden instead, and closed together with the tool. | [V1.8.3](docs/changes/V1.8.3.md) |
-| **1.9.1** | Packaging release: the 1.9 tools unchanged, plus the new **Backup Script Builder** (for FreeFileSync). The betas and pre-releases are now zips inside the main release, with collapsible notes. | [V1.9.1](docs/changes/V1.9.1.md) | pass / fail summaries, new **System Info** and **Automation** tabs (also in WinPE on the offline Windows), HTML report. **All tools:** windows fit every screen and follow screen changes (two monitors, scaling, docking); in WinPE, WinFixKit now protects the offline Windows' system folders, and task windows work where only PowerShell 7 exists. | [V1.9](docs/changes/V1.9.md) |
+| **1.9** | **WinSuperTool:** Recovery pass / fail summaries, new **System Info** and **Automation** tabs (also in WinPE on the offline Windows), HTML report. **All tools:** windows fit every screen and follow screen changes (two monitors, scaling, docking); in WinPE, WinFixKit now protects the offline Windows' system folders, and task windows work where only PowerShell 7 exists. | [V1.9](docs/changes/V1.9.md) |
+| **1.9.1** | Packaging release: the 1.9 tools unchanged, plus the new **Backup Script Builder** (for FreeFileSync). The betas and pre-releases are now zips inside the main release, with collapsible notes. | [V1.9.1](docs/changes/V1.9.1.md) |
 
 ### Still open
 
@@ -227,31 +228,35 @@ What that means in practice:
 - If you distribute them, changed or not, you must do so under the same license and include the source.
 - They come **without any warranty**.
 
-<!-- Easter egg: update the numbers at every major release (see the "Hours" lines). -->
+<!-- Easter egg: update the numbers at every release (see the "Hours" lines). The previous sheet is kept in docs/timesheets/. -->
 <br><br>
 <details>
 <summary><sub><sup>&pi;</sup></sub></summary>
 
 ### You found the time sheet
 
-How long this project has taken, as of **1.9 and Test Center 1.0 beta 1** (November 2026). For 1.1 onwards, the AI hours are measured from the session logs and the human hours are an honest guess. The original scripts are estimated by the Claude project that wrote them, which had no stopwatch either.
+How long this project has taken, as of **1.9.1** (November 2026): the release where every beta had to be redone into one release, because the releases page sorts by commit date, not by what anyone wants. For 1.1 onwards, the AI hours are measured from the session logs, and the human hours are an honest guess, "which is the polite word for 'vibes'". The original scripts are estimated by the Claude project that wrote them, which had no stopwatch either. The 1.9 sheet is kept in [docs/timesheets/timesheet-1.9.md](docs/timesheets/timesheet-1.9.md), in case anyone wants to audit the vibes.
 
 | | Human | AI |
 |---|---:|---:|
 | Writing the original scripts in claude.ai, Nov 12-19 (the earlier Claude project's own estimate: Windows repair tool, WinFixKit, log collector and monitor, log analyzer) | ~8 h | ~6 h |
 | 1.1 to 1.9 and Test Center: fixing, testing, more testing, releasing | ~14 h | ~11 h of actual thinking and typing, over ~20 h of wall clock |
-| VMs grinding through test runs while everyone else made coffee | ~0 h | ~10 h of machine time, unsupervised |
-| **Total** | **~22 h** | **~17 h** (plus a lot of patient VMs) |
+| 1.9.1: Backup Script Builder, WinFixKit beta-automation 1 and 2 (66 tasks run for real, twice), Test Center beta 2 | ~4 h | ~3 h |
+| Redoing every beta into one release, because the main release must always be on top | ~2 h | ~1 h |
+| VMs grinding through test runs while everyone else made coffee | ~0 h | ~12 h of machine time, unsupervised. The VMs have asked for a union. |
+| **Total** | **~28 h** | **~21 h** (plus a lot of patient VMs) |
 
 **By the numbers**
-- 174 messages from the human, 3,867 replies from the AI. The AI talks too much, and it knows.
-- About 9,600 lines of tool code, 5,100 lines of tests, 1,800 lines of docs.
-- 363 unit tests, 16 releases, 36 commits. More than 100 bugs fixed. One of them was a splash screen that closed the whole app.
+- 47 commits, 13 release entries, 21 tags. Five naming styles on the releases tab at one point. For one word.
+- About 10,800 lines of tool code (plus ~3,800 for the betas and build scripts), 5,800 lines of tests, and ~45,000 words of docs. More docs than some novels, fewer plot twists. Mostly.
+- 403 unit tests, 66 WinFixKit Automation tasks run for real as administrator (twice), and 19 zips in one release.
+- More than 100 bugs fixed. One of them was a splash screen that closed the whole app. Another was a commit stuck in a cloud container, sent home by patch file, like a kid with a note from the teacher.
 - 3 operating systems, 2 monitors, 1 VM that got its display scaling changed more times than any VM should.
 - Number of times the AI mixed up which side the second monitor is on: 1. The human remembers.
-- Number of times a short PowerShell alias (`H`, `R`) secretly turned into `Get-History`: 2. It doesn't forget either.
+- Number of times a short PowerShell alias (`H`, `R`) secretly turned into `Get-History`: 2. PowerShell thinks this is funny.
+- Beta 5 is still not a thing, and never was. Stop asking.
 
-*Updated at every major release. If the human column ever drops below the AI column, someone owes someone a coffee.*
+*Updated at every release. If the human column ever drops below the AI column, someone owes someone a coffee. Please don't tell them about 2.0.*
 
 <details>
 <summary></summary>
@@ -260,15 +265,31 @@ How long this project has taken, as of **1.9 and Test Center 1.0 beta 1** (Novem
 
 | What | Words | Just reading (~230 words a minute) | Hunting for mistakes (~100 words a minute) | Marvelling at it |
 |---|---:|---:|---:|---:|
-| This page | ~3,600 | ~16 min | ~36 min | open-ended |
-| Every doc in the repo (change notes, test plans, results) | ~42,500 | ~3 h | ~7 h | open-ended |
-| Every release note | ~5,400 | ~25 min | ~55 min | open-ended |
-| The ~9,600 lines of tool code | - | ~5 h if you skim | ~2 working days | **the rest of your life** |
-| **Everything** | **~51,500** | **~9 h** | **~4 working days** | **forever** |
+| This page | ~4,100 | ~18 min | ~40 min | open-ended |
+| Every doc in the repo (change notes, test plans, results) | ~41,000 | ~3 h | ~7 h | open-ended |
+| Every release note (now mostly one very long one) | ~6,500 | ~30 min | ~1 h | open-ended |
+| The ~14,600 lines of tool, beta and build code | - | ~7 h if you skim | ~3 working days | **the rest of your life** |
+| **Everything** | **~51,600** | **~11 h** | **~4.5 working days** | **forever** |
 
-Marvelling takes so long because, as far as we can tell, nothing else does all of this at once: boot repair, Safe Mode, deployment, log collection, a live monitor, AI log analysis, an automation queue that also repairs a Windows that won't start from Hiren's PE, and a test tool to check all of it. If you find one, please open an issue so we can be a little less smug.
+Marvelling takes so long because, as far as we can tell, nothing else does all of this at once: boot repair, Safe Mode, deployment, log collection, a live monitor, AI log analysis, an automation queue that also repairs a Windows that won't start from Hiren's PE, FreeFileSync backups on a schedule, and a test tool to check all of it. If you find one, please open an issue so we can be a little less smug.
 
-The "hunting for mistakes" column is not theoretical. One proofreading pass found five naming styles on the releases tab, a beta that never existed in the bug form, and a link to a folder that never left the PC.
+The "hunting for mistakes" column is not theoretical. One proofreading pass found five naming styles on the releases tab, a beta that never existed in the bug form, and a link to a folder that never left the PC. The next one found the 1.9.1 row of the version table moved into the middle of the 1.9 row.
+
+<details>
+<summary></summary>
+
+**What each tool went through in 1.9.1**
+
+| Tool | What happened to it | How it feels about it |
+|---|---|---|
+| WinSuperTool | Nothing. Still 1.9, zip renamed to 1.9.1. | Smug. |
+| WinFixKit | Grew an Automation tab in a beta, had all 66 tasks run for real twice, lost 4 bugs, and learned that an empty Recycle Bin is not an emergency. | Tired, but cleaner. |
+| Backup Script Builder | Born. Builds and schedules FreeFileSync backups, with a ? next to everything. | New, keen, asks a lot of questions. |
+| Test Center | Beta 2: learned that betas no longer have their own release entries and went looking for their tags instead. | Mildly confused, coping. |
+| The betas | Moved out of their own release entries into collapsible sections of the main release. | Folded. Literally. |
+| The releases page | Renamed, re-sorted, then reduced to one release on top. | Finally at peace. |
+
+</details>
 
 </details>
 

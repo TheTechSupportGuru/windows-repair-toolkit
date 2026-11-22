@@ -10,7 +10,7 @@ Re-run with:
 powershell -NoProfile -ExecutionPolicy Bypass -Command "Invoke-Pester -Script '.\Tests\Suite.Tests.ps1'"
 ```
 
-Files: [Tests/Harness.ps1](../../tests/Harness.ps1) (pulls functions out of the scripts) · [Tests/Suite.Tests.ps1](../../tests/Suite.Tests.ps1) (the tests) · [Tests/last-run.xml](../../tests/last-run.xml) (NUnit results)
+Files: [Tests/Harness.ps1](../../tests/Harness.ps1) (pulls functions out of the scripts) · [Tests/Suite.Tests.ps1](../../tests/Suite.Tests.ps1) (the tests) · `Tests/last-run.xml` (NUnit results of that run; not kept in the repository)
 
 ---
 
