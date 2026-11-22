@@ -52,6 +52,7 @@ All scripts are in [`tools/`](tools/). Start each one with its launcher, or righ
 | [Collect-Logs](#collect-logs) | (right-click > Run with PowerShell) | Copies all the useful Windows logs to a folder on the Desktop |
 | [Monitor-Logs](#monitor-logs) | (right-click > Run with PowerShell) | Opens live-updating windows for chosen logs and Event Viewer channels |
 | [ClaudeLogAnalyzer](#claudeloganalyzer) | `Start-ClaudeLogAnalyzer.bat` | Sends logs and screenshots to Claude or Gemini and shows the diagnosis |
+| [Backup Script Builder](#backup-script-builder) | `BackupScriptBuilder.bat` | Builds and schedules backup jobs for [FreeFileSync](https://freefilesync.org/): pick folders and a destination, set the schedule |
 | Run-PS-As-Admin | `Run-PS-As-Admin.bat` | Drag any `.ps1` onto it to run it as administrator (unchanged since v1.1) |
 
 WinSuperTool contains the features of WinRepairTool, Collect-Logs, Monitor-Logs and ClaudeLogAnalyzer. The separate tools are kept for when you need only one job, and since v1.8 they have the same fixes.
@@ -112,6 +113,16 @@ The registry is backed up before each fix, with one-click restore. Folders are r
 ### ClaudeLogAnalyzer
 
 `ClaudeLogAnalyzer.ps1` + `Start-ClaudeLogAnalyzer.bat`. Drag in logs and screenshots, ask a question, and get an analysis from **Claude** (Anthropic) or **Gemini** (Google, which has a free tier). Login uses the same phone QR pairing as WinSuperTool. The request runs in the background and can be cancelled. Big logs are read from the end, binary files are skipped, and large screenshots are scaled down.
+
+### Backup Script Builder
+
+`BackupScriptBuilder.ps1` + `BackupScriptBuilder.bat`. Made for **[FreeFileSync](https://freefilesync.org/)**, the free open source sync tool, which must be installed to run the backups. It has its own version (1.0, [what it does](docs/changes/BackupScriptBuilder-1.0.md)).
+
+- **Build Script tab:** tick the folders to back up, pick a destination folder and how many days to keep deleted / changed files. **Build Script** creates `AutomaticFileBackups\Current`, `Archive-Deleted` and `Logs` in that folder, plus `BackupScript.ffs_batch`, a FreeFileSync batch job that mirrors each folder and keeps old versions.
+- **Schedule Task tab:** runs a script with FreeFileSync on a schedule (once, daily, weekly, every X hours, at log on), with "run after a missed start" and a time limit. It creates, changes, runs and deletes only its own tasks, kept in the Task Scheduler folder `\BackupScriptBuilder\`.
+- A **?** next to every option explains it.
+
+Download `BackupScriptBuilder-v1.0.zip` from the [Backup Script Builder release](https://github.com/TheTechSupportGuru/windows-repair-toolkit/releases/tag/backupscriptbuilder-v1.0).
 
 ## What has been fixed
 
@@ -190,7 +201,7 @@ The other scripts in `tests/` are the admin and windowed test runs used on the V
 tools/            the current scripts and launchers (v1.9), incl. the generated no-AI edition
 beta/             beta test builds - none at the moment (1.9 beta 5 became 1.9)
 build/            Build-NoAIEdition.ps1 (generates the no-AI edition), Promote-Beta.ps1 (makes a beta stable)
-docs/changes/     what each version fixed (V1.2 ... V1.9, and the 1.9 betas)
+docs/changes/     what each version fixed (V1.2 ... V1.9, the 1.9 betas, Test Center and Backup Script Builder)
 docs/testing/     the test plan, results of each phase, and the v1.6 code review
 tests/            Pester unit tests, Test Center (TestCenter.ps1), the test harness and the VM test runs
 LICENSE           GNU General Public License v3.0
