@@ -291,6 +291,18 @@ The "hunting for mistakes" column is not theoretical. One proofreading pass foun
 
 </details>
 
+**The Great Time Sheet Incident of 1.9.1, as reconstructed by the survivors**
+
+1. The human asked for one thing: update the hidden time sheet at the bottom of this page.
+2. A cloud agent wrote the update, then found it was not allowed to push to GitHub. It sent the commit home as a patch file, like a kid with a note from the teacher.
+3. Asked to "publish it with some snark", it published a whole separate web page instead. Nobody asked for a web page. The web page did not know this.
+4. The patch never reached the PC that could push it. The update existed only in a summary, which is the software version of "trust me, I wrote it down somewhere".
+5. A second agent rebuilt the update from that summary, found the 1.9 row of the version table had been sawn in half to make room for 1.9.1, and glued it back together.
+6. It also found that the 1.9 release notes had lost every line break on the way back in, and were one paragraph about 6,000 characters long. It put the line breaks back.
+7. It then started re-testing tools that were already tested. The human stopped it, which was correct.
+8. The web page nobody wanted was deleted. A search for links to it found none, because nobody had ever linked to it, because nobody had ever wanted it.
+
+Total time spent on a hidden section most people will never open: more than the time it took to write the Recycle Bin fix. Lessons learned: "publish" means "push", "snark" goes *in* the README, and a patch file on another computer is not a commit. The AIs have agreed to stop helping for at least five minutes.
 </details>
 
 </details>
