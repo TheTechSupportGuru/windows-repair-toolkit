@@ -122,7 +122,7 @@ The registry is backed up before each fix, with one-click restore. Folders are r
 - **Schedule Task tab:** runs a script with FreeFileSync on a schedule (once, daily, weekly, every X hours, at log on), with "run after a missed start" and a time limit. It creates, changes, runs and deletes only its own tasks, kept in the Task Scheduler folder `\BackupScriptBuilder\`.
 - A **?** next to every option explains it.
 
-Download `BackupScriptBuilder-v1.0.zip` from the [Backup Script Builder release](https://github.com/TheTechSupportGuru/windows-repair-toolkit/releases/tag/backupscriptbuilder-v1.0).
+Download `BackupScriptBuilder-v1.0.zip` from the [latest release](../../releases/latest) (it was added to v1.9).
 
 ## What has been fixed
 
