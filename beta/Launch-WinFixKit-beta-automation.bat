@@ -1,5 +1,5 @@
 @echo off
-rem WinFixKit 1.9 beta-automation 1 (2026-11-21). What changed: docs/changes/WinFixKit-1.9-beta-automation.1.md
+rem WinFixKit 1.9 beta-automation 2 (2026-11-21). What changed: docs/changes/WinFixKit-1.9-beta-automation.2.md
 rem Windows Repair Toolkit - Copyright (C) 2026 TheTechSupportGuru - SPDX-License-Identifier: GPL-3.0-or-later
 rem Free software under the GNU General Public License v3 or (at your option) any later version, WITHOUT ANY WARRANTY. See LICENSE
 setlocal

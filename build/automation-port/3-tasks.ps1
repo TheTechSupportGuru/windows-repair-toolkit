@@ -15,6 +15,9 @@ function Get-WfkPrelude {
     $fns = $ast.FindAll({ param($x) $x -is [Management.Automation.Language.FunctionDefinitionAst] -and $x.Extent.StartOffset -ge $from -and $x.Extent.StartOffset -lt $secAt }, $false)
     $sb = New-Object Text.StringBuilder
     [void]$sb.AppendLine('$ErrorActionPreference = ''Continue''')
+    # no progress bars: they are drawn over the console text, which the summary reads back (Add-AppxPackage hid the
+    # result line that way in the first full test)
+    [void]$sb.AppendLine('$ProgressPreference = ''SilentlyContinue''')
     foreach ($n in 'RootDir', 'LogDir', 'ReportDir', 'RegDir', 'RegKeyDir', 'RegFullDir') {
         [void]$sb.AppendLine(('$script:{0} = ''{1}''' -f $n, (Esc-Sq ([string](Get-Variable -Scope Script -Name $n -ValueOnly)))))
     }
@@ -26,26 +29,34 @@ function Get-WfkPrelude {
 }
 # The task-window code of one fix or status check: the helpers, the block itself (its output shows live), then one
 # result line that the rules above read.
+# Only the errors the block SHOWS are counted: they come out of its error stream (2>&1) and are printed in red.
+# (Counting $Error or -ErrorVariable, as at first, also counted errors a fix silences on purpose, e.g. "stop SearchApp
+# if it is running" - found in the first full test.)
 function Get-WfkCall($c) {
     $isFix = [bool]$c.Act
     $what = if ($isFix) { 'fix' } else { 'status check' }
     $block = if ($isFix) { $c.Act.Run.ToString() } else { $c.Sec.Status.ToString() }
+    if ($block -notmatch '^\s*param\s*\(') { $block = 'param($Arg)' + $NL + $block }
     $sb = New-Object Text.StringBuilder
     [void]$sb.AppendLine((Get-WfkPrelude))
-    [void]$sb.AppendLine('$WfkE0 = $Error.Count; $WfkOk = $true')
+    [void]$sb.AppendLine('function Invoke-WfkBlock {')
+    [void]$sb.AppendLine('[CmdletBinding()]')
+    [void]$sb.AppendLine($block.Trim())
+    [void]$sb.AppendLine('}')
+    [void]$sb.AppendLine('$WfkEv = @(); $WfkOk = $true')
     [void]$sb.AppendLine('try {')
     if ($isFix -and $c.Act.Registry) {
         [void]$sb.AppendLine('    Write-Host ''--- REGISTRY SAFETY: full backup + per-item originals ---'' -ForegroundColor Yellow')
         [void]$sb.AppendLine('    (Ensure-FullRegBackup | Out-String -Width 220).TrimEnd() | Write-Host')
     }
     [void]$sb.AppendLine('    Write-Host ''--- RUNNING ---'' -ForegroundColor Yellow')
-    [void]$sb.AppendLine('    & {')
-    [void]$sb.AppendLine($block)
-    [void]$sb.AppendLine('    } $null 2>&1 | Out-Host')
+    # also counted: lines in which the fix itself says a step failed ("Failed Microsoft.WindowsStore: ...") - several fixes
+    # catch their errors and report them as text (second full test: Store re-registers looked clean without this)
+    [void]$sb.AppendLine('    Invoke-WfkBlock 2>&1 | ForEach-Object { if ($_ -is [Management.Automation.ErrorRecord]) { $WfkEv += $_; Write-Host (($_ | Out-String).Trim()) -ForegroundColor Red } elseif ($_ -is [string] -and $_ -match ''^\s*(FAILED|Failed|ERROR|Error)\b'') { $WfkEv += $_; Write-Host $_ -ForegroundColor Red } else { $_ } } | Out-Host')
     [void]$sb.AppendLine('} catch { $WfkOk = $false; Write-Host ''''; Write-Host (''WinFixKit ' + $what + ' FAILED: '' + $_.Exception.Message) -ForegroundColor Red }')
     if ($isFix) {
-        [void]$sb.AppendLine('$WfkN = $Error.Count - $WfkE0')
-        [void]$sb.AppendLine('if ($WfkOk) { Write-Host ''''; if ($WfkN -gt 0) { Write-Host (''WinFixKit fix finished with {0} error message(s) - read the output above.'' -f $WfkN) -ForegroundColor Yellow } else { Write-Host ''WinFixKit fix finished without error messages.'' -ForegroundColor Green } }')
+        [void]$sb.AppendLine('$WfkN = @($WfkEv).Count')
+        [void]$sb.AppendLine('if ($WfkOk) { Write-Host ''''; if ($WfkN -gt 0) { Write-Host (''WinFixKit fix finished with {0} error message(s) or failed step(s) - read the output above.'' -f $WfkN) -ForegroundColor Yellow } else { Write-Host ''WinFixKit fix finished without error messages.'' -ForegroundColor Green } }')
     } else {
         # a status check reports what it could not read as part of its output, so errors there are normal
         [void]$sb.AppendLine('if ($WfkOk) { Write-Host ''''; Write-Host ''WinFixKit status check finished.'' -ForegroundColor Green }')

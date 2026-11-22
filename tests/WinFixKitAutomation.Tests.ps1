@@ -47,9 +47,14 @@ Describe 'W1 WinFixKit beta-automation: the file' {
         $stable = @([IO.File]::ReadAllLines((Join-Path $Root 'tools\WinFixKit.ps1')))
         $s = [regex]::Match($BetaText, '(?m)^#region AUTOMATION\r?$').Index; $e = [regex]::Match($BetaText, '(?m)^#endregion AUTOMATION').Index
         $outside = @(($BetaText.Substring(0, $s) + $BetaText.Substring($e + '#endregion AUTOMATION'.Length)) -split '\r?\n')
-        $diff = @(Compare-Object $stable $outside | ForEach-Object { $_.InputObject.Trim() } | Where-Object { $_ })
+        $cmp = @(Compare-Object $stable $outside | Where-Object { $_.InputObject.Trim() })
         $allowed = '^# (Version 1\.9|BETA:|RULE:|\s+The ported code)|WinFixKit \(BETA: Automation\)|WinFixKit - Windows Troubleshooting Power Tool|^Initialize-WrtWindow \$script:Form @\((\$tpAuto)?\) 900 600$'
-        @($diff | Where-Object { $_ -notmatch $allowed }) | Should BeNullOrEmpty
+        # fixes to WinFixKit itself found while testing the beta: each changed line is marked "(beta-automation N fix: ...)"
+        $marked = @($cmp | Where-Object { $_.SideIndicator -eq '=>' -and $_.InputObject -match '\(beta-automation \d+ fix: ' })
+        $other = @($cmp | Where-Object { $_.InputObject.Trim() -notmatch $allowed -and $_.InputObject -notmatch '\(beta-automation \d+ fix: ' })
+        # what is left: the stable lines those marked fixes replaced (one each), nothing else
+        @($other | Where-Object { $_.SideIndicator -eq '=>' }) | Should BeNullOrEmpty
+        @($other | Where-Object { $_.SideIndicator -eq '<=' }).Count | Should Not BeGreaterThan $marked.Count
     }
     It 'has a launcher that starts the beta script' -Skip:(-not $HasBeta) {
         $bat = [IO.File]::ReadAllText((Join-Path $Root 'beta\Launch-WinFixKit-beta-automation.bat'))
@@ -123,6 +128,16 @@ Describe 'W3 the WinFixKit task list' {
         (Get-TaskVerdict 'wfk-fix' "--- RUNNING ---`r`nReboot is required.`r`n`r`nWinFixKit fix finished with 2 error message(s) - read the output above." 0).Find | Should Be 'FIX RAN - WITH ERROR MESSAGES - RESTART NEEDED'
         $v = Get-TaskVerdict 'wfk-fix' "--- RUNNING ---`r`n`r`nWinFixKit fix FAILED: Access is denied" 1; $v.Ok | Should Be $false; $v.Quote | Should Be 'WinFixKit fix FAILED: Access is denied'
         (Get-TaskVerdict 'wfk-status' "x`r`n`r`nWinFixKit status check finished." 0).Find | Should Match '^STATUS SAVED'
+    }
+    It 'counts only the errors a fix SHOWS (a silenced one is not an error; found in the first full test)' -Skip:(-not $HasBeta) {
+        $run = { param($block) $fake = [pscustomobject]@{ Kind = 'wfk-fix'; Name = 'stand-in'; Sec = @{ Name = 'Test' }; Act = @{ Label = 'stand-in'; Run = $block } }
+            $out = & powershell.exe -NoProfile -ExecutionPolicy Bypass -Command ((Get-WfkCall $fake) + "; exit `$LASTEXITCODE") 2>&1 | Out-String
+            Get-TaskVerdict 'wfk-fix' $out $LASTEXITCODE }
+        (& $run { param($x) Get-Process NoSuchProcessXyz -ErrorAction SilentlyContinue; 'silenced only' }).Find | Should Be 'FIX RAN - no error messages'
+        (& $run { param($x) Write-Error 'a step failed'; 'Reboot is required to finish.' }).Find | Should Be 'FIX RAN - WITH ERROR MESSAGES - RESTART NEEDED'
+        $v = & $run { param($x) throw 'boom' }; $v.Ok | Should Be $false; $v.Quote | Should Be 'WinFixKit fix FAILED: boom'
+        # a fix that catches its own error and reports it as text (the Store re-registers do; second full test)
+        (& $run { param($x) 'Re-registering...'; 'Failed Microsoft.WindowsStore: Deployment failed with HRESULT: 0x80073D02'; 'Done.' }).Find | Should Be 'FIX RAN - WITH ERROR MESSAGES'
     }
     It 'in WinPE every task says it needs the running Windows' -Skip:(-not $HasBeta) {
         $IsWinPE = $true; (Get-AutoWhyNot 'restore-point') | Should Match 'running Windows'; $IsWinPE = $false
