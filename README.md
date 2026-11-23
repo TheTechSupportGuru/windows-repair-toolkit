@@ -169,7 +169,7 @@ Severity: **S1** = can make the PC unbootable, lose data or act on the wrong dis
 
 ### Still open
 
-- **Backup Script Builder folder picker (known bug):** some folders are missing from the folder list, including Desktop and OneDrive. Until it is fixed, add a missing folder by typing or pasting its path. A fix is planned for the next update.
+- **Backup Script Builder folder picker (known bug):** some folders are missing from the folder list, including Desktop and OneDrive. Until it is fixed, open the created `BackupScript.ffs_batch` in FreeFileSync and add the missing folder pair there. A fix is planned for the next update.
 - **K16 / S12 / R10:** a few long jobs (registry save, Store app scans, diskpart) still run on the window's thread, so the window can pause briefly.
 - **R14:** WinRepairTool keeps no permanent activity log (WinSuperTool does).
 
