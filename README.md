@@ -5,11 +5,11 @@ A set of PowerShell tools for repairing and troubleshooting Windows 10/11 PCs, i
 > [!WARNING]
 > These scripts were written with AI. They have been tested on Windows 11, Windows 10 64-bit (MBR disk), and Hiren's BootCD PE 10 and 11, all in VMs. They have not been tested on many real PCs. Several tools change the boot configuration (BCD), the registry, services and network settings. **Use at your own risk.** Try them on a test machine first.
 
-**Current version: 1.9.1** (2026-11-22; the tools are those of 1.9, plus Backup Script Builder). Every version is a git tag (`v1.1` to `v1.9.1`), so `git diff v1.8.3 v1.9` shows exactly what changed. Licensed under the [GNU GPL v3.0](#license).
+**Current version: 1.9.2** (2026-11-22; the tools are those of 1.9, plus Backup Script Builder). Every version is a git tag (`v1.1` to `v1.9.2`), so `git diff v1.8.3 v1.9` shows exactly what changed. Licensed under the [GNU GPL v3.0](#license).
 
 ## Download
 
-Get a single tool from the [latest release](../../releases/latest). Each tool has its own zip (for example `WinSuperTool-v1.9.1.zip`) with the script, its launcher, a short read-me and the license. **Source code** contains everything. Every older version is on the [releases page](../../releases) too.
+Get the tools from the [latest release](../../releases/latest). The main downloads are **WinSuperTool**, **WinSuperTool-NoAI**, **WinFixKit** and **Backup Script Builder**, each its own zip with the script, its launcher, a short read-me and the license. The smaller separate tools (WinRepairTool, Collect-Logs, Monitor-Logs, ClaudeLogAnalyzer) are all in **`IndividualTools-v1.9.2.zip`**, started with its `Run-PS-As-Admin.bat`; each of them is also part of WinSuperTool. The current betas are there too. **Source code** contains everything.
 
 **Don't want AI?** `WinSuperTool-NoAI-v1.9.1.zip` is WinSuperTool without the AI Analyze tab:
 - no phone login and no network listener;
@@ -17,6 +17,10 @@ Get a single tool from the [latest release](../../releases/latest). Each tool ha
 - everything else is the same.
 
 Windows marks downloaded files as blocked: right-click the zip > **Properties** > tick **Unblock** before extracting.
+
+## New in 1.9.2
+
+- **Fewer downloads:** WinRepairTool, Collect-Logs, Monitor-Logs and ClaudeLogAnalyzer are now one zip, `IndividualTools-v1.9.2.zip`, with one shared launcher (`Run-PS-As-Admin.bat`: drag a `.ps1` onto it). `Start-ClaudeLogAnalyzer.bat` is gone. The tools themselves are unchanged ([V1.9.2](docs/changes/V1.9.2.md)).
 
 ## New in 1.9.1
 
@@ -56,7 +60,7 @@ All scripts are in [`tools/`](tools/). Start each one with its launcher, or righ
 | [WinRepairTool](#winrepairtool) | (right-click > Run with PowerShell) | A smaller boot and deployment toolkit: mount, Safe Mode, Sysprep, boot repair |
 | [Collect-Logs](#collect-logs) | (right-click > Run with PowerShell) | Copies all the useful Windows logs to a folder on the Desktop |
 | [Monitor-Logs](#monitor-logs) | (right-click > Run with PowerShell) | Opens live-updating windows for chosen logs and Event Viewer channels |
-| [ClaudeLogAnalyzer](#claudeloganalyzer) | `Start-ClaudeLogAnalyzer.bat` | Sends logs and screenshots to Claude or Gemini and shows the diagnosis |
+| [ClaudeLogAnalyzer](#claudeloganalyzer) | (Run-PS-As-Admin.bat) | Sends logs and screenshots to Claude or Gemini and shows the diagnosis |
 | [Backup Script Builder](#backup-script-builder) | `BackupScriptBuilder.bat` | Builds and schedules backup jobs for [FreeFileSync](https://freefilesync.org/): pick folders and a destination, set the schedule |
 | Run-PS-As-Admin | `Run-PS-As-Admin.bat` | Drag any `.ps1` onto it to run it as administrator (unchanged since v1.1) |
 
@@ -98,7 +102,14 @@ The registry is backed up before each fix, with one-click restore. Folders are r
 
 **Beta:** WinFixKit with an **Automation** tab (a queue of up to 10 status checks and fixes, each with a pass / fail result, a final summary and an HTML report) is in the latest release as WinFixKit-v1.9-beta-automation.2.zip. Notes: [beta-automation 2](docs/changes/WinFixKit-1.9-beta-automation.2.md).
 
-### WinRepairTool
+### Individual tools
+
+WinRepairTool, Collect-Logs, Monitor-Logs and ClaudeLogAnalyzer are in `IndividualTools-v1.9.2.zip`. Each is also part of WinSuperTool, and is kept separate for when you need only one job. Start one by dragging its `.ps1` onto `Run-PS-As-Admin.bat`.
+
+<details>
+<summary>Show the individual tools</summary>
+
+#### WinRepairTool
 
 `WinRepairTool-startup.ps1`. The older, smaller version of WinSuperTool's boot and deployment tabs. Runs on Windows 11 and in WinPE.
 
@@ -109,17 +120,19 @@ The registry is backed up before each fix, with one-click restore. Folders are r
 | Sysprep | Fixed Sysprep commands, one at a time, optional `/mode:vm`, plus an unattend builder |
 | Recovery | Experimental boot-repair tools |
 
-### Collect-Logs
+#### Collect-Logs
 
 `Collect-Logs.ps1`. Copies Windows Update, DISM/CBS, Event Viewer, crash, setup and system-info logs to `<Desktop of the logged-in user>\logs`, with a summary file. Pick the categories, press Collect, and use **Stop** to cancel.
 
-### Monitor-Logs
+#### Monitor-Logs
 
 `Monitor-Logs.ps1`. Pick logs, press **Launch selected**, and each one opens in its own PowerShell window that shows new lines as they are written. Event Viewer channels can be followed live and filtered by event ID, and folders can be watched for new files.
 
-### ClaudeLogAnalyzer
+#### ClaudeLogAnalyzer
 
-`ClaudeLogAnalyzer.ps1` + `Start-ClaudeLogAnalyzer.bat`. Drag in logs and screenshots, ask a question, and get an analysis from **Claude** (Anthropic) or **Gemini** (Google, which has a free tier). Login uses the same phone QR pairing as WinSuperTool. The request runs in the background and can be cancelled. Big logs are read from the end, binary files are skipped, and large screenshots are scaled down.
+`ClaudeLogAnalyzer.ps1`. Drag in logs and screenshots, ask a question, and get an analysis from **Claude** (Anthropic) or **Gemini** (Google, which has a free tier). Login uses the same phone QR pairing as WinSuperTool. The request runs in the background and can be cancelled. Big logs are read from the end, binary files are skipped, and large screenshots are scaled down.
+
+</details>
 
 ### Backup Script Builder
 
