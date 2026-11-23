@@ -21,7 +21,7 @@ Windows marks downloaded files as blocked: right-click the zip > **Properties** 
 ## New in 1.9.1
 
 - **Backup Script Builder 1.0**, a new tool for [FreeFileSync](https://freefilesync.org/) backups (see [below](#backup-script-builder)).
-- **One release on top:** the main release holds the 8 tools, Backup Script Builder and only the **newest beta** of each tool in testing (WinFixKit beta-automation 2, Test Center beta 2), with their notes in collapsible sections. Older betas are kept in the [v1.9 release](../../releases/tag/v1.9) ([V1.9.1](docs/changes/V1.9.1.md)). The 8 tools are unchanged from 1.9.
+- **Betas to try** (in the latest release, under "Betas"): **WinFixKit with an Automation tab** (beta-automation 2: a queue of its status checks and fixes, each with a pass / fail result) and **Test Center beta 2**. The 8 tools are unchanged from 1.9 ([V1.9.1](docs/changes/V1.9.1.md)).
 
 ## New in 1.9
 
@@ -33,7 +33,7 @@ The 1.9 beta is now the stable WinSuperTool ([what changed in 1.9](docs/changes/
 - **Automation in WinPE:** the queue repairs the Windows that does not start (SFC, DISM, chkdsk, and **Check disk and REPAIR** `chkdsk /f`), tested in Hiren's BootCD PE 10 and PE 11.
 - **All tools:** windows that fit every screen from 720p to 4K, at any scaling, on one or two monitors, also when the screen changes while a tool is open; WinPE fixes (PowerShell 7 only, offline Windows protected in WinFixKit).
 
-If something gets a result wrong, please open a [bug report](../../issues/new?template=1-bug-report.yml), choose version **1.9**, and attach the saved output from `WinSuperTool-Data\Task-Results`.
+If something gets a result wrong, please open a [bug report](../../issues/new?template=1-bug-report.yml), choose your version, and attach the saved output from `WinSuperTool-Data\Task-Results`.
 ## Bugs, ideas and questions
 
 - **Something broken?** Open a [bug report](../../issues/new?template=1-bug-report.yml).
@@ -96,6 +96,8 @@ On every tab:
 
 The registry is backed up before each fix, with one-click restore. Folders are renamed instead of deleted where possible, so fixes can be undone. Logs, reports and backups go to `Desktop\WinFixKit`.
 
+**Beta:** WinFixKit with an **Automation** tab (a queue of up to 10 status checks and fixes, each with a pass / fail result, a final summary and an HTML report) is in the latest release as WinFixKit-v1.9-beta-automation.2.zip. Notes: [beta-automation 2](docs/changes/WinFixKit-1.9-beta-automation.2.md).
+
 ### WinRepairTool
 
 `WinRepairTool-startup.ps1`. The older, smaller version of WinSuperTool's boot and deployment tabs. Runs on Windows 11 and in WinPE.
@@ -148,7 +150,7 @@ Severity: **S1** = can make the PC unbootable, lose data or act on the wrong dis
 | **1.8.2** | Two layout fixes for scaled displays: windows opened partly off the screen, because WinForms centres them before they scale; and controls inside tabs could land in the wrong place or overlap, because a tab page is a 200 x 100 placeholder until its tab control exists. | [V1.8.2](docs/changes/V1.8.2.md) |
 | **1.8.3** | **Hotfix:** in 1.8.1 and 1.8.2, Collect-Logs, Monitor-Logs, WinFixKit and ClaudeLogAnalyzer closed by themselves 1-2 seconds after starting. Closing the splash screen also ended the main window. The splash is now hidden instead, and closed together with the tool. | [V1.8.3](docs/changes/V1.8.3.md) |
 | **1.9** | **WinSuperTool:** Recovery pass / fail summaries, new **System Info** and **Automation** tabs (also in WinPE on the offline Windows), HTML report. **All tools:** windows fit every screen and follow screen changes (two monitors, scaling, docking); in WinPE, WinFixKit now protects the offline Windows' system folders, and task windows work where only PowerShell 7 exists. | [V1.9](docs/changes/V1.9.md) |
-| **1.9.1** | Packaging release: the 1.9 tools unchanged, plus the new **Backup Script Builder** (for FreeFileSync). The newest betas are zips inside the main release, with collapsible notes; older betas are kept in the v1.9 release. | [V1.9.1](docs/changes/V1.9.1.md) |
+| **1.9.1** | Packaging release: the 1.9 tools unchanged, plus the new **Backup Script Builder** (for FreeFileSync). | [V1.9.1](docs/changes/V1.9.1.md) |
 
 ### Still open
 
@@ -184,9 +186,9 @@ Earlier phases also ran every WinFixKit fix and undo as admin, the network reset
 - **Scripted runs:** `TestCenter.ps1 -ToolsFolder <dir> -Run unit-suite,unit-toolkit -ExitWhenDone`.
 - **Greyed out:** a test that can't run on the PC or with the chosen tools, for example the two-monitor tests on one monitor. Tests that change the PC ask first.
 
-Details: [beta 1](docs/changes/TestCenter-1.0-beta.1.md), [beta 2](docs/changes/TestCenter-1.0-beta.2.md) (Online mode lists the beta tags).
+Details: [Test Center 1.0 beta 2](docs/changes/TestCenter-1.0-beta.2.md).
 
-Download `TestCenter-v1.0-beta.2.zip` from the [latest release](../../releases/latest) (under "Betas and pre-releases"), extract it and double-click `Start-TestCenter.bat`. Start it as administrator to get only one admin prompt. Test Center has its own version number and is updated only when the test procedures or the test scripts change. When a test fails, **Pack full results** makes a zip with every log for whoever fixes it. That zip contains PC details, so don't post it publicly.
+Download `TestCenter-v1.0-beta.2.zip` from the [latest release](../../releases/latest) (under "Betas"), extract it and double-click `Start-TestCenter.bat`. Start it as administrator to get only one admin prompt. Test Center has its own version number and is updated only when the test procedures or the test scripts change. When a test fails, **Pack full results** makes a zip with every log for whoever fixes it. That zip contains PC details, so don't post it publicly.
 
 To run the unit tests (they read the scripts' code and run no GUI or system changes):
 
@@ -205,7 +207,7 @@ The other scripts in `tests/` are the admin and windowed test runs used on the V
 
 ```
 tools/            the current scripts and launchers (v1.9.1), incl. the generated no-AI edition
-beta/             beta test builds: WinFixKit 1.9 beta-automation (its zips are in the main release)
+beta/             the current beta: WinFixKit 1.9 beta-automation (WinFixKit with an Automation tab)
 build/            Build-NoAIEdition.ps1 (generates the no-AI edition), Promote-Beta.ps1 (makes a beta stable)
 docs/changes/     what each version fixed (V1.2 ... V1.9.1, the 1.9 betas, Test Center and Backup Script Builder)
 docs/testing/     the test plan, results of each phase, and the v1.6 code review
