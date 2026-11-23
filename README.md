@@ -46,7 +46,7 @@ If something gets a result wrong, please open a [bug report](../../issues/new?te
 - **A how-to question?** Ask in [Q&A](../../discussions/new?category=q-a).
 - **A pull request?** Read [CONTRIBUTING.md](CONTRIBUTING.md) first. Code may only use the runtimes built into the supported systems (Windows 11, Windows 10 64-bit, and Hiren's BootCD PE 10 and 11): Windows PowerShell 5.1 (PowerShell 7 in PE 10), .NET / WinForms and cmd. Any program that comes with Windows is fine; other runtimes, modules and third-party tools are not.
 
-Each form asks which tool and which part of it (tab or section) you mean, so reports reach the right place. Before posting logs or screenshots, remove your PC name, user name, IP addresses and any API key.
+Each form asks which tool you mean (WinSuperTool and its individual tools share one entry) and, optionally, which tab or part. Before posting logs or screenshots, remove your PC name, user name, IP addresses and any API key.
 
 ## The tools
 
