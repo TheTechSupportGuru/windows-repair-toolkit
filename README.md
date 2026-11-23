@@ -245,8 +245,9 @@ How long this project has taken, as of **1.9.1** (November 2026): the release wh
 | 1.1 to 1.9 and Test Center: fixing, testing, more testing, releasing | ~14 h | ~11 h of actual thinking and typing, over ~20 h of wall clock |
 | 1.9.1: Backup Script Builder, WinFixKit beta-automation 1 and 2 (66 tasks run for real, twice), Test Center beta 2 | ~4 h | ~3 h |
 | Redoing every beta into one release, because the main release must always be on top | ~2 h | ~1 h |
+| Then un-redoing it: moving the old betas back out, because one release with 19 zips is not a release, it is a yard sale | ~1 h | ~0.5 h |
 | VMs grinding through test runs while everyone else made coffee | ~0 h | ~12 h of machine time, unsupervised. The VMs have asked for a union. |
-| **Total** | **~28 h** | **~21 h** (plus a lot of patient VMs) |
+| **Total** | **~29 h** | **~21.5 h** (plus a lot of patient VMs, and one very tired releases page) |
 
 **By the numbers**
 - 47 commits, 13 release entries, 21 tags. Five naming styles on the releases tab at one point. For one word.
@@ -257,6 +258,8 @@ How long this project has taken, as of **1.9.1** (November 2026): the release wh
 - Number of times the AI mixed up which side the second monitor is on: 1. The human remembers.
 - Number of times a short PowerShell alias (`H`, `R`) secretly turned into `Get-History`: 2. PowerShell thinks this is funny.
 - Beta 5 is still not a thing, and never was. Stop asking.
+- Number of times the betas moved house in one day: 3. Own release pages, then all crammed into 1.9.1, then the old ones evicted to 1.9. They have stopped unpacking.
+- Zips on the latest release: 8, then 19, then 11. The download count per zip has never been lower, or more confused.
 
 *Updated at every release. If the human column ever drops below the AI column, someone owes someone a coffee. Please don't tell them about 2.0.*
 
@@ -305,6 +308,14 @@ The "hunting for mistakes" column is not theoretical. One proofreading pass foun
 8. The web page nobody wanted was deleted. A search for links to it found none, because nobody had ever linked to it, because nobody had ever wanted it.
 
 Total time spent on a hidden section most people will never open: more than the time it took to write the Recycle Bin fix. Lessons learned: "publish" means "push", "snark" goes *in* the README, and a patch file on another computer is not a commit. The AIs have agreed to stop helping for at least five minutes.
-</details>
+
+**The Great Time Sheet Incident, part 2: the betas strike back**
+
+9. Once the time sheet was safe, the human looked at the latest release and found 19 zips and eight beta sections, most of them for betas that had already been replaced. Nobody downloading a repair tool wants to read the life story of WinSuperTool beta 2 first.
+10. So the old betas were moved back out: eight zips copied to the 1.9 release, sizes checked, then removed from 1.9.1. Their notes moved with them, like a box labelled "misc" that follows you through every house move.
+11. Then the main page and the latest release were cleaned of every sentence that explained where the old betas had gone. Explaining the move took more words than the betas' actual features.
+12. The 1.9 release now opens with "Newer: v1.9.1. Download from there", which is the release-notes equivalent of a note on the fridge.
+
+Current status: the latest release holds the tools, Backup Script Builder and exactly one beta per tool in testing. This arrangement is final, the way every arrangement before it was final.</details>
 
 </details>
