@@ -16,7 +16,7 @@
 #   Scripted (e.g. your own build):  ... TestCenter.ps1 -ToolsFolder D:\my-build\tools -Run unit-suite,unit-toolkit,sizes -ExitWhenDone
 #   (test ids: the Id values in $Tests below; -Run all = every test that can run here)
 param([string]$ToolsFolder, [string[]]$Run, [switch]$ExitWhenDone)
-$TestCenterVersion = '1.0 beta 2'
+$TestCenterVersion = '1.0 beta 3'
 $ErrorActionPreference = 'Continue'
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 [Windows.Forms.Application]::EnableVisualStyles()
@@ -88,6 +88,9 @@ $Tests = @(
        Results = '%TEMP%\suite-phase3'
        Warn = 'This test REALLY CHANGES this PC (registry, services, firewall, sharing) and undoes every change with WinFixKit''s own backups. Only run it on a TEST virtual machine AFTER taking a snapshot. Is the snapshot taken?'
        Desc = 'Applies each fix for real and undoes it with WinFixKit''s backups. Take a VM snapshot first.' }
+    # ---- Backup Script Builder
+    @{ Tab = 'Backup Script Builder'; Id = 'backup-builder'; Name = 'Backup Script Builder: script, schedules, layout'; Kind = 'ps'; Script = 'Run-BackupScriptBuilder.ps1'; Min = 2; Default = $true
+       Desc = 'Builds a FreeFileSync script and compares it line by line with a reference, checks the destination rules, creates / reads back / deletes a scheduled task of every type (in \BackupScriptBuilder\, as you), and checks the layout and every ? help text.' }
     # ---- Log tools
     @{ Tab = 'Log tools'; Id = 'logs'; Name = 'Log collection + AI log readers'; Kind = 'ps'; Script = 'Run-LogGen.ps1'; Min = 15; Admin = $true
        Results = '%TEMP%\suite-logs'
@@ -104,7 +107,7 @@ $Tests = @(
 # ---------------------------------------------------------------- helpers
 $RepoUrl  = 'https://github.com/TheTechSupportGuru/windows-repair-toolkit'
 $ApiUrl   = 'https://api.github.com/repos/TheTechSupportGuru/windows-repair-toolkit'
-$NeedsByTab = @{ 'WinSuperTool' = 'WinSuperTool.ps1'; 'WinFixKit' = 'WinFixKit.ps1'; 'Log tools' = 'Collect-Logs.ps1' }
+$NeedsByTab = @{ 'WinSuperTool' = 'WinSuperTool.ps1'; 'WinFixKit' = 'WinFixKit.ps1'; 'Log tools' = 'Collect-Logs.ps1'; 'Backup Script Builder' = 'BackupScriptBuilder.ps1' }
 $SourceFile = '.wrt-source.json'     # written next to a downloaded tools folder: version + original hashes
 $script:Stage = $null                   # the staged copy of one run: Repo, Tests, Tools
 $script:Results = New-Object Collections.ArrayList
@@ -279,7 +282,7 @@ function Get-FlaggedLines($t, [string[]]$lines) {
     @($lines | Where-Object {
         $l = $_
         $l -match '(?i)\b(fail(ed|s|ures?)?|errors?|NO RESULT|UNCAUGHT|not ok|wrong|missing|problem)\b' -and
-        $l -notmatch '^\s*=====|:\s*$|launcher said|Transcript: |information, not a tool fault' -and
+        $l -notmatch '^\s*=====|^\s*PASS\b|:\s*$|launcher said|Transcript: |information, not a tool fault' -and
         $l -notmatch '(?i)\b0\s+(fail|error)|(fail\w*|errors?)[^\d\r\n]{0,30}\b0\b(?![.,]\d)|no (failures|errors|issues|problems)|nothing \(read-only confirmed\)' -and
         -not ($exp | Where-Object { $_ -and $l -match $_ })
     })

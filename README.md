@@ -25,7 +25,7 @@ Windows marks downloaded files as blocked: right-click the zip > **Properties** 
 ## New in 1.9.1
 
 - **Backup Script Builder 1.0**, a new tool for [FreeFileSync](https://freefilesync.org/) backups (see [below](#backup-script-builder)).
-- **Betas to try** (in the latest release, under "Betas"): **WinFixKit with an Automation tab** (beta-automation 2: a queue of its status checks and fixes, each with a pass / fail result) and **Test Center beta 2**. The 8 tools are unchanged from 1.9 ([V1.9.1](docs/changes/V1.9.1.md)).
+- **Betas to try** (in the latest release, under "Betas"): **WinFixKit with an Automation tab** (beta-automation 2: a queue of its status checks and fixes, each with a pass / fail result) and **Test Center beta 3**. The 8 tools are unchanged from 1.9 ([V1.9.1](docs/changes/V1.9.1.md)).
 
 ## New in 1.9
 
@@ -190,7 +190,7 @@ Earlier phases also ran every WinFixKit fix and undo as admin, the network reset
 
 ### Test Center: run the tests yourself
 
-**Test Center** ([`tests/TestCenter.ps1`](tests/TestCenter.ps1)) is one window for every test that is run regularly. It has a tab per tool (Whole toolkit, WinSuperTool, WinFixKit, Log tools, Other PCs / WinPE) with a tick box per test. Tick what you want and press **Run selected**. The tests then run one after the other.
+**Test Center** ([`tests/TestCenter.ps1`](tests/TestCenter.ps1)) is one window for every test that is run regularly. It has a tab per tool (Whole toolkit, WinSuperTool, WinFixKit, Backup Script Builder, Log tools, Other PCs / WinPE) with a tick box per test. Tick what you want and press **Run selected**. The tests then run one after the other.
 
 - **What to test:**
   - **Offline:** any folder with the toolkit scripts, including **your own edited build**.
@@ -199,9 +199,9 @@ Earlier phases also ran every WinFixKit fix and undo as admin, the network reset
 - **Scripted runs:** `TestCenter.ps1 -ToolsFolder <dir> -Run unit-suite,unit-toolkit -ExitWhenDone`.
 - **Greyed out:** a test that can't run on the PC or with the chosen tools, for example the two-monitor tests on one monitor. Tests that change the PC ask first.
 
-Details: [Test Center 1.0 beta 2](docs/changes/TestCenter-1.0-beta.2.md).
+Details: [Test Center 1.0 beta 3](docs/changes/TestCenter-1.0-beta.3.md).
 
-Download `TestCenter-v1.0-beta.2.zip` from the [latest release](../../releases/latest) (under "Betas"), extract it and double-click `Start-TestCenter.bat`. Start it as administrator to get only one admin prompt. Test Center has its own version number and is updated only when the test procedures or the test scripts change. When a test fails, **Pack full results** makes a zip with every log for whoever fixes it. That zip contains PC details, so don't post it publicly.
+Download `TestCenter-v1.0-beta.3.zip` from the [latest release](../../releases/latest) (under "Betas"), extract it and double-click `Start-TestCenter.bat`. Start it as administrator to get only one admin prompt. Test Center has its own version number and is updated only when the test procedures or the test scripts change. When a test fails, **Pack full results** makes a zip with every log for whoever fixes it. That zip contains PC details, so don't post it publicly.
 
 To run the unit tests (they read the scripts' code and run no GUI or system changes):
 
