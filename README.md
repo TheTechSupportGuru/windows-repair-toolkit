@@ -21,6 +21,8 @@ Windows marks downloaded files as blocked: right-click the zip > **Properties** 
 ## New in 1.9.2
 
 - **Fewer downloads:** WinRepairTool, Collect-Logs, Monitor-Logs and ClaudeLogAnalyzer are now one zip, `IndividualTools-v1.9.2.zip`, with one shared launcher (`Run-PS-As-Admin.bat`: drag a `.ps1` onto it). `Start-ClaudeLogAnalyzer.bat` is gone. The tools themselves are unchanged ([V1.9.2](docs/changes/V1.9.2.md)).
+- **Test Center 1.0 beta 3:** a new **Backup Script Builder** tab (script, schedules and layout checks, about 2 minutes, no admin), and a passing test line that mentions "missing" no longer shows CHECK ([notes](docs/changes/TestCenter-1.0-beta.3.md)).
+- **Simpler bug and discussion forms:** WinSuperTool and its individual tools share one Tool entry, the tab / part is an optional text box, and the version list has 4 choices.
 
 ## New in 1.9.1
 
@@ -335,6 +337,8 @@ Current status: the latest release holds the tools, Backup Script Builder and ex
 **The Great Time Sheet Incident, part 3: the re-reading**
 
 In the last 45 minutes the human re-read this page about six times: once for the time sheet, once for the broken 1.9 row, once for the 19 zips, once for the old-beta wording, once to find the incident reports lying on the page in plain sight, and once more to check they were hidden again. At ~18 minutes per read (see arrow 2), that is more reading than the 45 minutes allowed, which is only possible if you skim the jokes. Meanwhile the human's token budget sat at 7 % until Wednesday, and every fix for a hidden section nobody opens came out of it. The AI swears it is not doing this on purpose. The AI would say that.
+
+Update, later that night: 1.9.2, simpler forms and Test Center beta 3 also shipped. We are really, really done changing things tonight. Really. (This line was added by a change.)
 
 </details>
 
