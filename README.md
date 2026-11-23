@@ -21,7 +21,7 @@ Windows marks downloaded files as blocked: right-click the zip > **Properties** 
 ## New in 1.9.1
 
 - **Backup Script Builder 1.0**, a new tool for [FreeFileSync](https://freefilesync.org/) backups (see [below](#backup-script-builder)).
-- **One release for everything:** the betas (WinFixKit beta-automation, Test Center beta, the 1.9 betas) are now zips inside the main release, with their notes in collapsible sections, instead of separate entries on the releases page ([V1.9.1](docs/changes/V1.9.1.md)). The 8 tools are unchanged from 1.9.
+- **One release on top:** the main release holds the 8 tools, Backup Script Builder and only the **newest beta** of each tool in testing (WinFixKit beta-automation 2, Test Center beta 2), with their notes in collapsible sections. Older betas are kept in the [v1.9 release](../../releases/tag/v1.9) ([V1.9.1](docs/changes/V1.9.1.md)). The 8 tools are unchanged from 1.9.
 
 ## New in 1.9
 
@@ -148,7 +148,7 @@ Severity: **S1** = can make the PC unbootable, lose data or act on the wrong dis
 | **1.8.2** | Two layout fixes for scaled displays: windows opened partly off the screen, because WinForms centres them before they scale; and controls inside tabs could land in the wrong place or overlap, because a tab page is a 200 x 100 placeholder until its tab control exists. | [V1.8.2](docs/changes/V1.8.2.md) |
 | **1.8.3** | **Hotfix:** in 1.8.1 and 1.8.2, Collect-Logs, Monitor-Logs, WinFixKit and ClaudeLogAnalyzer closed by themselves 1-2 seconds after starting. Closing the splash screen also ended the main window. The splash is now hidden instead, and closed together with the tool. | [V1.8.3](docs/changes/V1.8.3.md) |
 | **1.9** | **WinSuperTool:** Recovery pass / fail summaries, new **System Info** and **Automation** tabs (also in WinPE on the offline Windows), HTML report. **All tools:** windows fit every screen and follow screen changes (two monitors, scaling, docking); in WinPE, WinFixKit now protects the offline Windows' system folders, and task windows work where only PowerShell 7 exists. | [V1.9](docs/changes/V1.9.md) |
-| **1.9.1** | Packaging release: the 1.9 tools unchanged, plus the new **Backup Script Builder** (for FreeFileSync). The betas and pre-releases are now zips inside the main release, with collapsible notes. | [V1.9.1](docs/changes/V1.9.1.md) |
+| **1.9.1** | Packaging release: the 1.9 tools unchanged, plus the new **Backup Script Builder** (for FreeFileSync). The newest betas are zips inside the main release, with collapsible notes; older betas are kept in the v1.9 release. | [V1.9.1](docs/changes/V1.9.1.md) |
 
 ### Still open
 
