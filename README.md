@@ -294,7 +294,8 @@ The "hunting for mistakes" column is not theoretical. One proofreading pass foun
 | The betas | Moved out of their own release entries into collapsible sections of the main release. | Folded. Literally. |
 | The releases page | Renamed, re-sorted, then reduced to one release on top. | Finally at peace. |
 
-</details>
+<details>
+<summary></summary>
 
 **The Great Time Sheet Incident of 1.9.1, as reconstructed by the survivors**
 
@@ -316,6 +317,12 @@ Total time spent on a hidden section most people will never open: more than the 
 11. Then the main page and the latest release were cleaned of every sentence that explained where the old betas had gone. Explaining the move took more words than the betas' actual features.
 12. The 1.9 release now opens with "Newer: v1.9.1. Download from there", which is the release-notes equivalent of a note on the fridge.
 
-Current status: the latest release holds the tools, Backup Script Builder and exactly one beta per tool in testing. This arrangement is final, the way every arrangement before it was final.</details>
+Current status: the latest release holds the tools, Backup Script Builder and exactly one beta per tool in testing. This arrangement is final, the way every arrangement before it was final.
+
+</details>
+
+</details>
+
+</details>
 
 </details>
