@@ -110,6 +110,13 @@ Check 'check: a non-ASCII password is refused for zip but allowed for 7z' (((Tes
     Check 'main: Show in folder and Send by email are off until a file is encrypted' (-not $m.ShowDir.Enabled -and -not $m.Mail.Enabled -and $m.ShowDir.Text -eq 'Show in folder' -and $m.Mail.Text -eq 'Send by email')
     $m.Opt.RbZip.Checked = $true; $m.Opt.Rb7z.Checked = $true
     Check 'main: three email options, Send to > Mail recipient chosen by default (and not cleared by the 7z / zip choice)' ($m.RbClassic.Checked -and -not $m.RbShare.Checked -and -not $m.RbProgram.Checked -and (Get-MainEmailMode) -eq 'Classic')
+    # ---- 1.3: a Remember settings box, off at first; nothing is written until it is ticked ----
+    $sf = "$env:WRT_SETTINGS_DIR\7z-Encryptor.settings.json"
+    Check 'remember: a Remember settings box, off at first' ($m.Remember.Text -eq 'Remember settings' -and -not $m.Remember.Checked -and -not $script:Settings.Remember)
+    $m.RbShare.Checked = $true; Set-MainEmailMode $m.RbShare
+    Check 'remember: off, choosing an option writes no settings file' (-not (Test-Path -LiteralPath $sf))
+    $m.Remember.Checked = $true
+    Check 'remember: ticking it saves what is chosen now' ((Get-Content -LiteralPath $sf -Raw | ConvertFrom-Json).Remember -eq $true)
     $m.RbShare.Checked = $true; Set-MainEmailMode $m.RbShare
     $sj = Get-Content -LiteralPath "$env:WRT_SETTINGS_DIR\7z-Encryptor.settings.json" -Raw | ConvertFrom-Json
     Check 'settings: the email choice is saved in 7z-Encryptor.settings.json' ($sj.EmailMode -eq 'Share')
@@ -133,6 +140,22 @@ Check 'check: a non-ASCII password is refused for zip but allowed for 7z' (((Tes
     $q.Opt.RbZip.Checked = $true
     Check 'drop window: zip changes the name and the Saves as line' ((Get-QuickOut) -eq "$W\src\single file.txt.zip" -and $q.Where.Text -match 'single file\.txt\.zip$')
     Check 'drop window: title names what is encrypted' ($q.What.Text -eq 'Encrypt single file.txt')
+    Check 'drop window: has the Remember settings box too, showing the same choice' ($q.Remember.Text -eq 'Remember settings' -and $q.Remember.Checked)
+    $m.Remember.Checked = $false
+    Check 'remember: unticking deletes the settings file' (-not (Test-Path -LiteralPath $sf) -and -not $script:Settings.Remember)
+    $script:Settings.QuickNextToItem = $true; Save-EncSettings
+    Check 'remember: unticked, later changes are not written' (-not (Test-Path -LiteralPath $sf))
+    $bad = @('{not json', '', '[1,2]', 'null', '{"Remember":"yes","SaveFolder":"C:\\x"}', '{"SaveFolder":"C:\\x","EmailMode":"Share"}')
+    $n = 0; foreach ($b in $bad) { [IO.File]::WriteAllText($sf, $b); if ((Read-Settings '7z-Encryptor' $EncSettingTypes).Count -eq 0) { $n++ } }
+    Check 'damaged file: bad JSON, empty, not an object, or no Remember = true -> no memory at all' ($n -eq $bad.Count) "$n of $($bad.Count)"
+    [IO.File]::WriteAllText($sf, '{"Remember":true,"SaveFolder":5,"QuickNextToItem":"x","EmailMode":["a"],"EmailProgram":"C:\\m.exe"}')
+    $rs = Read-Settings '7z-Encryptor' $EncSettingTypes
+    Check 'damaged file: values of the wrong type are dropped, the rest is kept' ($rs.Remember -and $rs.EmailProgram -eq 'C:\m.exe' -and -not $rs.ContainsKey('SaveFolder') -and -not $rs.ContainsKey('QuickNextToItem') -and -not $rs.ContainsKey('EmailMode'))
+    [IO.File]::WriteAllText($sf, '{not json'); $keepS = $script:Settings; $script:Settings = Read-Settings '7z-Encryptor' $EncSettingTypes
+    $qf3 = New-QuickWindow @("$W\src\single file.txt")
+    Check 'damaged file: the window still opens, Remember settings off, defaults used' (-not $script:QuickUi.Remember.Checked -and -not $script:QuickUi.Next.Checked); $qf3.Dispose(); $script:QuickUi = $q; $script:Settings = $keepS
+    Check 'start: a window that fails with the remembered settings is built again with no memory' ($script:BsbEncSource.Contains('catch { if (-not $script:Settings.Count) { throw }; $script:Settings = @{}'))
+    Remove-Item -LiteralPath $sf -Force -ErrorAction SilentlyContinue
     $qf.Dispose()
 }
 

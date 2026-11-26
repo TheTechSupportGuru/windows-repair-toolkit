@@ -5,15 +5,15 @@ A set of PowerShell tools for repairing and troubleshooting Windows 10/11 PCs, i
 > [!WARNING]
 > These scripts were written with AI. They have been tested on Windows 11, Windows 10 64-bit (MBR disk), and Hiren's BootCD PE 10 and 11, all in VMs. They have not been tested on many real PCs. Several tools change the boot configuration (BCD), the registry, services and network settings. **Use at your own risk.** Try them on a test machine first.
 
-**Current version: 2.2** (2026-11-26). Every version is a git tag (`v1.1` to `v2.2`), so `git diff v2.1 v2.2` shows exactly what changed. Licensed under the [GNU GPL v3.0](#license).
+**Current version: 2.3** (2026-11-26). Every version is a git tag (`v1.1` to `v2.3`), so `git diff v2.2 v2.3` shows exactly what changed. Licensed under the [GNU GPL v3.0](#license).
 
 <details open>
 <summary><h2 id="download">Download</h2></summary>
 
 
-Get the tools from the [latest release](../../releases/latest). The main downloads are **WinSuperTool**, **WinSuperTool-NoAI**, **WinFixKit**, **Backup Script Builder** and **7z-Encryptor**, each its own zip with the script, its launcher, a short read-me and the license. The smaller separate tools (WinRepairTool, Collect-Logs, Monitor-Logs, ClaudeLogAnalyzer) are all in **`IndividualTools-v2.2.zip`**, started with its `Run-PS-As-Admin.bat`; each of them is also part of WinSuperTool. The current beta (Test Center) is there too. **Source code** contains everything.
+Get the tools from the [latest release](../../releases/latest). The main downloads are **WinSuperTool**, **WinSuperTool-NoAI**, **WinFixKit**, **Backup Script Builder** and **7z-Encryptor**, each its own zip with the script, its launcher, a short read-me and the license. The smaller separate tools (WinRepairTool, Collect-Logs, Monitor-Logs, ClaudeLogAnalyzer) are all in **`IndividualTools-v2.3.zip`**, started with its `Run-PS-As-Admin.bat`; each of them is also part of WinSuperTool. The current beta (Test Center) is there too. **Source code** contains everything.
 
-**Don't want AI?** `WinSuperTool-NoAI-v2.2.zip` is WinSuperTool without the AI Analyze tab:
+**Don't want AI?** `WinSuperTool-NoAI-v2.3.zip` is WinSuperTool without the AI Analyze tab:
 - no phone login and no network listener;
 - nothing is ever sent to Claude or Gemini;
 - everything else is the same.
@@ -24,6 +24,15 @@ Windows marks downloaded files as blocked: right-click the zip > **Properties** 
 </details>
 
 <details open>
+<summary><h2 id="new-in-2-3">New in 2.3</h2></summary>
+
+
+- **Remember settings is now a choice, off at first.** 7z-Encryptor 1.3 and Backup Script Builder 1.7 have a **Remember settings** box. Until you tick it, nothing is written. Unticking it deletes the settings file. A damaged settings file (bad JSON, wrong values, or a 2.2 file without the new Remember flag) is ignored, and the tool starts with no memory ([V2.3](docs/changes/V2.3.md)).
+
+
+</details>
+
+<details>
 <summary><h2 id="new-in-2-2">New in 2.2</h2></summary>
 
 
@@ -171,7 +180,7 @@ The registry is backed up before each fix, with one-click restore. Folders are r
 
 ### Individual tools
 
-WinRepairTool, Collect-Logs, Monitor-Logs and ClaudeLogAnalyzer are in `IndividualTools-v2.2.zip`. Each is also part of WinSuperTool, and is kept separate for when you need only one job. Start one by dragging its `.ps1` onto `Run-PS-As-Admin.bat`.
+WinRepairTool, Collect-Logs, Monitor-Logs and ClaudeLogAnalyzer are in `IndividualTools-v2.3.zip`. Each is also part of WinSuperTool, and is kept separate for when you need only one job. Start one by dragging its `.ps1` onto `Run-PS-As-Admin.bat`.
 
 <details>
 <summary>Show the individual tools</summary>
@@ -210,24 +219,25 @@ WinRepairTool, Collect-Logs, Monitor-Logs and ClaudeLogAnalyzer are in `Individu
 - A **?** next to every option explains it.
 
 - **New in 1.1:** besides the FreeFileSync batch it can **create a Robocopy or Xcopy script** (`.ps1` or `.bat`) with log options, every relevant switch explained, and (Robocopy) one thread per source drive; the Schedule Task tab has a **backup type** drop-down; and the folder picker now lists Desktop, Documents and OneDrive, with **Quick picks** at the top ([1.1 notes](docs/changes/BackupScriptBuilder-1.1.md)).
+- **New in 1.7:** a **Remember settings** box (bottom left), off at first: nothing is saved until you tick it, unticking deletes the file, and a damaged file is ignored ([1.7 notes](docs/changes/BackupScriptBuilder-1.7.md)).
 - **New in 1.6:** the Destination folder and the Manual Backup **Save to** folder are remembered, in `BackupScriptBuilder.settings.json` next to the script (portable) ([1.6 notes](docs/changes/BackupScriptBuilder-1.6.md)).
 - **New in 1.5:** a zip password with non-English letters is refused with a clear message, and folders with `[ ]` in the name work in the destination check and folder dialogs ([1.5 notes](docs/changes/BackupScriptBuilder-1.5.md)).
 - **New in 1.4:** an **Update 7-Zip** button (`winget upgrade -e --id 7zip.7zip`) next to Install 7-Zip, the 7-Zip version shown, and corrected help texts ([1.4 notes](docs/changes/BackupScriptBuilder-1.4.md)).
 - **New in 1.3:** a **Manual Backup** tab: back up now to a folder, a zip (Windows built in or 7-Zip) or a 7z, with Store / Normal / Ultra, a password and self-extracting .exe when 7-Zip is installed; network sources and destinations (**Add Network Path**, mapped drives saved as `\\server\share`), and Robocopy and Xcopy scripts can back up single files: the picker lists files too ([1.3 notes](docs/changes/BackupScriptBuilder-1.3.md)).
 - **New in 1.2:** a folder picker fix pass: no more empty `My Documents` / `Application Data` junction folders, Windows and program folders hidden until you tick **Show Windows and program folders**, Quick picks for Favorites, Saved Games, Contacts and other users, and a folder inside another ticked folder is added only once ([1.2 notes](docs/changes/BackupScriptBuilder-1.2.md)).
 
-Download `BackupScriptBuilder-v1.6.zip` from the [latest release](../../releases/latest).
+Download `BackupScriptBuilder-v1.7.zip` from the [latest release](../../releases/latest).
 
 ### 7z-Encryptor
 
-`7z-Encryptor.ps1` + `7z-Encryptor.bat`. Encrypts files and folders into one password-protected file with [7-Zip](https://www.7-zip.org/). Version 1.2 ([notes](docs/changes/7z-Encryptor-1.2.md); [1.1](docs/changes/7z-Encryptor-1.1.md), [1.0](docs/changes/7z-Encryptor-1.0.md)). Download `7z-Encryptor-v1.2.zip` from the [latest release](../../releases/latest).
+`7z-Encryptor.ps1` + `7z-Encryptor.bat`. Encrypts files and folders into one password-protected file with [7-Zip](https://www.7-zip.org/). Version 1.3 ([notes](docs/changes/7z-Encryptor-1.3.md); [1.2](docs/changes/7z-Encryptor-1.2.md), [1.1](docs/changes/7z-Encryptor-1.1.md), [1.0](docs/changes/7z-Encryptor-1.0.md)). Download `7z-Encryptor-v1.3.zip` from the [latest release](../../releases/latest).
 
-- **Main window** (double-click `7z-Encryptor.bat`): tick files and folders in the same tree as Backup Script Builder, pick the format and a password (typed twice), and where to save. It is filled in next to the first item, or in the folder of your last encrypted file (remembered).
-- **After encrypting:** **Show in folder**, and **Send by email** with Send to > Mail recipient (classic, falls back to the Windows Share window), Windows Share, or a mail program you choose. The choice is remembered. Send the password some other way, never in the same email.
-- **Settings** are kept in `7z-Encryptor.settings.json` next to the script, so they travel with the folder. Never a password.
+- **Main window** (double-click `7z-Encryptor.bat`): tick files and folders in the same tree as Backup Script Builder, pick the format and a password (typed twice), and where to save. It is filled in next to the first item, or in the folder of your last encrypted file (when Remember settings is ticked).
+- **After encrypting:** **Show in folder**, and **Send by email** with Send to > Mail recipient (classic, falls back to the Windows Share window), Windows Share, or a mail program you choose. The choice is remembered when Remember settings is ticked. Send the password some other way, never in the same email.
+- **Remember settings** (off at first, in both windows): when ticked, settings are kept in `7z-Encryptor.settings.json` next to the script, so they travel with the folder. Never a password. Unticking deletes the file; a damaged file is ignored.
 - **7z:** AES-256. **Full encryption** (on by default) also hides the file names, so nothing can be seen without the password.
 - **zip:** **Standard** (ZipCrypto) opens in Windows Explorer with the password but is weak, and file names stay visible. **AES-256** is strong but needs 7-Zip, WinRAR or similar to open.
-- **Drag and drop:** drop files or folders on `7z-Encryptor.bat` for a small window that asks 7z or zip and the password. The file is saved in the 7z-Encryptor folder (or, ticked, next to the dropped item; the tick is remembered).
+- **Drag and drop:** drop files or folders on `7z-Encryptor.bat` for a small window that asks 7z or zip and the password. The file is saved in the 7z-Encryptor folder (or, ticked, next to the dropped item; the tick is remembered when Remember settings is ticked).
 - Every new file is tested with the password before it is reported as done. The originals are never changed or deleted, and an existing file is never overwritten.
 - 7-Zip is looked for at start. If it is missing, the tool asks whether to install it. **Install 7-Zip** / **Update 7-Zip** run `winget install` / `winget upgrade -e --id 7zip.7zip`.
 - Paths with `&` or `%` in their names cannot be dropped on the `.bat` (a limit of batch files). Use the main window for those.
@@ -260,6 +270,7 @@ Severity: **S1** = can make the PC unbootable, lose data or act on the wrong dis
 | **2.0** | **All tools:** folders with `[ ]` in the name lost saved mounts, log summaries, WinFixKit logs and reports, and Backup Script Builder's overwrite warning, because `-Path` reads `[ ]` as a wildcard. **7-Zip tools:** a non-English zip password made 7-Zip fail; it is now refused up front. | [V2.0](docs/changes/V2.0.md) |
 | **2.1** | **WinFixKit:** the Automation and Registry changes tabs move from the beta into WinFixKit, marked (beta) in the window; the separate beta is retired. | [V2.1](docs/changes/V2.1.md) |
 | **2.2** | **7z-Encryptor 1.2:** Show in folder and Send by email (Send to > Mail recipient, Windows Share or a chosen program). **Backup Script Builder 1.6:** the destination folders are remembered. Settings are kept next to each script (portable). | [V2.2](docs/changes/V2.2.md) |
+| **2.3** | **7z-Encryptor 1.3 / Backup Script Builder 1.7:** a Remember settings box, off at first; unticking deletes the settings file; a damaged settings file means no memory. | [V2.3](docs/changes/V2.3.md) |
 
 ### Still open
 
@@ -325,10 +336,10 @@ The other scripts in `tests/` are the admin and windowed test runs used on the V
 
 
 ```
-tools/            the current scripts and launchers (v2.2), incl. the generated no-AI edition
+tools/            the current scripts and launchers (v2.3), incl. the generated no-AI edition
 beta/             no beta script at the moment (WinFixKit beta-automation became part of WinFixKit 2.1)
 build/            Build-NoAIEdition.ps1 (generates the no-AI edition), Promote-Beta.ps1 (makes a beta stable)
-docs/changes/     what each version fixed (V1.2 ... V2.2, the 1.9 betas, Test Center, Backup Script Builder and 7z-Encryptor)
+docs/changes/     what each version fixed (V1.2 ... V2.3, the 1.9 betas, Test Center, Backup Script Builder and 7z-Encryptor)
 docs/testing/     the test plan, results of each phase, and the v1.6 code review
 tests/            Pester unit tests, Test Center (TestCenter.ps1), the test harness and the VM test runs
 LICENSE           GNU General Public License v3.0

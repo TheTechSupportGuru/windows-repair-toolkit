@@ -1,4 +1,4 @@
-# Version 1.2 (2026-11-26)
+# Version 1.3 (2026-11-26)
 # 7z-Encryptor - encrypts files and folders with 7-Zip: a 7z (AES-256, optionally the file names too) or a zip
 # (standard ZipCrypto or AES-256), with a password you pick. Files dropped on 7z-Encryptor.bat open a small window.
 # Windows Repair Toolkit - Copyright (C) 2026 TheTechSupportGuru - SPDX-License-Identifier: GPL-3.0-or-later
@@ -482,16 +482,45 @@ function Get-SettingsFile([string]$name) {
     $d = if ($env:WRT_SETTINGS_DIR) { $env:WRT_SETTINGS_DIR } else { $ScriptDir }
     if ($d) { Join-Path $d "$name.settings.json" }
 }
-function Read-Settings([string]$name) {
+# 1.3: nothing is remembered unless "Remember settings" is ticked (off at first). The file is only used when it says
+# Remember = true; a damaged or odd file (bad JSON, wrong types) means no memory: the tool starts as if it had none.
+$EncSettingTypes = @{ SaveFolder = [string]; EmailMode = [string]; EmailProgram = [string]; QuickNextToItem = [bool] }
+function Read-Settings([string]$name, [hashtable]$types) {
     $s = @{}
-    try { $f = Get-SettingsFile $name; if ($f -and [IO.File]::Exists($f)) { $o = [IO.File]::ReadAllText($f) | ConvertFrom-Json; foreach ($q in $o.PSObject.Properties) { $s[$q.Name] = $q.Value } } } catch {}
+    try {
+        $f = Get-SettingsFile $name
+        if ($f -and [IO.File]::Exists($f)) {
+            $o = [IO.File]::ReadAllText($f) | ConvertFrom-Json
+            if ($o -is [PSCustomObject] -and $o.Remember -is [bool] -and $o.Remember) {
+                $s.Remember = $true
+                foreach ($k in $types.Keys) { $v = $o.$k; if ($null -ne $v -and $v -is $types[$k]) { $s[$k] = $v } }
+            }
+        }
+    } catch { $s = @{} }
     $s
 }
 function Save-Settings([string]$name, $s) {
     try { $f = Get-SettingsFile $name; if ($f) { [IO.File]::WriteAllText($f, (New-Object PSObject -Property $s | ConvertTo-Json), (New-Object Text.UTF8Encoding $false)) } } catch {}
 }
-$script:Settings = Read-Settings '7z-Encryptor'
-function Save-EncSettings { Save-Settings '7z-Encryptor' $script:Settings }
+function Remove-Settings([string]$name) { try { $f = Get-SettingsFile $name; if ($f -and [IO.File]::Exists($f)) { [IO.File]::Delete($f) } } catch {} }
+$script:Settings = Read-Settings '7z-Encryptor' $EncSettingTypes
+function Save-EncSettings { if ($script:Settings.Remember) { Save-Settings '7z-Encryptor' $script:Settings } }
+# the "Remember settings" box (both windows): ticked saves what is chosen now, unticked deletes the file. The choices
+# stay in use until the tool closes either way.
+function Set-EncRemember([bool]$on) {
+    if ($on) {
+        $script:Settings.Remember = $true
+        if ($script:MainUi) { $script:Settings.EmailMode = Get-MainEmailMode }
+        if ($script:QuickUi) { $script:Settings.QuickNextToItem = $script:QuickUi.Next.Checked }
+        Save-EncSettings
+    } else { $script:Settings.Remember = $false; Remove-Settings '7z-Encryptor' }
+}
+function New-RememberBox($parent, [string]$loc) {
+    $c = New-Ctl CheckBox 'Remember settings' $loc '170,24'; $c.Checked = [bool]$script:Settings.Remember
+    $c.add_CheckedChanged({ Set-EncRemember $this.Checked }); $parent.Controls.Add($c)
+    $t = New-Object System.Windows.Forms.ToolTip; $t.SetToolTip($c, 'Off: nothing is saved. On: the save folder, email choice and drop-window tick are kept in 7z-Encryptor.settings.json next to the script (never a password). Untick to delete that file.')
+    $c
+}
 
 # ---------- send the encrypted file by email (1.2) ----------
 # Classic: the same Simple MAPI call as Explorer's Send to > Mail recipient (Outlook classic, Thunderbird, ...).
@@ -674,10 +703,11 @@ function New-MainWindow {
     $p.Controls.AddRange(@($w.ShowDir, $w.Mail, $w.LblMail, $w.MailPanel))
     $script:MainUi = $w
     $w.Get7 = New-Get7Row $p 567 { $script:MainUi.Go.Enabled = [bool]$script:SevenZip }
+    $w.Remember = New-RememberBox $p '15,600'
     $w.Go.Enabled = [bool]$script:SevenZip
     Add-Help $p 245 7 'Files and folders' "Tick files and folders in the tree ('Add Files/Folders'). Everything in the list goes into ONE encrypted file; folders keep their name and everything inside them. The originals are not changed or deleted."
-    Add-Help $p 105 357 'Save as' "Where the encrypted file goes, named after the first item (or Encrypted-<date> for several items). The folder of your last encrypted file is remembered (in 7z-Encryptor.settings.json next to the script, so it travels with the folder) and used next time; until then it goes next to the first item. 'Browse...' picks another place or name. An existing file is never overwritten."
-    Add-Help $p 305 494 'Show in folder / Send by email' ("After a file is encrypted: 'Show in folder' opens its folder with the file selected; 'Send by email' attaches it to a new email.`r`n`r`nEmail with (remembered):`r`n- Send to > Mail recipient: the classic Windows way, the same as right-click > Send to > Mail recipient. Needs a classic mail program (Outlook classic, Thunderbird, ...). If there is none (for example only the new Outlook or webmail), the Windows Share window opens instead.`r`n- Windows Share: the Windows 10 / 11 Share window (mail apps, nearby sharing, ...).`r`n- Choose program...: a mail program you pick (Outlook and Thunderbird get the file attached; other programs are started with the file name).`r`n`r`nSend the password some other way (phone, text message), never in the same email.")
+    Add-Help $p 105 357 'Save as' "Where the encrypted file goes, named after the first item (or Encrypted-<date> for several items). With 'Remember settings' ticked, the folder of your last encrypted file is remembered (in 7z-Encryptor.settings.json next to the script, so it travels with the folder) and used next time; until then it goes next to the first item. 'Browse...' picks another place or name. An existing file is never overwritten."
+    Add-Help $p 305 494 'Show in folder / Send by email' ("After a file is encrypted: 'Show in folder' opens its folder with the file selected; 'Send by email' attaches it to a new email.`r`n`r`nEmail with (remembered when 'Remember settings' is ticked):`r`n- Send to > Mail recipient: the classic Windows way, the same as right-click > Send to > Mail recipient. Needs a classic mail program (Outlook classic, Thunderbird, ...). If there is none (for example only the new Outlook or webmail), the Windows Share window opens instead.`r`n- Windows Share: the Windows 10 / 11 Share window (mail apps, nearby sharing, ...).`r`n- Choose program...: a mail program you pick (Outlook and Thunderbird get the file attached; other programs are started with the file name).`r`n`r`nSend the password some other way (phone, text message), never in the same email.")
 
     $w.Add.add_Click({ $x = $script:MainUi; foreach ($q in (Show-FolderPicker $true)) { if (-not @($x.List.Items | Where-Object { $_ -ieq $q }).Count) { [void]$x.List.Items.Add($q) } }; Update-MainOut })
     $w.Remove.add_Click({ $x = $script:MainUi; foreach ($s in @($x.List.SelectedItems)) { $x.List.Items.Remove($s) }; Update-MainOut })
@@ -757,9 +787,10 @@ function New-QuickWindow([string[]]$items) {
     $q.Go = New-Ctl Button 'Encrypt' '15,265' '240,38'; $q.Go.Font = New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
     $q.Cancel = New-Ctl Button 'Cancel' '265,265' '120,38'; $q.Cancel.DialogResult = 'Cancel'; $f.CancelButton = $q.Cancel; $f.AcceptButton = $q.Go
     $p.Controls.AddRange(@($q.Next, $q.Where, $q.Go, $q.Cancel))
-    Add-Help $p 400 270 'Encrypt' ("Encrypts the dropped items into one file with the format and password above. It is saved in the folder 7z-Encryptor is in, named after the item (or Encrypted-<date> for several items); tick the box to save it next to the dropped item instead (the tick is remembered). An existing file is never overwritten, the originals are not changed, and the new file is tested with the password before you are told it is done.")
+    Add-Help $p 400 270 'Encrypt' ("Encrypts the dropped items into one file with the format and password above. It is saved in the folder 7z-Encryptor is in, named after the item (or Encrypted-<date> for several items); tick the box to save it next to the dropped item instead (the tick is remembered when 'Remember settings' is ticked). An existing file is never overwritten, the originals are not changed, and the new file is tested with the password before you are told it is done.")
     $script:QuickUi = $q
     $q.Get7 = New-Get7Row $p 320 { $script:QuickUi.Go.Enabled = [bool]$script:SevenZip }
+    $q.Remember = New-RememberBox $p '15,353'
     $q.Go.Enabled = [bool]$script:SevenZip
     $f.Add_Shown({ Request-7ZipInstall $script:QuickUi.Get7 })
     $q.Next.Checked = [bool]$script:Settings.QuickNextToItem
@@ -786,6 +817,8 @@ function Update-QuickWhere { $script:QuickUi.Where.Text = 'Saves as: ' + (Get-Qu
 
 # ---------- start ----------
 $Files = @($Files | Where-Object { $_ } | ForEach-Object { $_.Trim('"') })
-$form = if ($Files.Count) { New-QuickWindow $Files } else { New-MainWindow }
+# if the window cannot be built with the remembered settings, it is built again with no memory (1.3)
+try { $form = if ($Files.Count) { New-QuickWindow $Files } else { New-MainWindow } }
+catch { if (-not $script:Settings.Count) { throw }; $script:Settings = @{}; $form = if ($Files.Count) { New-QuickWindow $Files } else { New-MainWindow } }
 Initialize-WrtWindow $form @() 480 380
 [void]$form.ShowDialog()

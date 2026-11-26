@@ -399,12 +399,25 @@ Check 'manual: a non-ASCII password is refused for a 7-Zip zip, allowed for 7z' 
     Remove-Item $mw -Recurse -Force -ErrorAction SilentlyContinue
     # ---- 1.6: both destination folders are remembered, in a settings file in the tool's own folder ----
     Check 'settings: no file yet, the destination boxes start empty' (-not (Test-Path "$env:WRT_SETTINGS_DIR\BackupScriptBuilder.settings.json"))
+    $sf = "$env:WRT_SETTINGS_DIR\BackupScriptBuilder.settings.json"
+    Check 'remember: a Remember settings box at the bottom, off at first' ($chkRemember.Text -eq 'Remember settings' -and -not $chkRemember.Checked -and $chkRemember.Parent.Dock -eq 'Bottom')
     $txtDest.Text = 'H:\Backups [PC1]'; $mDest.Text = '\\nas\share\Manual'
     Save-BsbSettings
+    Check 'remember: off, closing writes no settings file' (-not (Test-Path -LiteralPath $sf))
+    $chkRemember.Checked = $true; Save-BsbSettings
     $sj = Get-Content -LiteralPath "$env:WRT_SETTINGS_DIR\BackupScriptBuilder.settings.json" -Raw | ConvertFrom-Json
     Check 'settings: closing saves both destination folders' ($sj.BuildDest -eq 'H:\Backups [PC1]' -and $sj.ManualDest -eq '\\nas\share\Manual')
     $txtDest.Text = ''; Save-BsbSettings
     Check 'settings: an empty box does not wipe the remembered folder' ((Read-BsbSettings).BuildDest -eq 'H:\Backups [PC1]')
+    Check 'remember: the saved file says Remember = true' ((Read-BsbSettings).Remember -eq $true)
+    $chkRemember.Checked = $false; Save-BsbSettings
+    Check 'remember: unticked, closing deletes the settings file' (-not (Test-Path -LiteralPath $sf))
+    $bad = @('{not json', '', '[1,2]', 'null', '{"Remember":"yes","BuildDest":"H:\\x"}', '{"BuildDest":"H:\\x","ManualDest":"I:\\y"}')
+    $n = 0; foreach ($b in $bad) { [IO.File]::WriteAllText($sf, $b); if ((Read-BsbSettings).Count -eq 0) { $n++ } }
+    Check 'damaged file: bad JSON, empty, not an object, or no Remember = true -> no memory at all' ($n -eq $bad.Count) "$n of $($bad.Count)"
+    [IO.File]::WriteAllText($sf, '{"Remember":true,"BuildDest":7,"ManualDest":"I:\\y"}'); $rs = Read-BsbSettings
+    Check 'damaged file: values of the wrong type are dropped, the rest is kept' ($rs.Remember -and $rs.ManualDest -eq 'I:\y' -and -not $rs.ContainsKey('BuildDest'))
+    Remove-Item -LiteralPath $sf -Force -ErrorAction SilentlyContinue
     $sv = $env:WRT_SETTINGS_DIR; $env:WRT_SETTINGS_DIR = ''
     Check 'settings: by default the file is next to the script (portable)' ($script:BsbToolSource.Contains('else { $PSScriptRoot }; if ($d) { Join-Path $d ''BackupScriptBuilder.settings.json'' }'))
     $env:WRT_SETTINGS_DIR = $sv

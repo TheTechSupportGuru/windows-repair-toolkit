@@ -1,4 +1,4 @@
-# Version 1.6 (2026-11-26)
+# Version 1.7 (2026-11-26)
 # Backup Script Builder - builds a FreeFileSync batch file (BackupScript.ffs_batch), or a Robocopy / Xcopy script (.ps1 or .bat),
 # and (1.3) makes a manual backup now: to a folder, a zip (Windows or 7-Zip) or a 7z / self-extracting .exe
 # Windows Repair Toolkit - Copyright (C) 2026 TheTechSupportGuru - SPDX-License-Identifier: GPL-3.0-or-later
@@ -1160,7 +1160,7 @@ Add-Help $tabBuild 140 57 'Source folders' ("The folders you want backed up. Cli
     "'Add Network Path' adds a folder (or, for Robocopy and Xcopy, a file) on another PC or NAS: type it as \\server\share\folder. Folders on a mapped drive (Z:) are saved as their \\server\share path, because a scheduled task often cannot see mapped drives. The task runs as you, so you need access to the share.`r`n`r`n" +
     "Each folder becomes one folder pair in the FreeFileSync script: the folder (left side) is mirrored to Current\<folder name> (right side).`r`n`r`n" +
     "Two folders with the same name (for example two users' Documents) get -2, -3 ... so they do not overwrite each other. 'Remove' takes the selected folders off the list.")
-Add-Help $tabBuild 165 242 'Destination folder' ("Where the backup lives. It is remembered when you close the tool (in BackupScriptBuilder.settings.json next to the script). Usually a folder on an external or second drive, for example H:\, or a network share typed as \\server\share\Backups (a mapped drive is saved as its \\server\share path).`r`n`r`n" +
+Add-Help $tabBuild 165 242 'Destination folder' ("Where the backup lives. With 'Remember settings' (bottom left) ticked, it is remembered when you close the tool (in BackupScriptBuilder.settings.json next to the script). Usually a folder on an external or second drive, for example H:\, or a network share typed as \\server\share\Backups (a mapped drive is saved as its \\server\share path).`r`n`r`n" +
     "The tool creates AutomaticFileBackups inside it (or uses the folder itself when it is already called AutomaticFileBackups) with:`r`n" +
     "  Current - the latest copy of every source folder`r`n  Archive-Deleted - files that were deleted or changed, in time-stamped folders`r`n  Logs - FreeFileSync's log of every run`r`n" +
     "and saves BackupScript.ffs_batch there.`r`n`r`nFor a Robocopy or Xcopy script it creates Current (a copy of every source folder) and Logs, and saves BackupScript-Robocopy / BackupScript-Xcopy (.ps1 or .bat) there; nothing is archived.`r`n`r`nThe destination cannot be inside one of the source folders.")
@@ -1689,7 +1689,7 @@ $tabManual.Controls.AddRange(@($mLblSrc, $mLst, $mAdd, $mNet, $mRemove, $mLblDst
         $mLblLevel, $mLevel, $mLblPw, $mPw, $mLblPw2, $mPw2, $mShowPw, $mEncNames, $mLblSfx, $mSfx, $m7Status, $mStart, $mCancel, $mProgress, $mStatus, $mSave, $mLbl7Get, $mWingetBox, $mInstall7, $mUpdate7, $mRecheck7))
 Update-ManualUi
 Add-Help $tabManual 330 8 'What to back up' ("Folders and single files to back up right now. 'Add Files/Folders' opens the same tree as on the Build Script tab (files are listed too). 'Add Network Path' takes \\server\share\folder or a file on another PC or NAS.`r`n`r`nEach folder keeps its name in the backup; files picked from one folder go into a folder with that folder's name. Empty folders are kept.")
-Add-Help $tabManual 105 173 'Save to' ("Where the backup goes: an external drive, a second drive or a network share (\\server\share\Backups). It is remembered when you close the tool (in BackupScriptBuilder.settings.json next to the script, so it travels with the folder). A new Backup-<date and time> folder, .zip, .7z or .exe is created there each time, so older backups are never overwritten.")
+Add-Help $tabManual 105 173 'Save to' ("Where the backup goes: an external drive, a second drive or a network share (\\server\share\Backups). With 'Remember settings' (bottom left) ticked, it is remembered when you close the tool (in BackupScriptBuilder.settings.json next to the script, so it travels with the folder). A new Backup-<date and time> folder, .zip, .7z or .exe is created there each time, so older backups are never overwritten.")
 Add-Help $tabManual 135 238 'Back up to' ("A folder: a plain copy (robocopy) you can open and use straight away.`r`n`r`nA zip file: opens on any Windows PC without extra software. 'Windows (built in)' needs nothing installed; '7-Zip' compresses better and can add a password (AES-256).`r`n`r`n" +
     "A 7z file: 7-Zip's own format, the smallest, can hide the file names too, and can be made into a self-extracting .exe. Needs 7-Zip (free, https://www.7-zip.org/).`r`n`r`n" +
     "Compression: Store = no compression (fastest, for photos and videos that do not shrink), Normal = the usual setting, Ultra = the smallest file (slowest). Windows' own zip has no stronger setting than Normal, so Ultra is the same as Normal there - use 7-Zip for a real Ultra.")
@@ -1704,19 +1704,41 @@ $tabs.TabPages.Add($tabManual)
 # Kept in the tool's own folder, so a USB stick / WinPE kit / share keeps its settings wherever it runs. Only the two
 # destination folders are kept. A read-only folder just means nothing is remembered. WRT_SETTINGS_DIR moves the file (tests).
 function Get-BsbSettingsFile { $d = if ($env:WRT_SETTINGS_DIR) { $env:WRT_SETTINGS_DIR } else { $PSScriptRoot }; if ($d) { Join-Path $d 'BackupScriptBuilder.settings.json' } }
+# 1.7: nothing is remembered unless "Remember settings" (bottom left) is ticked; it is off at first. The file is only
+# used when it says Remember = true; a damaged or odd file (bad JSON, wrong types) means no memory.
 function Read-BsbSettings {
     $s = @{}
-    try { $f = Get-BsbSettingsFile; if ($f -and [IO.File]::Exists($f)) { $o = [IO.File]::ReadAllText($f) | ConvertFrom-Json; foreach ($q in $o.PSObject.Properties) { $s[$q.Name] = $q.Value } } } catch {}
+    try {
+        $f = Get-BsbSettingsFile
+        if ($f -and [IO.File]::Exists($f)) {
+            $o = [IO.File]::ReadAllText($f) | ConvertFrom-Json
+            if ($o -is [PSCustomObject] -and $o.Remember -is [bool] -and $o.Remember) {
+                $s.Remember = $true
+                foreach ($k in 'BuildDest', 'ManualDest') { if ($o.$k -is [string] -and $o.$k) { $s[$k] = $o.$k } }
+            }
+        }
+    } catch { $s = @{} }
     $s
 }
+# on close: ticked saves the two folders (an empty box keeps the remembered one); unticked deletes the file
 function Save-BsbSettings {
-    $s = Read-BsbSettings
+    $f = Get-BsbSettingsFile; if (-not $f) { return }
+    if (-not $chkRemember.Checked) { try { if ([IO.File]::Exists($f)) { [IO.File]::Delete($f) } } catch {}; return }
+    $s = Read-BsbSettings; $s.Remember = $true
     foreach ($k in @(@('BuildDest', $txtDest.Text), @('ManualDest', $mDest.Text))) { $v = ([string]$k[1]).Trim().Trim('"'); if ($v) { $s[$k[0]] = $v } }
-    try { $f = Get-BsbSettingsFile; if ($f) { [IO.File]::WriteAllText($f, (New-Object PSObject -Property $s | ConvertTo-Json), (New-Object Text.UTF8Encoding $false)) } } catch {}
+    try { [IO.File]::WriteAllText($f, (New-Object PSObject -Property $s | ConvertTo-Json), (New-Object Text.UTF8Encoding $false)) } catch {}
 }
-$bsbSettings = Read-BsbSettings
-if ($bsbSettings.BuildDest -and -not $txtDest.Text) { $txtDest.Text = [string]$bsbSettings.BuildDest }
-if ($bsbSettings.ManualDest -and -not $mDest.Text) { $mDest.Text = [string]$bsbSettings.ManualDest }
+$chkRemember = New-Object System.Windows.Forms.CheckBox; $chkRemember.Text = 'Remember settings'; $chkRemember.Dock = 'Left'; $chkRemember.Width = 150
+$chkRemember.Padding = New-Object System.Windows.Forms.Padding(10, 0, 0, 0)
+(New-Object System.Windows.Forms.ToolTip).SetToolTip($chkRemember, 'Off: nothing is saved. On: the Destination folder and Manual Backup Save to folder are kept in BackupScriptBuilder.settings.json next to the script when you close the tool. Untick to delete that file.')
+$lnkFfs.Dock = 'Fill'; $pnlBottom = New-Object System.Windows.Forms.Panel; $pnlBottom.Dock = 'Bottom'; $pnlBottom.Height = 26
+$form.Controls.Remove($lnkFfs); $pnlBottom.Controls.AddRange(@($lnkFfs, $chkRemember)); $form.Controls.Add($pnlBottom); $tabs.BringToFront()
+try {
+    $bsbSettings = Read-BsbSettings
+    $chkRemember.Checked = [bool]$bsbSettings.Remember
+    if ($bsbSettings.BuildDest -and -not $txtDest.Text) { $txtDest.Text = [string]$bsbSettings.BuildDest }
+    if ($bsbSettings.ManualDest -and -not $mDest.Text) { $mDest.Text = [string]$bsbSettings.ManualDest }
+} catch { $chkRemember.Checked = $false }
 $form.add_FormClosing({ Save-BsbSettings })
 
 Update-TaskList
