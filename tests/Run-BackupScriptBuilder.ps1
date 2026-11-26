@@ -307,7 +307,7 @@ $tests = {
     # ---- 4. layout ----
     # the three "what to create" pages are alternatives in the same place: each is checked on its own
     $typePages = @($pnlFfs, $pnlRobo, $pnlXcopy)
-    foreach ($page in @($tabBuild, $tabSched) + $typePages) {
+    foreach ($page in @($tabBuild, $tabSched, $tabManual, $mGrpEngine) + $typePages) {
         $ctl = @($page.Controls | Where-Object { $_.Visible -or $true })
         $bad = @()
         for ($i = 0; $i -lt $ctl.Count; $i++) { for ($j = $i + 1; $j -lt $ctl.Count; $j++) {
@@ -320,13 +320,58 @@ $tests = {
             if ($b -is [Windows.Forms.CheckBox]) { $rb2.Size = $b.PreferredSize }
             if ($ra.IntersectsWith($rb2)) { $bad += "$($a.GetType().Name)'$($a.Text)' x $($b.GetType().Name)'$($b.Text)'" }
         } }
-        $pname = if ($page.Text) { $page.Text } else { 'type page ' + ($typePages.IndexOf($page) + 1) }
+        $pname = if ($page -eq $mGrpEngine) { 'zip engine group' } elseif ($page.Text) { $page.Text } else { 'type page ' + ($typePages.IndexOf($page) + 1) }
         Check "no overlapping controls on '$pname'" ($bad.Count -eq 0) ($bad -join '; ')
+        if ($page -eq $mGrpEngine) { continue }
         $help = @($page.Controls | Where-Object { $_ -is [Windows.Forms.Button] -and $_.Text -eq '?' })
         $min = if ($typePages -contains $page) { 1 } elseif ($page -eq $tabBuild) { 3 } else { 4 }
         Check "'$pname' has ? buttons, all with help text" ($help.Count -ge $min -and -not @($help | Where-Object { -not $_.Tag[1] }).Count) "$($help.Count) buttons"
     }
     Check 'FreeFileSync link points at https://freefilesync.org/' ($lnkFfs.Text.Substring($lnkFfs.LinkArea.Start, $lnkFfs.LinkArea.Length) -eq 'https://freefilesync.org/')
+
+    # ---- 5. Manual Backup tab (1.3): which options are open, checks before starting, real runs in the background ----
+    $real7 = $script:SevenZip
+    $script:SevenZip = $null; $mRbFolder.Checked = $true; Update-ManualUi
+    Check 'manual: without 7-Zip the 7z type, the 7-Zip engine and the password are off' (-not $mRb7z.Enabled -and -not $mRb7Engine.Enabled -and -not $mPw.Enabled -and $m7Status.Text -match '7-zip.org')
+    Check 'manual: folder copy has no compression, engine or self-extracting choice' (-not $mLevel.Enabled -and -not $mGrpEngine.Enabled -and -not $mSfx.Enabled)
+    $mRbZip.Checked = $true
+    Check 'manual: Windows zip offers Store / Normal / Ultra, no password' ($mLevel.Enabled -and $mGrpEngine.Enabled -and $mRbWin.Checked -and -not $mPw.Enabled -and (($mLevel.Items | ForEach-Object { $_ }) -join ',') -eq 'Store,Normal,Ultra')
+    $script:SevenZip = 'C:\fake\7z.exe'; Update-ManualUi; $mRb7Engine.Checked = $true
+    Check 'manual: zip by 7-Zip opens the password, not the self-extractor' ($mPw.Enabled -and $mPw2.Enabled -and -not $mSfx.Enabled -and -not $mEncNames.Enabled)
+    $mRb7z.Checked = $true
+    Check 'manual: 7z opens password, hidden names and self-extracting' ($mPw.Enabled -and $mEncNames.Enabled -and $mSfx.Enabled -and -not $mGrpEngine.Enabled)
+    $mSfx.SelectedIndex = 1; $mRbZip.Checked = $true
+    Check 'manual: leaving 7z resets self-extracting to No' ($mSfx.SelectedIndex -eq 0)
+    $script:SevenZip = $real7; $mRbWin.Checked = $true; Update-ManualUi
+
+    $mw = Join-Path $env:TEMP ('bsb-manual-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+    New-Item -ItemType Directory "$mw\src\Docs\Empty", "$mw\src\Pics" -Force | Out-Null
+    'd' | Set-Content "$mw\src\Docs\d.txt"; 'p' | Set-Content "$mw\src\Pics\p.txt"; 'x' | Set-Content "$mw\src\Pics\x.txt"
+    $mLst.Items.Clear(); [void]$mLst.Items.Add("$mw\src\Docs"); [void]$mLst.Items.Add("$mw\src\Pics\p.txt"); $mDest.Text = "$mw\out"
+    $o = Get-ManualOptions
+    Check 'manual: options read from the tab' ($o.Mode -eq 'Zip' -and $o.Engine -eq 'Windows' -and $o.Level -eq 'Normal' -and $o.Sources.Count -eq 2 -and $o.Dest -eq "$mw\out" -and -not $o.Password)
+    Check 'manual: refuses a destination inside a source' ((Test-ManualOptions (@{} + $o + @{}) '') -eq '' -and (Test-ManualOptions @{ Sources = @("$mw\src"); Dest = "$mw\src\b" } '') -match 'inside')
+    Check 'manual: refuses two different passwords' ((Test-ManualOptions @{ Sources = @('C:\a'); Dest = 'D:\b'; Password = 'one' } 'two') -match 'not the same')
+    Check 'manual: refuses no sources and a relative destination' ((Test-ManualOptions @{ Sources = @(); Dest = 'D:\b' } '') -and (Test-ManualOptions @{ Sources = @('C:\a'); Dest = 'backups' } ''))
+    function Wait-Manual { $t0 = Get-Date; while ($script:mState -and -not $script:mState.Done -and ((Get-Date) - $t0).TotalSeconds -lt 120) { Start-Sleep -Milliseconds 150 }; $mTimer.Stop(); $r = $script:mState.Result; [void]$script:mPs.EndInvoke($script:mHandle); $script:mPs.Runspace.Dispose(); $script:mPs.Dispose(); $script:mState = $null; $mStart.Enabled = $true; $r }
+    foreach ($mode in 'Folder', 'Zip') {
+        $o = Get-ManualOptions; $o.Mode = $mode; $o.Stamp = "t-$mode"
+        Start-ManualBackup $o; $r = Wait-Manual
+        if ($mode -eq 'Folder') {
+            Check 'manual: folder backup in the background copies folders, the empty folder and only the picked file' ($r.Ok -and (Test-Path "$mw\out\Backup-t-Folder\Docs\Empty") -and (Test-Path "$mw\out\Backup-t-Folder\Pics\p.txt") -and -not (Test-Path "$mw\out\Backup-t-Folder\Pics\x.txt")) "$($r.Message)"
+        } else {
+            Add-Type -AssemblyName System.IO.Compression.FileSystem
+            $z = [IO.Compression.ZipFile]::OpenRead("$mw\out\Backup-t-Zip.zip"); $names = @($z.Entries | ForEach-Object { $_.FullName }); $z.Dispose()
+            Check 'manual: Windows zip in the background holds the folder, the empty folder and only the picked file' ($r.Ok -and $names -contains 'Docs/d.txt' -and $names -contains 'Docs/Empty/' -and $names -contains 'Pics/p.txt' -and $names -notcontains 'Pics/x.txt') (($names -join ', ') + ' ' + $r.Message)
+        }
+    }
+    # Cancel: a big enough folder that the zip is still running when Cancel is pressed; the half-made zip is removed
+    New-Item -ItemType Directory "$mw\big" -Force | Out-Null; $buf = New-Object byte[] (4MB); (New-Object Random 1).NextBytes($buf)
+    1..40 | ForEach-Object { [IO.File]::WriteAllBytes("$mw\big\f$_.bin", $buf) }
+    $o = Get-ManualOptions; $o.Sources = @("$mw\big"); $o.Stamp = 't-cancel'
+    Start-ManualBackup $o; $t0 = Get-Date; while ($script:mState.Status -notmatch 'Zipping' -and ((Get-Date) - $t0).TotalSeconds -lt 30) { Start-Sleep -Milliseconds 20 }; $script:mState.Cancel = $true; $r = Wait-Manual
+    Check 'manual: Cancel stops the zip and removes the half-made file' ($r.Message -eq 'Cancelled.' -and -not (Test-Path "$mw\out\Backup-t-cancel.zip")) "$($r.Message)"
+    Remove-Item $mw -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 # load the tool, but run the tests instead of showing the window (and with no splash screen)

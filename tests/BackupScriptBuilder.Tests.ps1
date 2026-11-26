@@ -4,7 +4,7 @@
 #   Invoke-Pester .\tests\BackupScriptBuilder.Tests.ps1
 $bsbFile = Join-Path (Split-Path $PSScriptRoot -Parent) 'tools\BackupScriptBuilder.ps1'
 $bsbAst = [Management.Automation.Language.Parser]::ParseFile($bsbFile, [ref]$null, [ref]$null)
-foreach ($fn in $bsbAst.FindAll({ $args[0] -is [Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -in 'ConvertTo-XmlText', 'Get-PairName', 'Get-DriveKey', 'Get-LogStampFormat', 'Get-UniqueFolders', 'Get-ScriptFromAction', 'Get-ScriptType', 'New-CopyScript', 'Get-PickerFiles', 'Get-SubFolders', 'Test-SkipFolder', 'Test-SystemFolder', 'ConvertTo-UncPath' }, $true)) { . ([scriptblock]::Create($fn.Extent.Text)) }
+foreach ($fn in $bsbAst.FindAll({ $args[0] -is [Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -in 'ConvertTo-XmlText', 'Get-PairName', 'Get-DriveKey', 'Get-LogStampFormat', 'Get-UniqueFolders', 'Get-ScriptFromAction', 'Get-ScriptType', 'New-CopyScript', 'Get-PickerFiles', 'Get-SubFolders', 'Test-SkipFolder', 'Test-SystemFolder', 'ConvertTo-UncPath', 'ConvertTo-ProcessArg', 'New-7ZipArgs', 'Invoke-BuiltinZip', 'Invoke-ManualBackup', 'Invoke-ManualCopy', 'Wait-BackupProcess' }, $true)) { . ([scriptblock]::Create($fn.Extent.Text)) }
 function Join-Out($r) { @($r) -join '|' }
 
 Describe 'Pair names, drive keys, log stamps, XML' {
@@ -102,6 +102,51 @@ Describe 'Network paths (1.3)' {
             Test-Path "$out\net-$tool\one.txt" | Should Be $true
             Test-Path "$out\net-$tool\other.txt" | Should Be $false
             Test-Path "$TestDrive\net-$tool-out\AutomaticFileBackups\Logs\Backup-$tool.log" | Should Be $true
+        }
+    }
+}
+Describe 'Manual backup: 7-Zip command line (1.3)' {
+    It 'leaves simple arguments unquoted, quotes spaces and empty' { ConvertTo-ProcessArg 'simple' | Should Be 'simple'; ConvertTo-ProcessArg 'C:\My Docs' | Should Be '"C:\My Docs"'; ConvertTo-ProcessArg '' | Should Be '""' }
+    It 'a trailing backslash is doubled only when the argument is quoted' { ConvertTo-ProcessArg 'path\to\' | Should Be 'path\to\'; ConvertTo-ProcessArg 'C:\My Docs\' | Should Be '"C:\My Docs\\"' }
+    It 'quotes inside are escaped, backslashes before them doubled' { ConvertTo-ProcessArg 'say "hi"' | Should Be '"say \"hi\""'; ConvertTo-ProcessArg 'a\"b' | Should Be '"a\\\"b"' }
+    It 'Store / Normal / Ultra are -mx=0 / 5 / 9' { foreach ($p in @(@('Store', 0), @('Normal', 5), @('Ultra', 9))) { (New-7ZipArgs 'o.7z' @('s') '7z' $p[0] '' '') -join '|' | Should Be "a|-t7z|-mx=$($p[1])|-y|-ssw|-bb1|--|o.7z|s" } }
+    It 'zip with a password uses AES-256' { (New-7ZipArgs 'a.zip' @('f.txt') 'zip' 'Normal' 's3cret' '') -join '|' | Should Be 'a|-tzip|-mx=5|-y|-ssw|-bb1|-ps3cret|-mem=AES256|--|a.zip|f.txt' }
+    It '7z with a password hides the names unless told not to' {
+        (New-7ZipArgs 'a.7z' @('f') '7z' 'Ultra' 'pw' '') -join '|' | Should Be 'a|-t7z|-mx=9|-y|-ssw|-bb1|-ppw|-mhe=on|--|a.7z|f'
+        (New-7ZipArgs 'a.7z' @('f') '7z' 'Ultra' 'pw' '' $false) -join '|' | Should Be 'a|-t7z|-mx=9|-y|-ssw|-bb1|-ppw|--|a.7z|f'
+    }
+    It 'self-extracting is always 7z and names the module' { (New-7ZipArgs 'a.exe' @('f') 'zip' 'Normal' '' 'C:\7-Zip\7z.sfx') -join '|' | Should Be 'a|-t7z|-mx=5|-y|-ssw|-bb1|-sfxC:\7-Zip\7z.sfx|--|a.exe|f' }
+    It 'several sources, and "--" keeps a source starting with - from being read as a switch' { (New-7ZipArgs 'o.zip' @('a b', '-x') 'zip' 'Store' '' '') -join '|' | Should Be 'a|-tzip|-mx=0|-y|-ssw|-bb1|--|o.zip|a b|-x' }
+}
+Describe 'Manual backup: Windows zip and checks (1.3)' {
+    $src = Join-Path $TestDrive 'msrc'; New-Item -ItemType Directory "$src\A\Empty", "$src\B" -Force | Out-Null
+    [IO.File]::WriteAllText("$src\A\big.txt", ('x' * 200000)); 'b' | Set-Content "$src\B\b.txt"
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    It 'Store keeps the size, Normal shrinks it' {
+        $st = @{ Cancel = $false }
+        (Invoke-BuiltinZip "$TestDrive\s.zip" @("$src\A") 'Store' $st).Ok | Should Be $true
+        (Invoke-BuiltinZip "$TestDrive\n.zip" @("$src\A") 'Normal' $st).Ok | Should Be $true
+        (Get-Item "$TestDrive\s.zip").Length | Should BeGreaterThan 200000
+        (Get-Item "$TestDrive\n.zip").Length | Should BeLessThan 10000
+    }
+    It 'a locked file is listed as not backed up and the rest is still zipped' {
+        $fs = [IO.File]::Open("$src\B\b.txt", 'Open', 'ReadWrite', 'None')
+        try { $r = Invoke-BuiltinZip "$TestDrive\l.zip" @("$src\A", "$src\B") 'Normal' @{ Cancel = $false } } finally { $fs.Dispose() }
+        $r.Ok | Should Be $false; @($r.Failed) -join '' | Should Match 'b\.txt$'
+        $z = [IO.Compression.ZipFile]::OpenRead("$TestDrive\l.zip"); $n = @($z.Entries.FullName); $z.Dispose()
+        ($n -contains 'A/big.txt') | Should Be $true
+    }
+    It 'two picked folders with the same name do not overwrite each other in the zip' {
+        New-Item -ItemType Directory "$TestDrive\u1\Docs", "$TestDrive\u2\Docs" -Force | Out-Null; '1' | Set-Content "$TestDrive\u1\Docs\a.txt"; '2' | Set-Content "$TestDrive\u2\Docs\a.txt"
+        [void](Invoke-BuiltinZip "$TestDrive\d.zip" @("$TestDrive\u1\Docs", "$TestDrive\u2\Docs") 'Normal' @{ Cancel = $false })
+        $z = [IO.Compression.ZipFile]::OpenRead("$TestDrive\d.zip"); $n = @($z.Entries.FullName); $z.Dispose()
+        (($n -contains 'Docs/a.txt') -and ($n -contains 'Docs-2/a.txt')) | Should Be $true
+    }
+    It 'an existing backup is never overwritten' { 'x' | Set-Content "$TestDrive\dup.zip"; { Invoke-BuiltinZip "$TestDrive\dup.zip" @("$src\B") 'Normal' @{ Cancel = $false } } | Should Throw }
+    It '7z, zip by 7-Zip and self-extracting refuse to start without 7-Zip' {
+        foreach ($o in @(@{ Mode = '7z' }, @{ Mode = 'Zip'; Engine = '7zip' }, @{ Mode = '7z'; Sfx = 'Windowed' })) {
+            $o.Sources = @("$src\B"); $o.Dest = "$TestDrive\no7"; $o.SevenZip = $null; $o.Level = 'Normal'
+            (Invoke-ManualBackup $o @{ Cancel = $false }).Message | Should Match '7-Zip is not installed'
         }
     }
 }

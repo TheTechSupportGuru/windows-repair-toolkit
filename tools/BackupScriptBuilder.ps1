@@ -1,5 +1,6 @@
 # Version 1.3 (2026-11-26)
-# Backup Script Builder - builds a FreeFileSync batch file (BackupScript.ffs_batch), or a Robocopy / Xcopy script (.ps1 or .bat)
+# Backup Script Builder - builds a FreeFileSync batch file (BackupScript.ffs_batch), or a Robocopy / Xcopy script (.ps1 or .bat),
+# and (1.3) makes a manual backup now: to a folder, a zip (Windows or 7-Zip) or a 7z / self-extracting .exe
 # Windows Repair Toolkit - Copyright (C) 2026 TheTechSupportGuru - SPDX-License-Identifier: GPL-3.0-or-later
 # Free software under the GNU General Public License v3 or (at your option) any later version, WITHOUT ANY WARRANTY. See LICENSE
 # Uses only what ships with Windows (PowerShell 5.1 + WinForms).
@@ -675,6 +676,142 @@ function Show-FolderPicker([bool]$Files = $false) {
     return ,$result
 }
 
+# ---------- 1.3: Manual backup (run now: to a folder, a zip or a 7z, optionally a self-extracting .exe) ----------
+# These functions also run inside a background runspace (Start-ManualBackup), so they use nothing from the window.
+$ManualFns = @('Get-PairName', 'ConvertTo-ProcessArg', 'New-7ZipArgs', 'Wait-BackupProcess', 'Invoke-ManualCopy', 'Invoke-BuiltinZip', 'Invoke-ManualBackup')
+# 7z.exe from the usual install folders or the path 7-Zip's setup writes to the registry; $null when not installed
+function Find-7Zip {
+    $c = @("$env:ProgramFiles\7-Zip\7z.exe", "${env:ProgramFiles(x86)}\7-Zip\7z.exe", "$env:ProgramW6432\7-Zip\7z.exe")
+    foreach ($k in 'HKLM:\SOFTWARE\7-Zip', 'HKCU:\SOFTWARE\7-Zip', 'HKLM:\SOFTWARE\WOW6432Node\7-Zip') {
+        $i = Get-ItemProperty $k -ErrorAction SilentlyContinue
+        foreach ($v in @($i.Path64, $i.Path)) { if ($v) { $c += (Join-Path $v '7z.exe') } }
+    }
+    foreach ($p in $c) { if ($p -and [IO.File]::Exists($p)) { return $p } }
+    return $null
+}
+# One command-line argument, quoted the way Windows programs (and 7-Zip) split them
+function ConvertTo-ProcessArg([string]$a) {
+    if ($a -and $a -notmatch '[\s"]') { return $a }
+    $s = $a -replace '(\\*)"', '$1$1\"'
+    $s = $s -replace '(\\+)$', '$1$1'
+    return '"' + $s + '"'
+}
+# 7-Zip arguments. $format 'zip' / '7z'; $level 'Store' / 'Normal' / 'Ultra'; $sfx '' / '7z.sfx' (windowed) / '7zCon.sfx' (console),
+# full path of the module. A self-extracting archive is always 7z. The password is never written to the log.
+function New-7ZipArgs([string]$out, [string[]]$sources, [string]$format, [string]$level, [string]$password, [string]$sfx, [bool]$encryptNames = $true) {
+    if ($sfx) { $format = '7z' }
+    $a = @('a', "-t$format", ('-mx=' + @{ Store = 0; Normal = 5; Ultra = 9 }[$level]), '-y', '-ssw', '-bb1')
+    if ($password) {
+        $a += "-p$password"
+        if ($format -eq '7z') { if ($encryptNames) { $a += '-mhe=on' } } else { $a += '-mem=AES256' }
+    }
+    if ($sfx) { $a += "-sfx$sfx" }
+    $a += '--'; $a += $out; $a += $sources
+    return , $a
+}
+# Runs a program without a window; stops it when $state.Cancel is set. Returns the exit code (-1 = cancelled)
+function Wait-BackupProcess([string]$exe, [string[]]$argList, $state) {
+    $psi = New-Object Diagnostics.ProcessStartInfo $exe, ((@($argList) | ForEach-Object { ConvertTo-ProcessArg $_ }) -join ' ')
+    $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true
+    $p = [Diagnostics.Process]::Start($psi)
+    while (-not $p.WaitForExit(250)) { if ($state.Cancel) { try { $p.Kill() } catch {}; [void]$p.WaitForExit(5000); return -1 } }
+    return $p.ExitCode
+}
+# Copy to a folder with robocopy: <dest>\<folder name> per folder; picked files go to <dest>\<their folder's name>
+function Invoke-ManualCopy([string[]]$sources, [string]$dest, $state) {
+    $used = @{}; $pairs = [ordered]@{}; $failed = @()
+    foreach ($s in $sources) {
+        if ([IO.File]::Exists($s)) {
+            $par = [IO.Path]::GetDirectoryName($s); $k = '|' + $par.ToLower()
+            if (-not $pairs.Contains($k)) { $pairs[$k] = @{ Src = $par; Dst = (Join-Path $dest (Get-PairName $par $used)); Files = @() } }
+            $pairs[$k].Files += [IO.Path]::GetFileName($s)
+        } else { $pairs[$s.ToLower()] = @{ Src = $s.TrimEnd('\'); Dst = (Join-Path $dest (Get-PairName $s $used)); Files = @() } }
+    }
+    $base = @('/COPY:DAT', '/DCOPY:T', '/R:1', '/W:1', '/XJ', '/NP', '/NJH', '/XD', '$RECYCLE.BIN', 'System Volume Information')
+    $worst = 0
+    foreach ($p in $pairs.Values) {
+        if ($state.Cancel) { return @{ Ok = $false; Message = 'Cancelled.'; Failed = $failed } }
+        $state.Status = 'Copying ' + $p.Src
+        $src = if ($p.Src -match '^[A-Za-z]:$') { $p.Src + '\.' } else { $p.Src }
+        $a = @($src, $p.Dst) + @($p.Files) + $(if ($p.Files.Count) { $base } else { @('/E') + $base })
+        $rc = Wait-BackupProcess "$env:SystemRoot\System32\robocopy.exe" $a $state
+        if ($rc -lt 0) { return @{ Ok = $false; Message = 'Cancelled.'; Failed = $failed } }
+        if ($rc -ge 8) { $failed += $p.Src }
+        if ($rc -gt $worst) { $worst = $rc }
+    }
+    if ($failed.Count) { return @{ Ok = $false; Message = "Some files could not be copied (robocopy exit code $worst)."; Failed = $failed } }
+    return @{ Ok = $true; Message = 'Copied.'; Failed = @() }
+}
+# Zip with what Windows has (.NET ZipArchive). Store = no compression; Normal and Ultra = Optimal (the strongest
+# Windows offers - 7-Zip's Ultra compresses further). Folders keep their name at the top of the zip; empty folders are
+# kept; junctions are skipped; a file that cannot be read (locked) is listed in Failed and the rest goes on.
+function Invoke-BuiltinZip([string]$out, [string[]]$sources, [string]$level, $state) {
+    Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
+    $lvl = if ($level -eq 'Store') { [IO.Compression.CompressionLevel]::NoCompression } else { [IO.Compression.CompressionLevel]::Optimal }
+    $failed = New-Object System.Collections.Generic.List[string]; $n = 0; $used = @{}; $tops = @{}
+    $fs = [IO.File]::Open($out, 'CreateNew'); $zip = New-Object IO.Compression.ZipArchive($fs, [IO.Compression.ZipArchiveMode]::Create)
+    $cancelled = $false
+    try {
+        foreach ($s in $sources) {
+            if ([IO.File]::Exists($s)) {
+                $par = [IO.Path]::GetDirectoryName($s); $k = $par.ToLower()
+                if (-not $tops.ContainsKey($k)) { $tops[$k] = Get-PairName $par $used }
+                $items = @(, @((New-Object IO.FileInfo $s), ($tops[$k] + '/' + [IO.Path]::GetFileName($s))))
+                $dirs = @()
+            } else {
+                $top = Get-PairName $s $used; $root = (New-Object IO.DirectoryInfo $s)
+                $items = New-Object System.Collections.ArrayList; $dirs = New-Object System.Collections.ArrayList
+                $stack = New-Object System.Collections.Stack; $stack.Push(@($root, $top))
+                while ($stack.Count) {
+                    $d, $rel = $stack.Pop(); [void]$dirs.Add($rel + '/')
+                    try { $subs = $d.GetDirectories(); $files = $d.GetFiles() } catch { $failed.Add($d.FullName); continue }
+                    foreach ($f in $files) { [void]$items.Add(@($f, ($rel + '/' + $f.Name))) }
+                    foreach ($sd in $subs) { if (-not ($sd.Attributes -band [IO.FileAttributes]::ReparsePoint)) { $stack.Push(@($sd, ($rel + '/' + $sd.Name))) } }
+                }
+            }
+            foreach ($dn in $dirs) { [void]$zip.CreateEntry($dn) }
+            foreach ($it in $items) {
+                if ($state.Cancel) { $cancelled = $true; break }
+                try { [void][IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $it[0].FullName, $it[1], $lvl); $n++ } catch { $failed.Add($it[0].FullName) }
+                if ($n % 25 -eq 0) { $state.Status = "Zipping: $n files" }
+            }
+            if ($cancelled) { break }
+        }
+    } finally { $zip.Dispose(); $fs.Dispose() }
+    if ($cancelled) { Remove-Item -LiteralPath $out -Force -ErrorAction SilentlyContinue; return @{ Ok = $false; Message = 'Cancelled.'; Failed = @($failed) } }
+    if ($failed.Count) { return @{ Ok = $false; Message = "$n files zipped, $($failed.Count) could not be read (in use or no access)."; Failed = @($failed) } }
+    return @{ Ok = $true; Message = "$n files zipped."; Failed = @() }
+}
+# $o = @{ Mode = 'Folder' / 'Zip' / '7z'; Engine = 'Windows' / '7zip' (zip only); Level; Password; EncryptNames; Sfx = '' / 'Windowed' / 'Console';
+#         Sources; Dest; SevenZip = path of 7z.exe; Stamp }. Returns @{ Ok; Message; Output; Failed }
+function Invoke-ManualBackup($o, $state) {
+    $name = 'Backup-' + $(if ($o.Stamp) { $o.Stamp } else { Get-Date -Format 'yyyy-MM-dd_HHmmss' })
+    [void][IO.Directory]::CreateDirectory($o.Dest)
+    if ($o.Mode -eq 'Folder') {
+        $out = Join-Path $o.Dest $name
+        $r = Invoke-ManualCopy $o.Sources $out $state; $r.Output = $out; return $r
+    }
+    $use7 = ($o.Mode -eq '7z') -or ($o.Engine -eq '7zip') -or $o.Sfx
+    if ($use7 -and -not ($o.SevenZip -and [IO.File]::Exists($o.SevenZip))) { return @{ Ok = $false; Message = '7-Zip is not installed (7z.exe not found).'; Failed = @() } }
+    if (-not $use7) {
+        $out = Join-Path $o.Dest ($name + '.zip'); $state.Status = 'Zipping...'
+        $r = Invoke-BuiltinZip $out $o.Sources $o.Level $state; $r.Output = $out; return $r
+    }
+    $sfxMod = ''
+    if ($o.Sfx) {
+        $sfxMod = Join-Path (Split-Path $o.SevenZip) $(if ($o.Sfx -eq 'Console') { '7zCon.sfx' } else { '7z.sfx' })
+        if (-not [IO.File]::Exists($sfxMod)) { return @{ Ok = $false; Message = "The 7-Zip self-extractor module is missing: $sfxMod"; Failed = @() } }
+    }
+    $fmt = if ($o.Mode -eq 'Zip' -and -not $o.Sfx) { 'zip' } else { '7z' }
+    $out = Join-Path $o.Dest ($name + $(if ($o.Sfx) { '.exe' } elseif ($fmt -eq 'zip') { '.zip' } else { '.7z' }))
+    $state.Status = 'Compressing with 7-Zip...'
+    $rc = Wait-BackupProcess $o.SevenZip (New-7ZipArgs $out $o.Sources $fmt $o.Level $o.Password $sfxMod ($o.EncryptNames -ne $false)) $state
+    if ($rc -lt 0) { Remove-Item -LiteralPath $out -Force -ErrorAction SilentlyContinue; return @{ Ok = $false; Message = 'Cancelled.'; Output = $out; Failed = @() } }
+    if ($rc -eq 1) { return @{ Ok = $false; Message = '7-Zip finished with warnings: some files were skipped (in use or no access).'; Output = $out; Failed = @() } }
+    if ($rc -ne 0) { return @{ Ok = $false; Message = "7-Zip failed (exit code $rc)."; Output = $out; Failed = @() } }
+    return @{ Ok = $true; Message = 'Archive created.'; Output = $out; Failed = @() }
+}
+
 # ---------- main window ----------
 $form = New-Object System.Windows.Forms.Form; Set-WrtScaling $form
 $form.Text = 'Backup Script Builder'
@@ -720,9 +857,10 @@ $btnAdd.add_Click({
 # 1.3: a network folder or file typed as \\server\share\... (or a mapped drive, saved as its \\server\share path)
 $btnNet = New-Object System.Windows.Forms.Button
 $btnNet.Text = 'Add Network Path'; $btnNet.Location = '425,157'; $btnNet.Size = '130,30'
-$btnNet.add_Click({
+$btnNet.add_Click({ Add-NetworkPath $lstSrc (-not $rbFfs.Checked) })
+function Add-NetworkPath($list, [bool]$allowFiles) {
     Add-Type -AssemblyName Microsoft.VisualBasic
-    $what = if ($rbFfs.Checked) { 'folder' } else { 'folder or file' }
+    $what = if (-not $allowFiles) { 'folder' } else { 'folder or file' }
     $p = [Microsoft.VisualBasic.Interaction]::InputBox("Type the network $what to back up, for example:`r`n\\server\share\Documents`r`n`r`nA mapped drive (Z:\...) is saved as its \\server\share path so a scheduled task can reach it.", 'Add Network Path', '\\')
     $p = $p.Trim().Trim('"')
     if (-not $p -or $p -eq '\\') { return }
@@ -731,10 +869,10 @@ $btnNet.add_Click({
     $form.Cursor = 'WaitCursor'
     try { $isDir = [IO.Directory]::Exists($p); $isFile = -not $isDir -and [IO.File]::Exists($p) } finally { $form.Cursor = 'Default' }
     if (-not ($isDir -or $isFile)) { [void][System.Windows.Forms.MessageBox]::Show("Cannot reach $p`r`nCheck the name, that the PC or NAS is on, and that you have access to the share.", 'Backup Script Builder', 'OK', 'Warning'); return }
-    if ($isFile -and $rbFfs.Checked) { [void][System.Windows.Forms.MessageBox]::Show('A FreeFileSync batch backs up folders only. Pick Robocopy or Xcopy to back up a single file.', 'Backup Script Builder', 'OK', 'Warning'); return }
+    if ($isFile -and -not $allowFiles) { [void][System.Windows.Forms.MessageBox]::Show('A FreeFileSync batch backs up folders only. Pick Robocopy or Xcopy to back up a single file.', 'Backup Script Builder', 'OK', 'Warning'); return }
     $p = if ($isDir) { $p.TrimEnd('\') } else { $p }
-    if (-not @($lstSrc.Items | Where-Object { $_ -ieq $p }).Count) { [void]$lstSrc.Items.Add($p) }
-})
+    if (-not @($list.Items | Where-Object { $_ -ieq $p }).Count) { [void]$list.Items.Add($p) }
+}
 
 $btnRemove = New-Object System.Windows.Forms.Button
 $btnRemove.Text = 'Remove'; $btnRemove.Location = '425,120'; $btnRemove.Size = '130,30'
@@ -1279,9 +1417,164 @@ $btnRun.add_Click({
     catch { $lblStatus.Text = 'Could not start: ' + $_.Exception.Message }
 })
 
+# =====================================================================
+# Tab 3 (1.3): Manual backup - back up right now to a folder, a zip or a 7z (or a self-extracting .exe)
+# =====================================================================
+$tabManual = New-Object System.Windows.Forms.TabPage 'Manual Backup'
+$script:SevenZip = Find-7Zip
+$mlbl = { param($text, $loc) $l = New-Object System.Windows.Forms.Label; $l.Text = $text; $l.Location = $loc; $l.AutoSize = $true; $l.Font = $lblSrc.Font; $l }
+$mLblSrc = & $mlbl '1. What to back up (folders and files)' '15,10'
+$mLst = New-Object System.Windows.Forms.ListBox; $mLst.Location = '15,33'; $mLst.Size = '400,130'; $mLst.SelectionMode = 'MultiExtended'; $mLst.HorizontalScrollbar = $true
+$mAdd = New-Object System.Windows.Forms.Button; $mAdd.Text = 'Add Files/Folders'; $mAdd.Location = '425,33'; $mAdd.Size = '130,30'
+$mAdd.add_Click({ foreach ($p in (Show-FolderPicker $true)) { $p = ConvertTo-UncPath $p (Get-NetworkDriveMap); if (-not @($mLst.Items | Where-Object { $_ -ieq $p }).Count) { [void]$mLst.Items.Add($p) } } })
+$mNet = New-Object System.Windows.Forms.Button; $mNet.Text = 'Add Network Path'; $mNet.Location = '425,70'; $mNet.Size = '130,30'
+$mNet.add_Click({ Add-NetworkPath $mLst $true })
+$mRemove = New-Object System.Windows.Forms.Button; $mRemove.Text = 'Remove'; $mRemove.Location = '425,107'; $mRemove.Size = '130,30'
+$mRemove.add_Click({ foreach ($s in @($mLst.SelectedItems)) { $mLst.Items.Remove($s) } })
+
+$mLblDst = & $mlbl '2. Save to' '15,175'
+$mDest = New-Object System.Windows.Forms.TextBox; $mDest.Location = '15,198'; $mDest.Size = '400,25'
+$mBrowse = New-Object System.Windows.Forms.Button; $mBrowse.Text = 'Browse...'; $mBrowse.Location = '425,196'; $mBrowse.Size = '130,28'
+$mBrowse.add_Click({
+    $fb = New-Object System.Windows.Forms.FolderBrowserDialog; $fb.Description = 'Where the backup goes (a new Backup-<date> folder or archive is created in it)'; $fb.ShowNewFolderButton = $true
+    if ($mDest.Text -and (Test-Path $mDest.Text)) { $fb.SelectedPath = $mDest.Text }
+    if ($fb.ShowDialog() -eq 'OK') { $mDest.Text = ConvertTo-UncPath $fb.SelectedPath (Get-NetworkDriveMap) }
+    $fb.Dispose()
+})
+
+$mLblType = & $mlbl '3. Back up to' '15,240'
+$mRbFolder = New-Object System.Windows.Forms.RadioButton; $mRbFolder.Text = 'A folder (plain copy)'; $mRbFolder.Location = '15,263'; $mRbFolder.Size = '170,24'; $mRbFolder.Checked = $true
+$mRbZip = New-Object System.Windows.Forms.RadioButton; $mRbZip.Text = 'A zip file'; $mRbZip.Location = '195,263'; $mRbZip.Size = '120,24'
+$mRb7z = New-Object System.Windows.Forms.RadioButton; $mRb7z.Text = 'A 7z file (7-Zip)'; $mRb7z.Location = '325,263'; $mRb7z.Size = '160,24'
+
+# the zip engine is its own group so its two buttons do not untick the type above
+$mGrpEngine = New-Object System.Windows.Forms.Panel; $mGrpEngine.Location = '15,300'; $mGrpEngine.Size = '540,30'
+$mLblEngine = New-Object System.Windows.Forms.Label; $mLblEngine.Text = 'Zip made by:'; $mLblEngine.Location = '0,5'; $mLblEngine.AutoSize = $true
+$mRbWin = New-Object System.Windows.Forms.RadioButton; $mRbWin.Text = 'Windows (built in)'; $mRbWin.Location = '105,2'; $mRbWin.Size = '170,24'; $mRbWin.Checked = $true
+$mRb7Engine = New-Object System.Windows.Forms.RadioButton; $mRb7Engine.Text = '7-Zip'; $mRb7Engine.Location = '285,2'; $mRb7Engine.Size = '120,24'
+$mGrpEngine.Controls.AddRange(@($mLblEngine, $mRbWin, $mRb7Engine))
+
+$mLblLevel = New-Object System.Windows.Forms.Label; $mLblLevel.Text = 'Compression:'; $mLblLevel.Location = '15,357'; $mLblLevel.AutoSize = $true
+$mLevel = New-Object System.Windows.Forms.ComboBox; $mLevel.DropDownStyle = 'DropDownList'; $mLevel.Location = '120,354'; $mLevel.Size = '150,25'
+[void]$mLevel.Items.AddRange(@('Store', 'Normal', 'Ultra')); $mLevel.SelectedItem = 'Normal'
+
+$mLblPw = New-Object System.Windows.Forms.Label; $mLblPw.Text = 'Password (7-Zip):'; $mLblPw.Location = '15,394'; $mLblPw.AutoSize = $true
+$mPw = New-Object System.Windows.Forms.TextBox; $mPw.Location = '140,391'; $mPw.Size = '200,25'; $mPw.UseSystemPasswordChar = $true
+$mLblPw2 = New-Object System.Windows.Forms.Label; $mLblPw2.Text = 'Type it again:'; $mLblPw2.Location = '15,426'; $mLblPw2.AutoSize = $true
+$mPw2 = New-Object System.Windows.Forms.TextBox; $mPw2.Location = '140,423'; $mPw2.Size = '200,25'; $mPw2.UseSystemPasswordChar = $true
+$mShowPw = New-Object System.Windows.Forms.CheckBox; $mShowPw.Text = 'Show'; $mShowPw.Location = '350,393'; $mShowPw.AutoSize = $true
+$mShowPw.add_CheckedChanged({ $mPw.UseSystemPasswordChar = -not $mShowPw.Checked; $mPw2.UseSystemPasswordChar = -not $mShowPw.Checked })
+$mEncNames = New-Object System.Windows.Forms.CheckBox; $mEncNames.Text = 'Also hide the file names (7z)'; $mEncNames.Location = '140,455'; $mEncNames.AutoSize = $true; $mEncNames.Checked = $true
+
+$mLblSfx = New-Object System.Windows.Forms.Label; $mLblSfx.Text = 'Self-extracting .exe:'; $mLblSfx.Location = '15,490'; $mLblSfx.AutoSize = $true
+$mSfx = New-Object System.Windows.Forms.ComboBox; $mSfx.DropDownStyle = 'DropDownList'; $mSfx.Location = '160,487'; $mSfx.Size = '260,25'
+[void]$mSfx.Items.AddRange(@('No', 'Yes - windowed (asks where to extract)', 'Yes - console window')); $mSfx.SelectedIndex = 0
+
+$m7Status = New-Object System.Windows.Forms.LinkLabel; $m7Status.Location = '15,525'; $m7Status.Size = '540,22'; $m7Status.AutoEllipsis = $true
+function Update-7ZipStatus {
+    if ($script:SevenZip) { $m7Status.Text = '7-Zip found: ' + $script:SevenZip; $m7Status.LinkArea = New-Object System.Windows.Forms.LinkArea(0, 0) }
+    else { $m7Status.Text = '7-Zip is not installed - get it free at https://www.7-zip.org/'; $m7Status.LinkArea = New-Object System.Windows.Forms.LinkArea($m7Status.Text.IndexOf('https'), 'https://www.7-zip.org/'.Length) }
+}
+$m7Status.add_LinkClicked({ Start-Process 'https://www.7-zip.org/' })
+
+$mStart = New-Object System.Windows.Forms.Button; $mStart.Text = '4. Start Backup'; $mStart.Location = '15,560'; $mStart.Size = '400,45'
+$mStart.Font = New-Object System.Drawing.Font('Segoe UI', 11, [System.Drawing.FontStyle]::Bold)
+$mCancel = New-Object System.Windows.Forms.Button; $mCancel.Text = 'Cancel'; $mCancel.Location = '425,560'; $mCancel.Size = '130,45'; $mCancel.Enabled = $false
+$mProgress = New-Object System.Windows.Forms.ProgressBar; $mProgress.Location = '15,615'; $mProgress.Size = '540,18'; $mProgress.Style = 'Marquee'; $mProgress.Visible = $false
+$mStatus = New-Object System.Windows.Forms.Label; $mStatus.Location = '15,640'; $mStatus.Size = '540,60'; $mStatus.ForeColor = [System.Drawing.Color]::DimGray
+
+# What can be picked depends on the type: the zip engine only for zip; password only when 7-Zip makes the archive;
+# self-extracting only for 7z (it always makes a 7z inside the .exe); anything 7-Zip only when it is installed
+function Update-ManualUi {
+    $has7 = [bool]$script:SevenZip
+    $isZip = $mRbZip.Checked; $is7z = $mRb7z.Checked
+    $mRb7z.Enabled = $has7; if ($is7z -and -not $has7) { $mRbZip.Checked = $true; return }
+    $mGrpEngine.Enabled = $isZip; $mRb7Engine.Enabled = $has7
+    if ($mRb7Engine.Checked -and -not $has7) { $mRbWin.Checked = $true }
+    $mLevel.Enabled = $isZip -or $is7z
+    $uses7 = $is7z -or ($isZip -and $mRb7Engine.Checked)
+    foreach ($c in $mLblPw, $mPw, $mLblPw2, $mPw2, $mShowPw) { $c.Enabled = $uses7 }
+    $mEncNames.Enabled = $is7z
+    $mLblSfx.Enabled = $is7z; $mSfx.Enabled = $is7z; if (-not $is7z) { $mSfx.SelectedIndex = 0 }
+    Update-7ZipStatus
+}
+foreach ($c in $mRbFolder, $mRbZip, $mRb7z, $mRbWin, $mRb7Engine) { $c.Add_CheckedChanged({ Update-ManualUi }) }
+
+# Everything the backup needs, read from the tab (no window objects go into the background runspace)
+function Get-ManualOptions {
+    $mode = if ($mRbZip.Checked) { 'Zip' } elseif ($mRb7z.Checked) { '7z' } else { 'Folder' }
+    $uses7 = $mode -eq '7z' -or ($mode -eq 'Zip' -and $mRb7Engine.Checked)
+    return @{
+        Mode = $mode; Engine = $(if ($mRb7Engine.Checked) { '7zip' } else { 'Windows' }); Level = [string]$mLevel.SelectedItem
+        Password = $(if ($uses7) { $mPw.Text } else { '' }); EncryptNames = $mEncNames.Checked
+        Sfx = @('', 'Windowed', 'Console')[[Math]::Max(0, $mSfx.SelectedIndex)]
+        Sources = @($mLst.Items | ForEach-Object { [string]$_ }); Dest = (ConvertTo-UncPath $mDest.Text.Trim().Trim('"').TrimEnd('\') $script:NetMap); SevenZip = $script:SevenZip
+    }
+}
+# Checks before starting; returns the problem as text, or '' when it can start
+function Test-ManualOptions($o, [string]$pw2) {
+    if (-not $o.Sources.Count) { return 'Add at least one folder or file to back up.' }
+    if ($o.Dest -notmatch '^([a-zA-Z]:\\|\\\\[^\\]+\\[^\\]+)') { return 'Pick where the backup goes (a full path like H:\Backups or \\server\share\Backups).' }
+    foreach ($s in $o.Sources) {
+        $sp = $s.TrimEnd('\') + '\'
+        if (($o.Dest.TrimEnd('\') + '\').StartsWith($sp, [StringComparison]::OrdinalIgnoreCase)) { return "The backup would go inside $s, which is being backed up. Pick another place." }
+    }
+    if ($o.Password -and $o.Password -ne $pw2) { return 'The two passwords are not the same.' }
+    if ($o.Password -match '"') { return 'The password cannot contain a double quote (").' }
+    return ''
+}
+$mState = $null; $mPs = $null; $mHandle = $null
+$mTimer = New-Object System.Windows.Forms.Timer; $mTimer.Interval = 300
+$mTimer.add_Tick({
+    if (-not $script:mState) { return }
+    $mStatus.Text = [string]$script:mState.Status
+    if (-not $script:mState.Done) { return }
+    $mTimer.Stop()
+    try { [void]$script:mPs.EndInvoke($script:mHandle) } catch {}
+    $script:mPs.Runspace.Dispose(); $script:mPs.Dispose()
+    $r = $script:mState.Result; $script:mState = $null
+    $mProgress.Visible = $false; $mCancel.Enabled = $false; $mStart.Enabled = $true
+    $msg = [string]$r.Message; if ($r.Output) { $msg += "`r`n" + $r.Output }
+    if (@($r.Failed).Count) { $msg += "`r`n`r`nNot backed up:`r`n" + ((@($r.Failed) | Select-Object -First 15) -join "`r`n") + $(if (@($r.Failed).Count -gt 15) { "`r`n..." }) }
+    $mStatus.Text = $(if ($r.Ok) { 'Done: ' } else { 'Finished with problems: ' }) + [string]$r.Message
+    $icon = if ($r.Ok) { 'Information' } else { 'Warning' }
+    if ($r.Ok -and $r.Output -and [System.Windows.Forms.MessageBox]::Show("$msg`r`n`r`nOpen the folder?", 'Manual Backup', 'YesNo', $icon) -eq 'Yes') { Start-Process explorer.exe "/select,`"$($r.Output)`"" }
+    elseif (-not $r.Ok) { [void][System.Windows.Forms.MessageBox]::Show($msg, 'Manual Backup', 'OK', $icon) }
+})
+# Runs Invoke-ManualBackup in a background runspace so the window keeps working (and Cancel can stop it)
+function Start-ManualBackup($o) {
+    $script:mState = [hashtable]::Synchronized(@{ Status = 'Starting...'; Done = $false; Cancel = $false; Result = $null })
+    $defs = ($ManualFns | ForEach-Object { "function $_ {`n" + (Get-Item "function:$_").Definition + "`n}" }) -join "`n"
+    $code = "param(`$o, `$s)`n$defs`ntry { `$s.Result = Invoke-ManualBackup `$o `$s } catch { `$s.Result = @{ Ok = `$false; Message = `$_.Exception.Message; Failed = @() } } finally { `$s.Done = `$true }"
+    $script:mPs = [powershell]::Create(); $script:mPs.Runspace = [runspacefactory]::CreateRunspace(); $script:mPs.Runspace.Open()
+    [void]$script:mPs.AddScript($code).AddArgument($o).AddArgument($script:mState)
+    $script:mHandle = $script:mPs.BeginInvoke()
+    $mStart.Enabled = $false; $mCancel.Enabled = $true; $mProgress.Visible = $true; $mTimer.Start()
+}
+$mStart.add_Click({
+    $o = Get-ManualOptions
+    $bad = Test-ManualOptions $o $mPw2.Text
+    if ($bad) { [void][System.Windows.Forms.MessageBox]::Show($bad, 'Manual Backup', 'OK', 'Warning'); return }
+    Start-ManualBackup $o
+})
+$mCancel.add_Click({ if ($script:mState) { $script:mState.Cancel = $true; $mStatus.Text = 'Stopping...' } })
+$form.add_FormClosing({ if ($script:mState -and -not $script:mState.Done) { $script:mState.Cancel = $true } })
+
+$tabManual.Controls.AddRange(@($mLblSrc, $mLst, $mAdd, $mNet, $mRemove, $mLblDst, $mDest, $mBrowse, $mLblType, $mRbFolder, $mRbZip, $mRb7z, $mGrpEngine,
+        $mLblLevel, $mLevel, $mLblPw, $mPw, $mLblPw2, $mPw2, $mShowPw, $mEncNames, $mLblSfx, $mSfx, $m7Status, $mStart, $mCancel, $mProgress, $mStatus))
+Update-ManualUi
+Add-Help $tabManual 330 8 'What to back up' ("Folders and single files to back up right now. 'Add Files/Folders' opens the same tree as on the Build Script tab (files are listed too). 'Add Network Path' takes \\server\share\folder or a file on another PC or NAS.`r`n`r`nEach folder keeps its name in the backup; files picked from one folder go into a folder with that folder's name. Empty folders are kept.")
+Add-Help $tabManual 105 173 'Save to' ("Where the backup goes: an external drive, a second drive or a network share (\\server\share\Backups). A new Backup-<date and time> folder, .zip, .7z or .exe is created there each time, so older backups are never overwritten.")
+Add-Help $tabManual 135 238 'Back up to' ("A folder: a plain copy (robocopy) you can open and use straight away.`r`n`r`nA zip file: opens on any Windows PC without extra software. 'Windows (built in)' needs nothing installed; '7-Zip' compresses better and can add a password (AES-256).`r`n`r`n" +
+    "A 7z file: 7-Zip's own format, the smallest, can hide the file names too, and can be made into a self-extracting .exe. Needs 7-Zip (free, https://www.7-zip.org/).`r`n`r`n" +
+    "Compression: Store = no compression (fastest, for photos and videos that do not shrink), Normal = the usual setting, Ultra = the smallest file (slowest). Windows' own zip has no stronger setting than Normal, so Ultra is the same as Normal there - use 7-Zip for a real Ultra.")
+Add-Help $tabManual 430 489 'Self-extracting .exe' ("Makes the 7z backup into a program: double-click it on any Windows PC to unpack it, no 7-Zip needed there. 'Windowed' asks where to unpack; 'console' unpacks into the folder it is in.`r`n`r`n" +
+    "Password: with a password the backup cannot be opened without it - there is no way to recover a lost password. 'Also hide the file names' (7z) means even the list of files needs the password. The password is given to 7-Zip on its command line while the backup runs.")
+$tabs.TabPages.Add($tabManual)
+
 Update-TaskList
 Update-FreqUi
 Update-TypeUi
 
-Initialize-WrtWindow $form @($tabBuild, $tabSched) 600 600
+Initialize-WrtWindow $form @($tabBuild, $tabSched, $tabManual) 600 600
 [void]$form.ShowDialog()
