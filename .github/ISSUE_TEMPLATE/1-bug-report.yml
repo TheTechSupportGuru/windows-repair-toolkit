@@ -18,7 +18,6 @@ body:
         - "WinSuperTool / individual tools (WinRepairTool, Collect-Logs, Monitor-Logs, ClaudeLogAnalyzer)"
         - "WinSuperTool no-AI edition"
         - "WinFixKit"
-        - "WinFixKit beta (Automation tab)"
         - "Backup Script Builder"
         - "7z-Encryptor"
         - "Test Center"
@@ -37,9 +36,10 @@ body:
       label: "Tool version"
       description: "The version line is near the top of the script, for example \"# Version 1.9\"."
       options:
-        - "2.0 (latest)"
+        - "2.1 (latest)"
+        - "2.0"
         - "1.9.x"
-        - "A beta (WinFixKit Automation, Test Center)"
+        - "A beta (Test Center)"
         - "1.8.x or older"
         - "Not sure"
     validations:

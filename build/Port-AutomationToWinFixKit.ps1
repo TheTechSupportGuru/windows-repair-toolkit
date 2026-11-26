@@ -2,7 +2,7 @@
 # Copyright (C) 2026 TheTechSupportGuru
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# Port-AutomationToWinFixKit.ps1 - builds the AUTOMATION region of beta\WinFixKit-beta-automation.ps1 from tools\WinSuperTool.ps1:
+# Port-AutomationToWinFixKit.ps1 - builds the AUTOMATION region of tools\WinFixKit.ps1 from tools\WinSuperTool.ps1:
 # WinSuperTool's Automation code word for word (with the documented renames) + the WinFixKit parts in build\automation-port\.
 # Run it after every Automation change in WinSuperTool (Automation is changed there FIRST - see CONTRIBUTING.md), then run
 # tests\WinFixKitAutomation.Tests.ps1. It stops when WinSuperTool changed in a way the port does not expect (Edit-Once).
@@ -91,7 +91,7 @@ W '#endregion AUTOMATION'
 $region = $o.ToString()
 
 # insert into the beta copy: after the Registry Backups tab, and the tab scrolls when the window is small
-$bf = Join-Path $repo 'beta\WinFixKit-beta-automation.ps1'
+$bf = Join-Path $repo 'tools\WinFixKit.ps1'
 $t = [IO.File]::ReadAllText($bf)
 if ($t -match '(?m)^#region AUTOMATION\r?$') { $s = [regex]::Match($t, '(?m)^#region AUTOMATION\r?$').Index; $e = [regex]::Match($t, '(?m)^#endregion AUTOMATION').Index + '#endregion AUTOMATION'.Length; if ($e -le $s) { throw 'region end not found' }; $t = $t.Substring(0, $s) + $region.TrimEnd() + $t.Substring($e) }
 else {

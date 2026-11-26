@@ -2,7 +2,7 @@
 # Copyright (C) 2026 TheTechSupportGuru
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# Run-WinFixKitAutomation.ps1 - runs the Automation tab of beta\WinFixKit-beta-automation.ps1 through its REAL code:
+# Run-WinFixKitAutomation.ps1 - runs the Automation tab of tools\WinFixKit.ps1 through its REAL code:
 # real task windows, real fixes, result read-back, per-task popups, the final summary and the HTML report. Every
 # question is answered Yes (message boxes are logged), every summary window is read and closed.
 # THE FIXES REALLY CHANGE THE PC (registry, services, network, apps). ONLY on a test VM, AFTER taking a snapshot.
@@ -12,7 +12,7 @@
 # Output: -OutDir (report.txt = everything in one file; per queue: msgs.txt, popups.txt, automation-summary.txt,
 #         results.csv, the HTML report, and WinFixKit's own data folder with Task-Results)
 #   powershell -ExecutionPolicy Bypass -File .\tests\Run-WinFixKitAutomation.ps1 -All -OutDir C:\Users\Public\wfk-auto-test
-param([string]$Script = (Join-Path (Split-Path $PSScriptRoot -Parent) 'beta\WinFixKit-beta-automation.ps1'),
+param([string]$Script = (Join-Path (Split-Path $PSScriptRoot -Parent) 'tools\WinFixKit.ps1'),
       [string]$OutDir = 'C:\Users\Public\wfk-auto-test', [string]$Queue = '', [switch]$All, [switch]$List, [int]$BatchMinutes = 120)
 $ErrorActionPreference = 'Continue'
 New-Item -ItemType Directory -Force $OutDir | Out-Null

@@ -5,15 +5,15 @@ A set of PowerShell tools for repairing and troubleshooting Windows 10/11 PCs, i
 > [!WARNING]
 > These scripts were written with AI. They have been tested on Windows 11, Windows 10 64-bit (MBR disk), and Hiren's BootCD PE 10 and 11, all in VMs. They have not been tested on many real PCs. Several tools change the boot configuration (BCD), the registry, services and network settings. **Use at your own risk.** Try them on a test machine first.
 
-**Current version: 2.0** (2026-11-26). Every version is a git tag (`v1.1` to `v2.0`), so `git diff v1.9.2 v2.0` shows exactly what changed. Licensed under the [GNU GPL v3.0](#license).
+**Current version: 2.1** (2026-11-26). Every version is a git tag (`v1.1` to `v2.1`), so `git diff v2.0 v2.1` shows exactly what changed. Licensed under the [GNU GPL v3.0](#license).
 
 <details open>
 <summary><h2 id="download">Download</h2></summary>
 
 
-Get the tools from the [latest release](../../releases/latest). The main downloads are **WinSuperTool**, **WinSuperTool-NoAI**, **WinFixKit**, **Backup Script Builder** and **7z-Encryptor**, each its own zip with the script, its launcher, a short read-me and the license. The smaller separate tools (WinRepairTool, Collect-Logs, Monitor-Logs, ClaudeLogAnalyzer) are all in **`IndividualTools-v2.0.zip`**, started with its `Run-PS-As-Admin.bat`; each of them is also part of WinSuperTool. The current betas are there too. **Source code** contains everything.
+Get the tools from the [latest release](../../releases/latest). The main downloads are **WinSuperTool**, **WinSuperTool-NoAI**, **WinFixKit**, **Backup Script Builder** and **7z-Encryptor**, each its own zip with the script, its launcher, a short read-me and the license. The smaller separate tools (WinRepairTool, Collect-Logs, Monitor-Logs, ClaudeLogAnalyzer) are all in **`IndividualTools-v2.1.zip`**, started with its `Run-PS-As-Admin.bat`; each of them is also part of WinSuperTool. The current beta (Test Center) is there too. **Source code** contains everything.
 
-**Don't want AI?** `WinSuperTool-NoAI-v2.0.zip` is WinSuperTool without the AI Analyze tab:
+**Don't want AI?** `WinSuperTool-NoAI-v2.1.zip` is WinSuperTool without the AI Analyze tab:
 - no phone login and no network listener;
 - nothing is ever sent to Claude or Gemini;
 - everything else is the same.
@@ -24,6 +24,18 @@ Windows marks downloaded files as blocked: right-click the zip > **Properties** 
 </details>
 
 <details open>
+<summary><h2 id="new-in-2-1">New in 2.1</h2></summary>
+
+
+- **WinFixKit now has the Automation and Registry changes tabs** from the beta (beta-automation 3), and the separate beta is retired: the WinFixKit zip is the only WinFixKit. The two new tabs say **(beta)** on the tab and at the top of the tab, because they are newer than the rest of WinFixKit; every other tab is the same as in 2.0 ([what changed in 2.1](docs/changes/V2.1.md)).
+  - **Automation (beta):** a queue of up to 10 of WinFixKit's status checks and fixes, run one after another, each in its own window with a pass / fail result, then a summary and an HTML report. Needs administrator rights and a running Windows.
+  - **Registry changes (beta):** registry keys changed since a date, compared with a shadow copy / restore point, WinFixKit's own backups, a Windows ISO or a built-in list of Windows defaults. Tick only the values to revert; each key is backed up as a `.reg` file first. Scanning changes nothing.
+- The other tools are the same as in 2.0.
+
+
+</details>
+
+<details>
 <summary><h2 id="new-in-2-0">New in 2.0</h2></summary>
 
 
@@ -135,7 +147,7 @@ Every BCD change is backed up first. Mount memory, BCD backups and the activity 
 
 `WinFixKit.ps1` + `Launch-WinFixKit.bat`. A replacement for the troubleshooters Microsoft retired. One tab per area:
 
-Overview, Windows Update, Files and Folders, Start Menu, Microsoft Account, Store Apps, Printer, Printer Share Fixes, Network, Audio, Hardware and Devices, Power, Search and Indexing, Network Sharing, SMB 24H2 Fix, plus a **Service Killer** and a **Registry Backups** tab.
+Overview, Windows Update, Files and Folders, Start Menu, Microsoft Account, Store Apps, Printer, Printer Share Fixes, Network, Audio, Hardware and Devices, Power, Search and Indexing, Network Sharing, SMB 24H2 Fix, plus a **Service Killer**, a **Registry Backups**, an **Automation (beta)** and a **Registry changes (beta)** tab.
 
 On every tab:
 - **Check status** shows the current state and changes nothing. It works without admin rights.
@@ -144,11 +156,11 @@ On every tab:
 
 The registry is backed up before each fix, with one-click restore. Folders are renamed instead of deleted where possible, so fixes can be undone. Logs, reports and backups go to `Desktop\WinFixKit`.
 
-**Beta:** WinFixKit with an **Automation** tab (a queue of up to 10 status checks and fixes, each with a pass / fail result, a final summary and an HTML report) and a **Registry changes** tab (registry keys changed since a date, compared with a shadow copy, WinFixKit's backups, a Windows ISO or a built-in defaults list; tick the values to revert, each key backed up first) is in the latest release as WinFixKit-v1.9-beta-automation.3.zip. Notes: [beta-automation 3](docs/changes/WinFixKit-1.9-beta-automation.3.md).
+**Automation (beta)** runs up to 10 status checks and fixes one after another, each in its own window with a pass / fail result, then a summary and an HTML report (administrator rights, not in WinPE). **Registry changes (beta)** finds registry keys changed since a date, shows what they were before (from a shadow copy, WinFixKit's backups, a Windows ISO or a built-in defaults list) and reverts only the values you tick, each key backed up first. Both came from the WinFixKit beta-automation betas ([notes](docs/changes/WinFixKit-1.9-beta-automation.3.md)) and are still marked beta in the window. Since 2.1.
 
 ### Individual tools
 
-WinRepairTool, Collect-Logs, Monitor-Logs and ClaudeLogAnalyzer are in `IndividualTools-v2.0.zip`. Each is also part of WinSuperTool, and is kept separate for when you need only one job. Start one by dragging its `.ps1` onto `Run-PS-As-Admin.bat`.
+WinRepairTool, Collect-Logs, Monitor-Logs and ClaudeLogAnalyzer are in `IndividualTools-v2.1.zip`. Each is also part of WinSuperTool, and is kept separate for when you need only one job. Start one by dragging its `.ps1` onto `Run-PS-As-Admin.bat`.
 
 <details>
 <summary>Show the individual tools</summary>
@@ -232,6 +244,7 @@ Severity: **S1** = can make the PC unbootable, lose data or act on the wrong dis
 | **1.9** | **WinSuperTool:** Recovery pass / fail summaries, new **System Info** and **Automation** tabs (also in WinPE on the offline Windows), HTML report. **All tools:** windows fit every screen and follow screen changes (two monitors, scaling, docking); in WinPE, WinFixKit now protects the offline Windows' system folders, and task windows work where only PowerShell 7 exists. | [V1.9](docs/changes/V1.9.md) |
 | **1.9.1** | Packaging release: the 1.9 tools unchanged, plus the new **Backup Script Builder** (for FreeFileSync). | [V1.9.1](docs/changes/V1.9.1.md) |
 | **2.0** | **All tools:** folders with `[ ]` in the name lost saved mounts, log summaries, WinFixKit logs and reports, and Backup Script Builder's overwrite warning, because `-Path` reads `[ ]` as a wildcard. **7-Zip tools:** a non-English zip password made 7-Zip fail; it is now refused up front. | [V2.0](docs/changes/V2.0.md) |
+| **2.1** | **WinFixKit:** the Automation and Registry changes tabs move from the beta into WinFixKit, marked (beta) in the window; the separate beta is retired. | [V2.1](docs/changes/V2.1.md) |
 
 ### Still open
 
@@ -297,10 +310,10 @@ The other scripts in `tests/` are the admin and windowed test runs used on the V
 
 
 ```
-tools/            the current scripts and launchers (v2.0), incl. the generated no-AI edition
-beta/             the current beta: WinFixKit 1.9 beta-automation (WinFixKit with Automation and Registry changes tabs)
+tools/            the current scripts and launchers (v2.1), incl. the generated no-AI edition
+beta/             no beta script at the moment (WinFixKit beta-automation became part of WinFixKit 2.1)
 build/            Build-NoAIEdition.ps1 (generates the no-AI edition), Promote-Beta.ps1 (makes a beta stable)
-docs/changes/     what each version fixed (V1.2 ... V2.0, the 1.9 betas, Test Center, Backup Script Builder and 7z-Encryptor)
+docs/changes/     what each version fixed (V1.2 ... V2.1, the 1.9 betas, Test Center, Backup Script Builder and 7z-Encryptor)
 docs/testing/     the test plan, results of each phase, and the v1.6 code review
 tests/            Pester unit tests, Test Center (TestCenter.ps1), the test harness and the VM test runs
 LICENSE           GNU General Public License v3.0
@@ -348,6 +361,7 @@ How long this project has taken, as of **2.0** (November 26, 2026): the version 
 | Then un-redoing it: moving the old betas back out, because one release with 19 zips is not a release, it is a yard sale | ~1 h | ~0.5 h |
 | 1.9.2: Backup Script Builder 1.2 to 1.4 (single files, network paths, a Manual Backup tab with zip / 7z / self-extracting .exe), 7z-Encryptor 1.0 from nothing, and every ? button re-read against what it actually does | ~3 h | ~6 h |
 | 2.0: a regression and edge-case pass over every tool, a local AI's code review (mostly fact-checked into the bin), `[ ]` folders, 7-Zip passwords in 7 flavours of awkward, and every doc brought up to date | ~1 h | ~2 h |
+| 2.1: promoting the WinFixKit beta, which mostly meant deleting the word "beta" from everywhere and then carefully sticking it back on two tabs | ~0.1 h | ~0.3 h |
 | VMs grinding through test runs while everyone else made coffee | ~0 h | ~15 h of machine time, unsupervised. The VMs have asked for a union. |
 | **Total** | **~33 h** | **~29.5 h** (plus a lot of patient VMs, and one very tired releases page) |
 
@@ -358,7 +372,7 @@ How long this project has taken, as of **2.0** (November 26, 2026): the version 
 - More than 100 bugs fixed. One of them was a splash screen that closed the whole app. Another was a commit stuck in a cloud container, sent home by patch file, like a kid with a note from the teacher.
 - 3 operating systems, 2 monitors, 1 VM that got its display scaling changed more times than any VM should.
 - Number of times the AI mixed up which side the second monitor is on: 1. The human remembers.
-- Number of times a short PowerShell alias (`H`, `R`) secretly turned into `Get-History`: 2. PowerShell thinks this is funny.
+- Number of times a short PowerShell alias (`H`, `R`) secretly turned into `Get-History` / `Invoke-History`: 3. The third was while writing the 2.1 notes for this very page. PowerShell thinks this is funny.
 - Number of ? buttons that turned out to describe a different, older tool: 4. They have been re-educated.
 - Number of times 7-Zip was asked to encrypt something during testing: dozens. Number of passwords it was told: always the same one. Not saying which.
 - Number of passwords 7-Zip silently stored as something other than what was typed: 0, but only because `"` was already banned. 7-Zip's command line has opinions about quotes.
@@ -395,6 +409,7 @@ The "hunting for mistakes" column is not theoretical. One proofreading pass foun
 |---|---|---|
 | WinSuperTool | Nothing. Still 1.9, zip renamed to 1.9.1. | Smug. |
 | WinFixKit | Grew an Automation tab in a beta, had all 66 tasks run for real twice, lost 4 bugs, and learned that an empty Recycle Bin is not an emergency. | Tired, but cleaner. |
+| WinFixKit (2.1) | Moved out of the beta folder into the real one, with two tabs still wearing their beta stickers like L plates. | Finally allowed to stay up late. |
 | Backup Script Builder | Born. Builds and schedules FreeFileSync backups, with a ? next to everything. | New, keen, asks a lot of questions. |
 | 7z-Encryptor (1.9.2) | Born from Backup Script Builder's folder picker, which it borrowed and never gave back. Asks for your password twice and believes neither until it has tested the file. | Trust issues, professionally. |
 | Backup Script Builder (1.9.2) | 1.2, 1.3 and 1.4 in a week: files, network shares, a whole Manual Backup tab, and now it installs and updates 7-Zip for you. | Going through a phase. |

@@ -1,9 +1,7 @@
-# Beta: WinFixKit with Automation
+# Betas
 
-`WinFixKit-beta-automation.ps1` (start it with `Launch-WinFixKit-beta-automation.bat`) is **WinFixKit 1.9 plus an Automation tab**. It's a queue of up to 10 of WinFixKit's status checks and fixes, run one after another. Each task runs in its own window with a pass / fail result, and there's a final summary and an HTML report. The tab is a port of WinSuperTool 1.9's Automation tab. Beta 3 adds a **Registry changes** tab: registry keys changed since a date, compared with a reference (shadow copy, WinFixKit backups, Windows ISO or a built-in defaults list), with a tick box per value to revert it (each key backed up first). Notes: [beta-automation 3](../docs/changes/WinFixKit-1.9-beta-automation.3.md) (latest), [beta-automation 2](../docs/changes/WinFixKit-1.9-beta-automation.2.md), [beta-automation 1](../docs/changes/WinFixKit-1.9-beta-automation.1.md).
+There is no beta script in this folder at the moment.
 
-- **It's a beta.** The stable WinFixKit in [tools/](../tools) is unchanged. The beta keeps its data in the same `Desktop\WinFixKit` folder, plus `Task-Results`.
-- **Automation needs administrator rights** (use "Relaunch as Administrator") and a running Windows, so it isn't available in WinPE.
-- **Automation is changed in WinSuperTool first, then ported here** with `build/Port-AutomationToWinFixKit.ps1`. See [CONTRIBUTING.md](../CONTRIBUTING.md).
-
-WinSuperTool's beta (1.9 beta 1 ... beta 5) became the stable **1.9** on 2026-11-21: see [V1.9](../docs/changes/V1.9.md).
+- **WinFixKit beta-automation** (1 ... 3) became part of the stable **WinFixKit 2.1** on 2026-11-26: its Automation and Registry changes tabs are in `tools/WinFixKit.ps1`, still marked (beta) in the window. See [V2.1](../docs/changes/V2.1.md).
+- WinSuperTool's beta (1.9 beta 1 ... beta 5) became the stable **1.9** on 2026-11-21: see [V1.9](../docs/changes/V1.9.md).
+- **Test Center** (`tests/TestCenter.ps1`) is still a beta, shipped as a zip in the release.

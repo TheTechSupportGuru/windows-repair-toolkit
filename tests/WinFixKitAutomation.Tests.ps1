@@ -2,12 +2,12 @@
 # Copyright (C) 2026 TheTechSupportGuru
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# WinFixKitAutomation.Tests.ps1 - unit tests for the BETA beta\WinFixKit-beta-automation.ps1 (WinFixKit + an Automation
+# WinFixKitAutomation.Tests.ps1 - unit tests for the Automation and Registry changes tabs of tools\WinFixKit.ps1 (WinFixKit + an Automation
 # tab ported from WinSuperTool). Above all: the ported code must still match WinSuperTool's, because Automation is
 # changed in WinSuperTool FIRST and then ported (see CONTRIBUTING.md). Parser only - no GUI, no admin, no changes.
 #   Invoke-Pester .\tests\WinFixKitAutomation.Tests.ps1
 $Root = Split-Path $PSScriptRoot -Parent
-$BetaFile = Join-Path $Root 'beta\WinFixKit-beta-automation.ps1'
+$BetaFile = Join-Path $Root 'tools\WinFixKit.ps1'
 $WstFile = Join-Path $Root 'tools\WinSuperTool.ps1'
 $HasBeta = Test-Path $BetaFile
 if ($HasBeta) {
@@ -25,46 +25,33 @@ function ConvertTo-Ported([string]$t) {
     $t.Replace('WinSuperTool-Data\Task-Results', 'WinFixKit\Task-Results')
 }
 
-Describe 'W1 WinFixKit beta-automation: the file' {
+Describe 'W1 WinFixKit (Automation and Registry changes promoted in 2.1): the file' {
     It 'exists, parses and is pure ASCII' -Skip:(-not $HasBeta) {
         $BetaErrors.Count | Should Be 0
         @([IO.File]::ReadAllBytes($BetaFile) | Where-Object { $_ -gt 127 }).Count | Should Be 0
     }
-    It 'says it is a beta, with the port rule, in its header and window title' -Skip:(-not $HasBeta) {
-        $BetaText | Should Match '# Version 1\.9 beta-automation \d+'
+    It 'is a stable version with the port rule; only the two new tabs say beta' -Skip:(-not $HasBeta) {
+        $BetaText | Should Match '# Version 2\.\d+ \('
+        $BetaText | Should Not Match '# Version [\d.]+ beta'
         $BetaText | Should Match 'RULE: Automation changes are made in WinSuperTool FIRST'
-        $BetaText | Should Match "Text = 'WinFixKit \(BETA: Automation\)"
+        $BetaText | Should Match "Text = 'WinFixKit - Windows Troubleshooting Power Tool'"
+        $BetaText | Should Match "TabPage @\{ Text = 'Automation \(beta\)'"
+        $BetaText | Should Match "TabPage @\{ Text = 'Registry changes \(beta\)'"
         $BetaText | Should Match 'SPDX-License-Identifier: GPL-3.0-or-later'
     }
-    It 'keeps the shared window helpers block identical to the stable WinFixKit' -Skip:(-not $HasBeta) {
+    It 'keeps the shared window helpers block identical to WinSuperTool' -Skip:(-not $HasBeta) {
         $rx = '(?s)#  Window helpers - the same block in every Windows Repair Toolkit tool.*?\nfunction Complete-WrtWindow \{.*?\n\}'
-        $a = [regex]::Match(([IO.File]::ReadAllText((Join-Path $Root 'tools\WinFixKit.ps1'))), $rx).Value -replace "`r", ''
+        $a = [regex]::Match(([IO.File]::ReadAllText($WstFile)), $rx).Value -replace "`r", ''
         $b = [regex]::Match($BetaText, $rx).Value -replace "`r", ''
         $a.Length | Should BeGreaterThan 1000
         $b | Should BeExactly $a
     }
-    It 'changes nothing else of WinFixKit: outside the Automation region only the header, title and window set-up differ' -Skip:(-not $HasBeta) {
-        $stable = @([IO.File]::ReadAllLines((Join-Path $Root 'tools\WinFixKit.ps1')))
-        $s = [regex]::Match($BetaText, '(?m)^#region AUTOMATION\r?$').Index; $e = [regex]::Match($BetaText, '(?m)^#endregion AUTOMATION').Index
-        $outside = ($BetaText.Substring(0, $s) + $BetaText.Substring($e + '#endregion AUTOMATION'.Length))
-        # the Registry changes tab (beta-automation 3) is its own region too
-        $outside = @([regex]::Replace($outside, '(?s)\r?\n#region REGISTRY-CHANGES.*?#endregion REGISTRY-CHANGES', '') -split '\r?\n')
-        $cmp = @(Compare-Object $stable $outside | Where-Object { $_.InputObject.Trim() })
-        $allowed = '^# (Version [\d.]+ |BETA:|RULE:|\s+The ported code)|WinFixKit \(BETA: Automation\)|WinFixKit - Windows Troubleshooting Power Tool|^Initialize-WrtWindow \$script:Form @\((\$tpAuto(, \$tpReg)?)?\) 900 600$'
-        # fixes to WinFixKit itself found while testing the beta: each changed line is marked "(beta-automation N fix: ...)"
-        $marked = @($cmp | Where-Object { $_.SideIndicator -eq '=>' -and $_.InputObject -match '\(beta-automation \d+ fix: ' })
-        $other = @($cmp | Where-Object { $_.InputObject.Trim() -notmatch $allowed -and $_.InputObject -notmatch '\(beta-automation \d+ fix: ' })
-        # what is left: the stable lines those marked fixes replaced (one each), nothing else
-        @($other | Where-Object { $_.SideIndicator -eq '=>' }) | Should BeNullOrEmpty
-        @($other | Where-Object { $_.SideIndicator -eq '<=' }).Count | Should Not BeGreaterThan $marked.Count
-    }
-    It 'has a launcher that starts the beta script' -Skip:(-not $HasBeta) {
-        $bat = [IO.File]::ReadAllText((Join-Path $Root 'beta\Launch-WinFixKit-beta-automation.bat'))
-        $bat | Should Match '%~dp0WinFixKit-beta-automation\.ps1'
-        $bat | Should Match 'SPDX-License-Identifier: GPL-3.0-or-later'
+    It 'has a launcher that starts it, and the old beta files are gone' {
+        $bat = [IO.File]::ReadAllText((Join-Path $Root 'tools\Launch-WinFixKit.bat'))
+        $bat | Should Match '%~dp0WinFixKit\.ps1'
+        Test-Path (Join-Path $Root 'beta\WinFixKit-beta-automation.ps1') | Should Be $false
     }
 }
-
 Describe 'W2 the Automation port still matches WinSuperTool (change WinSuperTool first, then port)' {
     # ported word for word (after the renames); the adapted functions are listed in the region header instead
     $verbatim = 'New-TaskRule', 'Get-TaskVerdict', 'Get-TaskFileBase', 'Get-ExeCall', 'Start-TaskWindow', 'Read-TaskResult', 'Show-TaskSummary', 'Update-TaskWatch',

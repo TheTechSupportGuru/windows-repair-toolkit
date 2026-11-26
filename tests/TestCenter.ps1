@@ -90,7 +90,7 @@ $Tests = @(
        Results = '%TEMP%\suite-phase3'
        Warn = 'This test REALLY CHANGES this PC (registry, services, firewall, sharing) and undoes every change with WinFixKit''s own backups. Only run it on a TEST virtual machine AFTER taking a snapshot. Is the snapshot taken?'
        Desc = 'Applies each fix for real and undoes it with WinFixKit''s backups. Take a VM snapshot first.' }
-    @{ Tab = 'WinFixKit'; Id = 'wfk-beta-auto'; Name = 'Unit tests: WinFixKit beta-automation (Automation port, Registry changes)'; Kind = 'pester'; Script = 'WinFixKitAutomation.Tests.ps1'; Min = 1; Default = $true
+    @{ Tab = 'WinFixKit'; Id = 'wfk-beta-auto'; Name = 'Unit tests: WinFixKit Automation port and Registry changes'; Kind = 'pester'; Script = 'WinFixKitAutomation.Tests.ps1'; Min = 1; Default = $true
        Desc = 'The beta in beta\: the Automation code must still match WinSuperTool''s, and the Registry changes tab (key times, scan, defaults list, a real revert on a throw-away HKCU key). Changes nothing else.' }
     # ---- Backup Script Builder
     @{ Tab = 'Backup Script Builder'; Id = 'backup-unit'; Name = 'Unit tests: Backup Script Builder edge cases'; Kind = 'pester'; Script = 'BackupScriptBuilder.Tests.ps1'; Min = 1; Default = $true

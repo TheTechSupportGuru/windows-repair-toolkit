@@ -50,7 +50,7 @@ Some of these are missing on Home editions or in WinPE (for example `gpedit.msc`
 
 ## Automation: WinSuperTool first, then WinFixKit
 
-WinSuperTool's **Automation** tab (the queue of tasks, the pass / fail summaries, the HTML report) is the original. The beta `WinFixKit-beta-automation.ps1` has a port of it in its `#region AUTOMATION` block.
+WinSuperTool's **Automation** tab (the queue of tasks, the pass / fail summaries, the HTML report) is the original. WinFixKit (`tools/WinFixKit.ps1`, since 2.1) has a port of it in its `#region AUTOMATION` block.
 
 - **Every change to Automation is made in `tools/WinSuperTool.ps1` first**, then ported to WinFixKit. Never the other way round, and never in WinFixKit only.
 - The ported code is WinSuperTool's word for word, with a short list of renames: `New-Ctl` -> `New-AutoCtl`, `Safe` -> `Invoke-AutoSafe`, `$DataDir` -> `$script:RootDir`, `WinSuperTool-Data` -> `WinFixKit`.
