@@ -7,10 +7,9 @@ A set of PowerShell tools for repairing and troubleshooting Windows 10/11 PCs, i
 
 **Current version: 2.0** (2026-11-26). Every version is a git tag (`v1.1` to `v2.0`), so `git diff v1.9.2 v2.0` shows exactly what changed. Licensed under the [GNU GPL v3.0](#license).
 
-> [!NOTE]
-> **2.0. The day we thought would never come.** For a while, "Please don't tell them about 2.0" was the last line of a hidden time sheet on this page. Then someone told them. The test VMs, asked for comment, rebooted. When they came back, one changed its own display scaling to 175 % and has refused to discuss it. The other has filed a formal objection, in Event Viewer, as Event ID 41: *"The system has rebooted without cleanly shutting down first."* Accurate. The local AI on the GPU next door reviewed the 2.0 code and reported, with total confidence, that 7-Zip is started through `cmd.exe`. It isn't, and never was. Asked whether 2.0 left it confused or appalled, it thought for 2,000 tokens and answered "yes". Asked to review Backup Script Builder, it concluded "If the path contains `&`, it is escaped. This is correct." and then, to be sure, concluded it a few hundred more times. It was, however, entirely right to be appalled by one thing in 2.0: a PowerShell parameter called `-Path` that treats `[ ]` in a folder name as a wildcard. That one is fixed.
+<details open>
+<summary><h2 id="download">Download</h2></summary>
 
-## Download
 
 Get the tools from the [latest release](../../releases/latest). The main downloads are **WinSuperTool**, **WinSuperTool-NoAI**, **WinFixKit**, **Backup Script Builder** and **7z-Encryptor**, each its own zip with the script, its launcher, a short read-me and the license. The smaller separate tools (WinRepairTool, Collect-Logs, Monitor-Logs, ClaudeLogAnalyzer) are all in **`IndividualTools-v2.0.zip`**, started with its `Run-PS-As-Admin.bat`; each of them is also part of WinSuperTool. The current betas are there too. **Source code** contains everything.
 
@@ -21,14 +20,24 @@ Get the tools from the [latest release](../../releases/latest). The main downloa
 
 Windows marks downloaded files as blocked: right-click the zip > **Properties** > tick **Unblock** before extracting.
 
-## New in 2.0
+
+</details>
+
+<details open>
+<summary><h2 id="new-in-2-0">New in 2.0</h2></summary>
+
 
 The first major version: the whole toolkit went through a regression and edge-case pass ([what changed in 2.0](docs/changes/V2.0.md)).
 - **Folders with `[ ]` in the name** (`C:\Tools [2026]`, `D:\Logs [PC1]`) now work everywhere. Before, PowerShell read the brackets as a wildcard, so WinSuperTool and WinRepairTool lost their remembered mounts, log collection lost its summary files, WinFixKit lost its log and reports, and Backup Script Builder could overwrite an existing FreeFileSync job without asking.
 - **Backup Script Builder 1.5** and **7z-Encryptor 1.1:** a zip password with non-English letters is refused with a clear message, instead of 7-Zip failing with "The parameter is incorrect" ([1.5 notes](docs/changes/BackupScriptBuilder-1.5.md), [1.1 notes](docs/changes/7z-Encryptor-1.1.md)).
 - Every tool now says `Version 2.0` (Backup Script Builder 1.5, 7z-Encryptor 1.1), the release has a 7z-Encryptor zip built from the tag, and the bug and discussion forms list 7z-Encryptor.
 
-## New in 1.9.2
+
+</details>
+
+<details>
+<summary><h2 id="new-in-1-9-2">New in 1.9.2</h2></summary>
+
 
 - **7z-Encryptor 1.0**, a new tool: encrypt files and folders with 7-Zip and a password (7z with hidden file names, or zip), from a window or by dropping them on its `.bat`; installs and updates 7-Zip with winget (see [below](#7z-encryptor), [notes](docs/changes/7z-Encryptor-1.0.md)).
 - **Backup Script Builder 1.4:** **Update 7-Zip** (winget) next to Install, and corrected help texts ([notes](docs/changes/BackupScriptBuilder-1.4.md)). 1.3: a new **Manual Backup** tab (back up now to a folder, a zip made by Windows or 7-Zip, or a 7z / self-extracting .exe, with Store / Normal / Ultra and an optional password, saved as a .bat / .ps1 if you like, and a one-click 7-Zip install), network folders and files (`\\server\share`) as source or destination, and Robocopy and Xcopy scripts can back up single files as well as folders ([notes](docs/changes/BackupScriptBuilder-1.3.md)). 1.2: the folder picker no longer lists the user folder's junctions as empty extra folders, opens at Users, hides Windows and program folders until you ask for them, and never adds a folder twice ([notes](docs/changes/BackupScriptBuilder-1.2.md)). 1.1 added Robocopy and Xcopy scripts besides FreeFileSync ([1.1 notes](docs/changes/BackupScriptBuilder-1.1.md)).
@@ -36,12 +45,22 @@ The first major version: the whole toolkit went through a regression and edge-ca
 - **Test Center 1.0 beta 3:** a new **Backup Script Builder** tab (script, schedules and layout checks, about 2 minutes, no admin), and a passing test line that mentions "missing" no longer shows CHECK ([notes](docs/changes/TestCenter-1.0-beta.3.md)).
 - **Simpler bug and discussion forms:** WinSuperTool and its individual tools share one Tool entry, the tab / part is an optional text box, and the version list has 4 choices.
 
-## New in 1.9.1
+
+</details>
+
+<details>
+<summary><h2 id="new-in-1-9-1">New in 1.9.1</h2></summary>
+
 
 - **Backup Script Builder 1.0**, a new tool for [FreeFileSync](https://freefilesync.org/) backups (see [below](#backup-script-builder)).
 - **Betas to try** (in the latest release, under "Betas"): **WinFixKit with Automation and Registry changes tabs** (beta-automation 3: a queue of its status checks and fixes, each with a pass / fail result; and find registry changes since a date and revert only the ones you tick) and **Test Center beta 3**. The 8 tools are unchanged from 1.9 ([V1.9.1](docs/changes/V1.9.1.md)).
 
-## New in 1.9
+
+</details>
+
+<details>
+<summary><h2 id="new-in-1-9">New in 1.9</h2></summary>
+
 
 The 1.9 beta is now the stable WinSuperTool ([what changed in 1.9](docs/changes/V1.9.md)):
 
@@ -52,7 +71,12 @@ The 1.9 beta is now the stable WinSuperTool ([what changed in 1.9](docs/changes/
 - **All tools:** windows that fit every screen from 720p to 4K, at any scaling, on one or two monitors, also when the screen changes while a tool is open; WinPE fixes (PowerShell 7 only, offline Windows protected in WinFixKit).
 
 If something gets a result wrong, please open a [bug report](../../issues/new?template=1-bug-report.yml), choose your version, and attach the saved output from `WinSuperTool-Data\Task-Results`.
-## Bugs, ideas and questions
+
+</details>
+
+<details open>
+<summary><h2 id="bugs-ideas-and-questions">Bugs, ideas and questions</h2></summary>
+
 
 - **Something broken?** Open a [bug report](../../issues/new?template=1-bug-report.yml).
 - **A specific change you want?** Open a [feature request](../../issues/new?template=2-feature-request.yml).
@@ -62,7 +86,12 @@ If something gets a result wrong, please open a [bug report](../../issues/new?te
 
 Each form asks which tool you mean (WinSuperTool and its individual tools share one entry) and, optionally, which tab or part. Before posting logs or screenshots, remove your PC name, user name, IP addresses and any API key.
 
-## The tools
+
+</details>
+
+<details open>
+<summary><h2 id="the-tools">The tools</h2></summary>
+
 
 All scripts are in [`tools/`](tools/). Start each one with its launcher, or right-click it and choose **Run with PowerShell**. Each tool asks for administrator rights itself.
 
@@ -158,7 +187,8 @@ WinRepairTool, Collect-Logs, Monitor-Logs and ClaudeLogAnalyzer are in `Individu
 - A **?** next to every option explains it.
 
 - **New in 1.1:** besides the FreeFileSync batch it can **create a Robocopy or Xcopy script** (`.ps1` or `.bat`) with log options, every relevant switch explained, and (Robocopy) one thread per source drive; the Schedule Task tab has a **backup type** drop-down; and the folder picker now lists Desktop, Documents and OneDrive, with **Quick picks** at the top ([1.1 notes](docs/changes/BackupScriptBuilder-1.1.md)).
-- **New in 1.5:** a zip password with non-English letters is refused with a clear message, and folders with `[ ]` in the name work in the destination check and folder dialogs ([1.5 notes](docs/changes/BackupScriptBuilder-1.5.md)). button (`winget upgrade -e --id 7zip.7zip`) next to Install 7-Zip, the 7-Zip version shown, and corrected help texts ([1.4 notes](docs/changes/BackupScriptBuilder-1.4.md)).
+- **New in 1.5:** a zip password with non-English letters is refused with a clear message, and folders with `[ ]` in the name work in the destination check and folder dialogs ([1.5 notes](docs/changes/BackupScriptBuilder-1.5.md)).
+- **New in 1.4:** an **Update 7-Zip** button (`winget upgrade -e --id 7zip.7zip`) next to Install 7-Zip, the 7-Zip version shown, and corrected help texts ([1.4 notes](docs/changes/BackupScriptBuilder-1.4.md)).
 - **New in 1.3:** a **Manual Backup** tab: back up now to a folder, a zip (Windows built in or 7-Zip) or a 7z, with Store / Normal / Ultra, a password and self-extracting .exe when 7-Zip is installed; network sources and destinations (**Add Network Path**, mapped drives saved as `\\server\share`), and Robocopy and Xcopy scripts can back up single files: the picker lists files too ([1.3 notes](docs/changes/BackupScriptBuilder-1.3.md)).
 - **New in 1.2:** a folder picker fix pass: no more empty `My Documents` / `Application Data` junction folders, Windows and program folders hidden until you tick **Show Windows and program folders**, Quick picks for Favorites, Saved Games, Contacts and other users, and a folder inside another ticked folder is added only once ([1.2 notes](docs/changes/BackupScriptBuilder-1.2.md)).
 
@@ -176,7 +206,12 @@ Download `BackupScriptBuilder-v1.5.zip` from the [latest release](../../releases
 - 7-Zip is looked for at start. If it is missing, the tool asks whether to install it. **Install 7-Zip** / **Update 7-Zip** run `winget install` / `winget upgrade -e --id 7zip.7zip`.
 - Paths with `&` or `%` in their names cannot be dropped on the `.bat` (a limit of batch files). Use the main window for those.
 
-## What has been fixed
+
+</details>
+
+<details>
+<summary><h2 id="what-has-been-fixed">What has been fixed</h2></summary>
+
 
 Testing and code review led to **more than 100 fixes** across 14 versions. Each version's full list, with severity and how it was verified, is in [`docs/changes/`](docs/changes/).
 
@@ -203,7 +238,12 @@ Severity: **S1** = can make the PC unbootable, lose data or act on the wrong dis
 - **K16 / S12 / R10:** a few long jobs (registry save, Store app scans, diskpart) still run on the window's thread, so the window can pause briefly.
 - **R14:** WinRepairTool keeps no permanent activity log (WinSuperTool does).
 
-## Testing
+
+</details>
+
+<details>
+<summary><h2 id="testing">Testing</h2></summary>
+
 
 Testing was done on a Windows 11 Pro VM (VirtualBox, UEFI, two monitors), with field tests on Windows 10 64-bit (MBR disk, Legacy BIOS) and in Hiren's BootCD PE 10 and PE 11. The plan and every result are in [`docs/testing/`](docs/testing/).
 
@@ -249,7 +289,12 @@ Other test files:
 
 The other scripts in `tests/` are the admin and windowed test runs used on the VM. Some of them change system settings and expect the original project folder layout; read one before running it.
 
-## Repository layout
+
+</details>
+
+<details>
+<summary><h2 id="repository-layout">Repository layout</h2></summary>
+
 
 ```
 tools/            the current scripts and launchers (v2.0), incl. the generated no-AI edition
@@ -265,7 +310,12 @@ The scripts are pure ASCII on purpose: Windows PowerShell 5.1 reads files withou
 
 Never edit `WinSuperTool-NoAI.ps1` by hand. Change `WinSuperTool.ps1`, keep any new AI code inside `#region AI-ANALYZE` blocks (or end a single line with `# [AI]`), then run `.\build\Build-NoAIEdition.ps1`. For a beta, add `-Source beta\WinSuperTool.ps1`.
 
-## License
+
+</details>
+
+<details>
+<summary><h2 id="license">License</h2></summary>
+
 
 Copyright (C) 2026 TheTechSupportGuru.
 
@@ -276,12 +326,19 @@ What that means in practice:
 - If you distribute them, changed or not, you must do so under the same license and include the source.
 - They come **without any warranty**.
 
+
+</details>
+
 <!-- Easter egg: update the numbers at every release (see the "Hours" lines). The previous sheet is kept in docs/timesheets/. -->
 <br><br>
 <details>
 <summary><sub><sup>&pi;</sup></sub></summary>
 
 ### You found the time sheet
+
+> [!NOTE]
+> **2.0. The day we thought would never come.** For a while, "Please don't tell them about 2.0" was the last line of a hidden time sheet on this page. Then someone told them. The test VMs, asked for comment, rebooted. When they came back, one changed its own display scaling to 175 % and has refused to discuss it. The other has filed a formal objection, in Event Viewer, as Event ID 41: *"The system has rebooted without cleanly shutting down first."* Accurate. The local AI on the GPU next door reviewed the 2.0 code and reported, with total confidence, that 7-Zip is started through `cmd.exe`. It isn't, and never was. Asked whether 2.0 left it confused or appalled, it thought for 2,000 tokens and answered "yes". Asked to review Backup Script Builder, it concluded "If the path contains `&`, it is escaped. This is correct." and then, to be sure, concluded it a few hundred more times. It was, however, entirely right to be appalled by one thing in 2.0: a PowerShell parameter called `-Path` that treats `[ ]` in a folder name as a wildcard. That one is fixed.
+
 
 How long this project has taken, as of **2.0** (November 26, 2026): the version that was a joke at the bottom of this very section until it wasn't. For 1.1 onwards, the AI hours are measured from the session logs, and the human hours are an honest guess, "which is the polite word for 'vibes'". The original scripts are estimated by the Claude project that wrote them, which had no stopwatch either. The 1.9 sheet is kept in [docs/timesheets/timesheet-1.9.md](docs/timesheets/timesheet-1.9.md), in case anyone wants to audit the vibes.
 
