@@ -203,6 +203,58 @@ $tests = {
     if (Test-Path "$jt\link") { Check 'a junction is still skipped (no loops)' (Test-SkipFolder (New-Object IO.DirectoryInfo "$jt\link")) }
     cmd /c rmdir "$jt\link" 2>$null; Remove-Item $jt -Recurse -Force -ErrorAction SilentlyContinue
 
+    # ---- 5b. (1.2) nothing in the user folder is left out, nothing is listed twice, system folders on request ----
+    $open = { param($path) $n = New-Object Windows.Forms.TreeNode 'x'; $n.Tag = $path; Add-DummyChild $n; Expand-FolderNode $n; $n }
+    $script:ShowSystem = $false
+    $links = @(cmd /c dir /b /al "$env:USERPROFILE" 2>$null)
+    $real = @(Get-ChildItem -LiteralPath $env:USERPROFILE -Directory -Force | Where-Object { $links -notcontains $_.Name } | ForEach-Object Name)
+    $shown = @((& $open $env:USERPROFILE).Nodes | ForEach-Object Text)
+    $miss = @($real | Where-Object { $shown -notcontains $_ })
+    Check 'every real folder in the user folder is listed (hidden ones too)' ($miss.Count -eq 0 -and $real.Count -gt 3) ("missing: " + ($miss -join ', '))
+    $dupe = @($shown | Where-Object { $links -contains $_ })
+    Check 'the profile''s own junctions (My Documents, Application Data ...) are not listed' ($dupe.Count -eq 0) ($dupe -join ', ')
+    if (Test-Path -LiteralPath "$env:USERPROFILE\Application Data") { Check 'a junction that denies reading is still recognised' (Test-SkipFolder (New-Object IO.DirectoryInfo "$env:USERPROFILE\Application Data")) }
+    $usersShown = @((& $open (Split-Path $env:USERPROFILE)).Nodes | ForEach-Object Text)
+    Check 'every user profile folder is listed under Users' ($usersShown -contains (Split-Path $env:USERPROFILE -Leaf) -and $usersShown -contains 'Public' -and $usersShown -notcontains 'All Users' -and $usersShown -notcontains 'Default User') ($usersShown -join ', ')
+    $sysRoot = $env:SystemDrive + '\'
+    $c = & $open $sysRoot; $t = @($c.Nodes | ForEach-Object Text)
+    Check 'system folders are hidden by default (Windows, Program Files, ProgramData)' ($t -contains 'Users' -and $t -notcontains 'Windows' -and $t -notcontains 'Program Files' -and $t -notcontains 'ProgramData' -and $t -notcontains '$Recycle.Bin') ($t -join ', ')
+    $script:ShowSystem = $true; Update-SystemNodes @($c); $t2 = @($c.Nodes | ForEach-Object Text)
+    Check 'ticking "Show Windows and program folders" lists them, in order' ($t2 -contains 'Windows' -and $t2 -contains 'Program Files' -and $t2 -contains 'Users' -and $t2 -notcontains 'Documents and Settings' -and (($t2 -join '|') -eq ((@($t2 | Sort-Object)) -join '|'))) ($t2 -join ', ')
+    $script:ShowSystem = $false; Update-SystemNodes @($c); $t3 = @($c.Nodes | ForEach-Object Text)
+    Check 'unticking hides them again' (($t3 -join '|') -eq ($t -join '|')) ($t3 -join ', ')
+    if (Test-Path -LiteralPath "$env:USERPROFILE\My Documents") { $na = & $open "$env:USERPROFILE\My Documents" } else { $na = & $open "$sysRoot`System Volume Information" }
+    Check 'a folder that cannot be opened says so (and cannot be ticked)' ($na.Nodes.Count -eq 1 -and $na.Nodes[0].Name -eq 'info') (@($na.Nodes | ForEach-Object Text) -join ', ')
+    $u = Get-UniqueFolders @('C:\Users\a\Desktop', 'C:\Users\a', 'c:\users\A\', 'D:\x', 'D:\xy', 'E:\', 'E:\Data', 'F:\One')
+    Check 'ticked folders: no duplicates, nothing inside another ticked folder' (($u -join '|') -eq 'E:\|D:\x|D:\xy|F:\One|C:\Users\a') ($u -join '|')
+    $qf2 = @(Get-QuickFolders)
+    Check 'Quick picks have no duplicate paths' (@($qf2.Path | ForEach-Object { $_.ToLower() } | Sort-Object -Unique).Count -eq $qf2.Count)
+
+    # the real dialog: buttons inside the window, the tick box works, Add Checked returns the folders
+    $script:PickerChecks = @{}
+    $tm = New-Object Windows.Forms.Timer; $tm.Interval = 300
+    $tm.add_Tick({
+        $tm.Stop(); $d = $script:PickerForm; $tr = $script:PickerTree
+        try {
+            $cw = $d.ClientSize.Width
+            $script:PickerChecks.Buttons = @($d.AcceptButton, $d.CancelButton | Where-Object { $_.Visible -and ($_.Parent.Left + $_.Right) -le $cw -and $_.Left -ge 0 }).Count
+            $drv = @($tr.Nodes | Where-Object { $_.Tag -and ([string]$_.Tag) -ieq ($env:SystemDrive + '\') })[0]
+            $script:PickerChecks.UsersOpen = [bool]($drv -and $drv.IsExpanded -and @($drv.Nodes | Where-Object { $_.Text -eq 'Users' -and $_.IsExpanded }).Count)
+            $script:PickerChecks.NoWindows = -not @($drv.Nodes | Where-Object { $_.Text -eq 'Windows' }).Count
+            $script:PickerShowSystem.Checked = $true
+            $script:PickerChecks.Windows = [bool]@($drv.Nodes | Where-Object { $_.Text -eq 'Windows' }).Count
+            $script:PickerShowSystem.Checked = $false
+            $q = $tr.Nodes[0]
+            foreach ($n in $q.Nodes) { if ($n.Text -like 'Desktop  -  *' -or $n.Text -like 'Your user folder  -  *') { $n.Checked = $true } }
+            $d.AcceptButton.PerformClick()
+        } catch { $script:PickerChecks.Error = "$_"; $d.Close() }
+    })
+    $tm.Start(); $picked = @(Show-FolderPicker); $tm.Dispose()
+    Check 'picker: Add Checked and Cancel are inside the window' ($script:PickerChecks.Buttons -eq 2) "$($script:PickerChecks.Error)"
+    Check 'picker: opens with the Windows drive and Users expanded' ([bool]$script:PickerChecks.UsersOpen)
+    Check 'picker: system folders appear only while the tick box is ticked' ($script:PickerChecks.NoWindows -and $script:PickerChecks.Windows)
+    Check 'picker: Desktop + the user folder ticked gives just the user folder' ($picked.Count -eq 1 -and $picked[0] -ieq $env:USERPROFILE.TrimEnd('\')) ($picked -join '; ')
+
     # ---- 6. (1.1) Robocopy / Xcopy scripts, run for real on test folders ----
     $w = Join-Path $env:TEMP ('bsb-copy-' + (Get-Random)); New-Item -ItemType Directory -Force "$w\src\Docs\sub", "$w\src2\Pics", "$w\x" | Out-Null
     'one' | Set-Content "$w\src\Docs\a.txt"; 'two' | Set-Content "$w\src\Docs\sub\b.txt"; 'pic' | Set-Content "$w\src2\Pics\p.txt"

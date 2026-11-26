@@ -1,4 +1,4 @@
-# Version 1.1 (2026-11-25)
+# Version 1.2 (2026-11-26)
 # Backup Script Builder - builds a FreeFileSync batch file (BackupScript.ffs_batch), or a Robocopy / Xcopy script (.ps1 or .bat)
 # Windows Repair Toolkit - Copyright (C) 2026 TheTechSupportGuru - SPDX-License-Identifier: GPL-3.0-or-later
 # Free software under the GNU General Public License v3 or (at your option) any later version, WITHOUT ANY WARRANTY. See LICENSE
@@ -317,7 +317,7 @@ function New-CopyScript([string]$tool, [string]$format, [string[]]$sources, [str
     foreach ($p in $pairs) { $k = Get-DriveKey $p[0]; if (-not $groups.Contains($k)) { $groups[$k] = @() }; $groups[$k] += , $p }
     $useParallel = $isRobo -and $parallel -and $groups.Count -gt 1
     $nl = "`r`n"; $sb = New-Object System.Text.StringBuilder
-    $head = "Backup script created by Backup Script Builder 1.1 ($tool, $(if ($useParallel) { 'one thread per source drive' } else { 'one copy at a time' })) on $(Get-Date -Format 'yyyy-MM-dd HH:mm')"
+    $head = "Backup script created by Backup Script Builder 1.2 ($tool, $(if ($useParallel) { 'one thread per source drive' } else { 'one copy at a time' })) on $(Get-Date -Format 'yyyy-MM-dd HH:mm')"
     if ($format -eq 'ps1') {
         $q = { param($t) "'" + ($t -replace "'", "''") + "'" }
         [void]$sb.Append("# $head${nl}# Windows Repair Toolkit - https://github.com/TheTechSupportGuru/windows-repair-toolkit${nl}")
@@ -398,43 +398,127 @@ function New-CopyScript([string]$tool, [string]$format, [string[]]$sources, [str
 }
 
 # ---------- folder picker (checkbox tree) ----------
+# The reparse tag of a folder, read from its directory entry (FindFirstFile) without opening the folder. 1.1 asked
+# Get-Item for LinkType, which is EMPTY on PowerShell 5.1 for the profile's own junctions ("My Documents",
+# "Application Data", "Cookies" ...: they deny listing), so they showed up as empty duplicate folders.
+try {
+    Add-Type -Namespace WrtBsb -Name Reparse -ErrorAction Stop -MemberDefinition @'
+[StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+public struct FindData { public uint Attr; public System.Runtime.InteropServices.ComTypes.FILETIME C, A, W; public uint SizeHigh, SizeLow, Tag, Reserved1;
+    [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)] public string Name; [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 14)] public string Alt; }
+[DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] static extern IntPtr FindFirstFileW(string path, out FindData data);
+[DllImport("kernel32.dll")] static extern bool FindClose(IntPtr h);
+public static uint GetTag(string path) {
+    FindData d; IntPtr h = FindFirstFileW(path.TrimEnd('\\'), out d);
+    if (h == new IntPtr(-1)) return 0;
+    FindClose(h); return ((d.Attr & 0x400) != 0) ? d.Tag : 0;
+}
+// a junction / mount point or a symbolic link (compared here: in PowerShell 0xA0000003 is a negative Int32)
+public static bool IsLink(string path) { uint t = GetTag(path); return t == 0xA0000003u || t == 0xA000000Cu; }
+'@
+} catch {}
 function Add-DummyChild($node) { [void]$node.Nodes.Add((New-Object System.Windows.Forms.TreeNode '...')) }
-# Skip only real junctions and symbolic links (they can loop, like "Documents and Settings"). OneDrive marks its
-# folders as reparse points too (files on demand), and those must stay: 1.0 hid Desktop / Documents / OneDrive that way.
+# Skip only real junctions (0xA0000003) and symbolic links (0xA000000C): they can loop or point at another folder in
+# the list. OneDrive marks its folders as reparse points too (files on demand, other tags), and those must stay.
 function Test-SkipFolder([System.IO.DirectoryInfo]$di) {
     if (-not ($di.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) { return $false }
-    try { $lt = (Get-Item -LiteralPath $di.FullName -Force -ErrorAction Stop).LinkType } catch { return $true }
-    return ($lt -in 'Junction', 'SymbolicLink')
+    try { return [WrtBsb.Reparse]::IsLink($di.FullName) } catch {
+        try { $lt = (Get-Item -LiteralPath $di.FullName -Force -ErrorAction Stop).LinkType; return ($lt -in 'Junction', 'SymbolicLink') } catch { return $false }
+    }
 }
-# The user's own folders wherever they really are (moved into OneDrive or elsewhere), and every OneDrive folder
+# Windows and program folders: hidden from the tree until "Show Windows and program folders" is ticked. Backing them
+# up is rarely what anyone wants (programs need reinstalling anyway) and most of it is locked while Windows runs.
+$script:SystemRootNames = @('Windows', 'Program Files', 'Program Files (x86)', 'Program Files (Arm)', 'ProgramData', 'Recovery', 'PerfLogs',
+    'System Volume Information', 'Boot', 'Config.Msi', 'MSOCache', 'OneDriveTemp', 'Documents and Settings', 'Intel', 'AMD', 'NVIDIA', 'inetpub')
+function Test-SystemFolder([System.IO.DirectoryInfo]$di) {
+    $a = $di.Attributes
+    if (($a -band [IO.FileAttributes]::Hidden) -and ($a -band [IO.FileAttributes]::System)) { return $true }
+    if ($di.Parent -and -not $di.Parent.Parent) {
+        # directly on a drive
+        if ($di.Name.StartsWith('$') -or $script:SystemRootNames -contains $di.Name) { return $true }
+    }
+    return $false
+}
+# The user's own folders wherever they really are (moved into OneDrive or elsewhere), every OneDrive folder, and the
+# other user profiles on this PC (also ones kept on another drive)
 function Get-QuickFolders {
     $list = New-Object System.Collections.ArrayList; $seen = @{}
-    $add = { param($n, $p) if ($p -and -not $seen.ContainsKey($p.ToLower()) -and [IO.Directory]::Exists($p)) { $seen[$p.ToLower()] = 1; [void]$list.Add([pscustomobject]@{ Name = $n; Path = $p.TrimEnd('\') }) } }
-    foreach ($f in @(@('Desktop', 'Desktop'), @('Documents', 'MyDocuments'), @('Pictures', 'MyPictures'), @('Music', 'MyMusic'), @('Videos', 'MyVideos'))) { & $add $f[0] ([Environment]::GetFolderPath($f[1])) }
-    try { $dl = (Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders' -ErrorAction Stop).'{374DE290-123F-4565-9164-39C4925E467B}'; & $add 'Downloads' ([Environment]::ExpandEnvironmentVariables([string]$dl)) } catch {}
+    $add = { param($n, $p) if ($p) { $p = ([string]$p).TrimEnd('\'); if ($p -and -not $seen.ContainsKey($p.ToLower()) -and [IO.Directory]::Exists($p)) { $seen[$p.ToLower()] = 1; [void]$list.Add([pscustomobject]@{ Name = $n; Path = $p }) } } }
+    foreach ($f in @(@('Desktop', 'Desktop'), @('Documents', 'MyDocuments'), @('Pictures', 'MyPictures'), @('Music', 'MyMusic'), @('Videos', 'MyVideos'), @('Favorites', 'Favorites'))) { & $add $f[0] ([Environment]::GetFolderPath($f[1])) }
+    try {
+        $usf = Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders' -ErrorAction Stop
+        foreach ($k in @(@('Downloads', '{374DE290-123F-4565-9164-39C4925E467B}'), @('Saved Games', '{4C5C32FF-BB9D-43B0-B5B4-2D72E54EAAA4}'), @('Contacts', '{56784854-C6CB-462B-8169-88E350ACB882}'))) {
+            if ($usf.($k[1])) { & $add $k[0] ([Environment]::ExpandEnvironmentVariables([string]$usf.($k[1]))) }
+        }
+    } catch {}
+    & $add 'Saved Games' (Join-Path $env:USERPROFILE 'Saved Games'); & $add 'Contacts' (Join-Path $env:USERPROFILE 'Contacts')
     & $add 'OneDrive' $env:OneDrive; & $add 'OneDrive' $env:OneDriveConsumer; & $add 'OneDrive (work or school)' $env:OneDriveCommercial
     foreach ($a in @(Get-ChildItem 'HKCU:\Software\Microsoft\OneDrive\Accounts' -ErrorAction SilentlyContinue)) { & $add ('OneDrive - ' + $a.PSChildName) ([string](Get-ItemProperty $a.PSPath -ErrorAction SilentlyContinue).UserFolder) }
     & $add 'Your user folder' $env:USERPROFILE
+    # other people's profiles (S-1-5-21-... are real user accounts; the service profiles are left out)
+    foreach ($p in @(Get-ChildItem 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList' -ErrorAction SilentlyContinue | Where-Object { $_.PSChildName -like 'S-1-5-21-*' })) {
+        $dir = [Environment]::ExpandEnvironmentVariables([string](Get-ItemProperty $p.PSPath -ErrorAction SilentlyContinue).ProfileImagePath)
+        if ($dir) { & $add ('User: ' + (Split-Path $dir -Leaf)) $dir }
+    }
     return $list
 }
 
+$script:ShowSystem = $false
+function New-FolderNode([System.IO.DirectoryInfo]$di) {
+    $child = New-Object System.Windows.Forms.TreeNode $di.Name
+    $child.Tag = $di.FullName
+    if (Test-SystemFolder $di) { $child.Name = 'sys' }
+    if ($di.Attributes -band [System.IO.FileAttributes]::Hidden) { $child.ForeColor = [System.Drawing.Color]::Gray }
+    Add-DummyChild $child
+    return $child
+}
+# The folders inside one folder, sorted, without junctions / symbolic links; $null when it cannot be opened
+function Get-SubFolders([string]$path) {
+    try { $all = (New-Object System.IO.DirectoryInfo $path).GetDirectories() } catch { return $null }
+    $keep = New-Object System.Collections.Generic.List[System.IO.DirectoryInfo]
+    foreach ($di in $all) { try { if (-not (Test-SkipFolder $di)) { $keep.Add($di) } } catch {} }
+    $arr = $keep.ToArray()
+    [Array]::Sort([string[]]@($arr | ForEach-Object { $_.Name }), $arr, [StringComparer]::CurrentCultureIgnoreCase)
+    return ,$arr
+}
 function Expand-FolderNode($node) {
-    if ($node.Nodes.Count -ne 1 -or $node.Nodes[0].Tag) { return }
-    $node.Nodes.Clear()
+    if ($node.Nodes.Count -ne 1 -or $node.Nodes[0].Tag -or $node.Nodes[0].Name -eq 'info') { return }
+    $tv = $node.TreeView; if ($tv) { $tv.BeginUpdate() }
     try {
-        $dirs = [System.IO.Directory]::GetDirectories([string]$node.Tag) | Sort-Object
-    } catch { return }
-    foreach ($d in $dirs) {
-        try {
-            $di = New-Object System.IO.DirectoryInfo $d
-            # skip junctions/symlinks (avoids loops like "Documents and Settings"), keep OneDrive folders
-            if (Test-SkipFolder $di) { continue }
-            $child = New-Object System.Windows.Forms.TreeNode $di.Name
-            $child.Tag = $d
-            if ($di.Attributes -band [System.IO.FileAttributes]::Hidden) { $child.ForeColor = [System.Drawing.Color]::Gray }
-            Add-DummyChild $child
-            [void]$node.Nodes.Add($child)
-        } catch { }
+        $node.Nodes.Clear()
+        $dirs = Get-SubFolders ([string]$node.Tag)
+        if ($null -eq $dirs) {
+            # say so instead of an expand arrow that opens nothing
+            $i = New-Object System.Windows.Forms.TreeNode '(cannot open this folder - no access)'; $i.Name = 'info'; $i.ForeColor = [System.Drawing.Color]::Gray
+            [void]$node.Nodes.Add($i); return
+        }
+        foreach ($di in $dirs) {
+            $c = New-FolderNode $di
+            if ($c.Name -eq 'sys' -and -not $script:ShowSystem) { continue }
+            [void]$node.Nodes.Add($c)
+        }
+    } finally { if ($tv) { $tv.EndUpdate() } }
+}
+# Show or hide the Windows / program folders in every folder that is already open (ticks elsewhere are kept)
+function Update-SystemNodes($nodes) {
+    foreach ($n in @($nodes)) {
+        if (-not $n.Tag) { Update-SystemNodes $n.Nodes; continue }                  # the Quick picks group
+        if ($n.Nodes.Count -eq 1 -and -not $n.Nodes[0].Tag) { continue }           # not opened yet, or no access
+        if ($script:ShowSystem) {
+            $dirs = Get-SubFolders ([string]$n.Tag)
+            if ($dirs) {
+                $have = @{}; foreach ($c in $n.Nodes) { if ($c.Tag) { $have[([string]$c.Tag).ToLower()] = 1 } }
+                $i = 0
+                foreach ($di in $dirs) {
+                    if ($have.ContainsKey($di.FullName.ToLower())) { $i++; continue }
+                    $c = New-FolderNode $di
+                    if ($c.Name -eq 'sys') { $n.Nodes.Insert($i, $c); $i++ }
+                }
+            }
+        } else {
+            foreach ($c in @($n.Nodes)) { if ($c.Name -eq 'sys') { $n.Nodes.Remove($c) } }
+        }
+        Update-SystemNodes $n.Nodes
     }
 }
 
@@ -443,6 +527,21 @@ function Get-CheckedPaths($nodes, $list) {
         if ($n.Checked -and $n.Tag) { $list.Add([string]$n.Tag) }
         elseif ($n.Nodes.Count) { Get-CheckedPaths $n.Nodes $list }
     }
+}
+# One entry per folder: no duplicates (a quick pick and the same folder in the tree), and nothing that is already
+# inside another ticked folder (Desktop when the whole user folder is ticked), so nothing is copied twice
+function Get-UniqueFolders([string[]]$paths) {
+    $clean = @($paths | Where-Object { $_ } | ForEach-Object { if ($_.Length -gt 3) { $_.TrimEnd('\') } else { $_ } } | Sort-Object -Property Length)
+    $out = New-Object System.Collections.Generic.List[string]
+    foreach ($p in $clean) {
+        $covered = $false
+        foreach ($o in $out) {
+            $pre = if ($o.EndsWith('\')) { $o } else { $o + '\' }
+            if ($p -ieq $o -or $p.StartsWith($pre, [StringComparison]::OrdinalIgnoreCase)) { $covered = $true; break }
+        }
+        if (-not $covered) { $out.Add($p) }
+    }
+    return ,$out
 }
 
 function Show-FolderPicker {
@@ -457,9 +556,13 @@ function Show-FolderPicker {
     $tree.Dock = 'Fill'
     $tree.Font = New-Object System.Drawing.Font('Segoe UI', 10)
     $tree.add_BeforeExpand({ Expand-FolderNode $_.Node })
+    # the "(cannot open ...)" line is not a folder: it cannot be ticked
+    $tree.add_BeforeCheck({ if ($_.Node.Name -eq 'info') { $_.Cancel = $true } })
+    $script:ShowSystem = $false
 
+    $tree.BeginUpdate()
     # quick picks first: the user's folders and OneDrive, wherever they really are
-    $quick = New-Object System.Windows.Forms.TreeNode 'Quick picks (your folders and OneDrive)'
+    $quick = New-Object System.Windows.Forms.TreeNode 'Quick picks (your folders and other users)'
     $quick.NodeFont = New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
     foreach ($q in Get-QuickFolders) {
         $n = New-Object System.Windows.Forms.TreeNode ($q.Name + '  -  ' + $q.Path); $n.Tag = $q.Path
@@ -475,29 +578,43 @@ function Show-FolderPicker {
         Add-DummyChild $root
         [void]$tree.Nodes.Add($root)
     }
-    # open C:\Users by default since that is where most backups come from
+    # open the Users folder of the Windows drive by default since that is where most backups come from
+    $sysDrive = ([string]$env:SystemDrive).TrimEnd('\') + '\'
     foreach ($r in $tree.Nodes) {
-        if ($r.Tag -eq 'C:\') {
-            $r.Expand()
-            foreach ($c in $r.Nodes) { if ($c.Text -eq 'Users') { $c.Expand(); $tree.SelectedNode = $c } }
+        if ($r.Tag -and ([string]$r.Tag) -ieq $sysDrive) {
+            # filled here: before the window exists Expand() does not raise BeforeExpand (1.1 never opened Users)
+            Expand-FolderNode $r; $r.Expand()
+            foreach ($c in $r.Nodes) { if ($c.Text -eq 'Users') { Expand-FolderNode $c; $c.Expand(); $tree.SelectedNode = $c } }
         }
     }
+    $tree.EndUpdate()
 
-    $panel = New-Object System.Windows.Forms.FlowLayoutPanel
-    $panel.Dock = 'Bottom'; $panel.Height = 42; $panel.FlowDirection = 'RightToLeft'
+    $panel = New-Object System.Windows.Forms.Panel
+    $panel.Size = New-Object System.Drawing.Size($dlg.ClientSize.Width, 42); $panel.Dock = 'Bottom'
+    $chkSys = New-Object System.Windows.Forms.CheckBox
+    $chkSys.Text = 'Show Windows and program folders'; $chkSys.AutoSize = $true; $chkSys.Location = New-Object System.Drawing.Point(8, 11)
+    $chkSys.add_CheckedChanged({
+        $script:ShowSystem = $chkSys.Checked
+        $tree.BeginUpdate(); try { Update-SystemNodes $tree.Nodes } finally { $tree.EndUpdate() }
+    })
+    $tip.SetToolTip($chkSys, "Off: Windows, Program Files, ProgramData, Recovery and other system folders are not listed`r`n(and hidden system folders anywhere). Your own files are never in them.`r`nTick it to list and back them up anyway.")
     $cancel = New-Object System.Windows.Forms.Button
-    $cancel.Text = 'Cancel'; $cancel.Width = 90; $cancel.DialogResult = 'Cancel'
+    $cancel.Text = 'Cancel'; $cancel.Size = New-Object System.Drawing.Size(90, 28); $cancel.DialogResult = 'Cancel'
+    $cancel.Location = New-Object System.Drawing.Point(($panel.Width - 98), 7); $cancel.Anchor = 'Top, Right'
     $ok = New-Object System.Windows.Forms.Button
-    $ok.Text = 'Add Checked'; $ok.Width = 110; $ok.DialogResult = 'OK'
-    $panel.Controls.AddRange(@($cancel, $ok))
+    $ok.Text = 'Add Checked'; $ok.Size = New-Object System.Drawing.Size(110, 28); $ok.DialogResult = 'OK'
+    $ok.Location = New-Object System.Drawing.Point(($panel.Width - 214), 7); $ok.Anchor = 'Top, Right'
+    $panel.Controls.AddRange(@($chkSys, $ok, $cancel))
     $dlg.AcceptButton = $ok; $dlg.CancelButton = $cancel
 
     $dlg.Controls.Add($tree)
     $dlg.Controls.Add($panel)
+    $script:PickerForm = $dlg; $script:PickerTree = $tree; $script:PickerShowSystem = $chkSys
 
-    $result = New-Object System.Collections.Generic.List[string]
-    if ($dlg.ShowDialog() -eq 'OK') { Get-CheckedPaths $tree.Nodes $result }
+    $checked = New-Object System.Collections.Generic.List[string]
+    if ($dlg.ShowDialog() -eq 'OK') { Get-CheckedPaths $tree.Nodes $checked }
     $dlg.Dispose()
+    $result = Get-UniqueFolders $checked.ToArray()
     return ,$result
 }
 
@@ -538,7 +655,7 @@ $btnAdd = New-Object System.Windows.Forms.Button
 $btnAdd.Text = 'Add Folders...'; $btnAdd.Location = '425,83'; $btnAdd.Size = '110,30'
 $btnAdd.add_Click({
     foreach ($p in (Show-FolderPicker)) {
-        if (-not $lstSrc.Items.Contains($p)) { [void]$lstSrc.Items.Add($p) }
+        if (-not @($lstSrc.Items | Where-Object { $_ -ieq $p }).Count) { [void]$lstSrc.Items.Add($p) }
     }
 })
 
@@ -747,7 +864,7 @@ $lnkFfs.add_LinkClicked({ Start-Process 'https://freefilesync.org/' })
 $form.Controls.Add($lnkFfs)
 $tabs.BringToFront()
 
-Add-Help $tabBuild 140 57 'Source folders' ("The folders you want backed up. Click 'Add Folders...' and tick as many folders as you like in the tree (it opens at C:\Users).`r`n`r`n" +
+Add-Help $tabBuild 140 57 'Source folders' ("The folders you want backed up. Click 'Add Folders...' and tick as many folders as you like in the tree (it opens at C:\Users). Quick picks lists your own folders, OneDrive and the other users' profiles. Windows and program folders (Windows, Program Files, ProgramData ...) are left out of the tree until you tick 'Show Windows and program folders'. A folder inside another ticked folder is only added once.`r`n`r`n" +
     "Each folder becomes one folder pair in the FreeFileSync script: the folder (left side) is mirrored to Current\<folder name> (right side).`r`n`r`n" +
     "Two folders with the same name (for example two users' Documents) get -2, -3 ... so they do not overwrite each other. 'Remove' takes the selected folders off the list.")
 Add-Help $tabBuild 165 242 'Destination folder' ("Where the backup lives. Usually a folder on an external or second drive, for example H:\.`r`n`r`n" +
