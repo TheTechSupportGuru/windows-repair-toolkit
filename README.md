@@ -65,6 +65,7 @@ All scripts are in [`tools/`](tools/). Start each one with its launcher, or righ
 | [Monitor-Logs](#monitor-logs) | (right-click > Run with PowerShell) | Opens live-updating windows for chosen logs and Event Viewer channels |
 | [ClaudeLogAnalyzer](#claudeloganalyzer) | (Run-PS-As-Admin.bat) | Sends logs and screenshots to Claude or Gemini and shows the diagnosis |
 | [Backup Script Builder](#backup-script-builder) | `BackupScriptBuilder.bat` | Builds and schedules backup jobs for [FreeFileSync](https://freefilesync.org/), or Robocopy / Xcopy scripts: pick folders and a destination, set the schedule |
+| [7z-Encryptor](#7z-encryptor) | `7z-Encryptor.bat` | Encrypts files and folders with 7-Zip and a password you pick: 7z (AES-256, names hidden too) or zip (standard or AES-256). Drop files on the `.bat` for a quick window. Needs [7-Zip](https://www.7-zip.org/) (it can install it with winget) |
 | Run-PS-As-Admin | `Run-PS-As-Admin.bat` | Drag any `.ps1` onto it to run it as administrator (unchanged since v1.1) |
 
 WinSuperTool contains the features of WinRepairTool, Collect-Logs, Monitor-Logs and ClaudeLogAnalyzer. The separate tools are kept for when you need only one job, and since v1.8 they have the same fixes.
@@ -151,6 +152,17 @@ WinRepairTool, Collect-Logs, Monitor-Logs and ClaudeLogAnalyzer are in `Individu
 
 Download `BackupScriptBuilder-v1.3.zip` from the [latest release](../../releases/latest).
 
+### 7z-Encryptor
+
+`7z-Encryptor.ps1` + `7z-Encryptor.bat`. Encrypts files and folders into one password-protected file with [7-Zip](https://www.7-zip.org/). Version 1.0 ([notes](docs/changes/7z-Encryptor-1.0.md)).
+
+- **Main window** (double-click `7z-Encryptor.bat`): tick files and folders in the same tree as Backup Script Builder, pick the format and a password (typed twice), and where to save. It is filled in next to the first item.
+- **7z:** AES-256. **Full encryption** (on by default) also hides the file names, so nothing can be seen without the password.
+- **zip:** **Standard** (ZipCrypto) opens in Windows Explorer with the password but is weak, and file names stay visible. **AES-256** is strong but needs 7-Zip, WinRAR or similar to open.
+- **Drag and drop:** drop files or folders on `7z-Encryptor.bat` for a small window that asks 7z or zip and the password. The file is saved in the 7z-Encryptor folder (or, ticked, next to the dropped item).
+- Every new file is tested with the password before it is reported as done. The originals are never changed or deleted, and an existing file is never overwritten.
+- Without 7-Zip, **Install 7-Zip** runs `winget install -e --id 7zip.7zip`. The tool looks for 7-Zip when it starts.
+- Paths with `&` or `%` in their names cannot be dropped on the `.bat` (a limit of batch files). Use the main window for those.
 ## What has been fixed
 
 Testing and code review led to **more than 100 fixes** across 13 versions. Each version's full list, with severity and how it was verified, is in [`docs/changes/`](docs/changes/).

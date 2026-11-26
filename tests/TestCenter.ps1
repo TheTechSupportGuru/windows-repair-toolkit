@@ -97,6 +97,9 @@ $Tests = @(
        Desc = 'Pair names, drive keys, log file stamps, XML escaping, ticked-folder clean-up and reading tasks back. Changes nothing.' }
     @{ Tab = 'Backup Script Builder'; Id = 'backup-builder'; Name = 'Backup Script Builder: scripts, folder picker, schedules, layout'; Kind = 'ps'; Script = 'Run-BackupScriptBuilder.ps1'; Min = 3; Default = $true
        Desc = 'Builds a FreeFileSync script and compares it line by line with a reference, checks the destination rules, runs real Robocopy / Xcopy scripts, checks the folder picker (every user folder listed, no junctions, system folders only on request, no duplicates, the real dialog), creates / reads back / deletes a scheduled task of every type (in \BackupScriptBuilder\, as you), and checks the layout and every ? help text.' }
+    # ---- 7z-Encryptor
+    @{ Tab = '7z-Encryptor'; Id = '7z-encryptor'; Name = '7z-Encryptor: encryption, windows, drag-and-drop launcher'; Kind = 'ps'; Script = 'Run-7zEncryptor.ps1'; Min = 1; Default = $true
+       Desc = 'Encrypts test files in every mode with 7-Zip and unpacks them again, checks both windows and drops a file on the launcher. Needs 7-Zip. Works only in a temporary folder.' }
     # ---- Log tools
     @{ Tab = 'Log tools'; Id = 'logs'; Name = 'Log collection + AI log readers'; Kind = 'ps'; Script = 'Run-LogGen.ps1'; Min = 15; Admin = $true
        Results = '%TEMP%\suite-logs'
@@ -113,7 +116,7 @@ $Tests = @(
 # ---------------------------------------------------------------- helpers
 $RepoUrl  = 'https://github.com/TheTechSupportGuru/windows-repair-toolkit'
 $ApiUrl   = 'https://api.github.com/repos/TheTechSupportGuru/windows-repair-toolkit'
-$NeedsByTab = @{ 'WinSuperTool' = 'WinSuperTool.ps1'; 'WinFixKit' = 'WinFixKit.ps1'; 'Log tools' = 'Collect-Logs.ps1'; 'Backup Script Builder' = 'BackupScriptBuilder.ps1' }
+$NeedsByTab = @{ 'WinSuperTool' = 'WinSuperTool.ps1'; 'WinFixKit' = 'WinFixKit.ps1'; 'Log tools' = 'Collect-Logs.ps1'; 'Backup Script Builder' = 'BackupScriptBuilder.ps1'; '7z-Encryptor' = '7z-Encryptor.ps1' }
 $SourceFile = '.wrt-source.json'     # written next to a downloaded tools folder: version + original hashes
 $script:Stage = $null                   # the staged copy of one run: Repo, Tests, Tools
 $script:Results = New-Object Collections.ArrayList
