@@ -162,7 +162,8 @@ function ConvertTo-XmlText([string]$s) {
 }
 
 function Get-PairName([string]$path, [hashtable]$used) {
-    $name = Split-Path -Path $path -Leaf
+    # a share root (\\server\share) has no leaf for Split-Path: it is named after the share
+    $name = if ($path -match '^\\\\[^\\]+\\([^\\]+)\\?$') { $Matches[1] } else { Split-Path -Path $path -Leaf }
     if ([string]::IsNullOrWhiteSpace($name) -or $name -match ':') {
         $name = ($path.Substring(0, 1)) + '-Drive'
     }
@@ -285,6 +286,23 @@ $XcopySwitches = @(
     @{ Key = '/X'; On = $false; Text = '/X - also copy audit settings (includes /O)' }
 )
 # The drive (C:) or network share (\\server\share) a source folder is on: robocopy can copy one drive per thread
+# 1.3 network paths. Mapped drive letters belong to one logon and are often missing when a scheduled task runs, so a
+# path on a mapped drive is saved as its \\server\share path. Map: 'Z:' -> '\\server\share'
+function Get-NetworkDriveMap {
+    $m = @{}
+    try { foreach ($d in @(Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=4' -ErrorAction Stop)) { if ($d.ProviderName) { $m[$d.DeviceID.ToUpper()] = $d.ProviderName.TrimEnd('\') } } } catch {}
+    foreach ($k in @(Get-ChildItem 'HKCU:\Network' -ErrorAction SilentlyContinue)) {
+        $l = $k.PSChildName.ToUpper() + ':'; $rp = [string](Get-ItemProperty $k.PSPath -ErrorAction SilentlyContinue).RemotePath
+        if ($rp -and -not $m.ContainsKey($l)) { $m[$l] = $rp.TrimEnd('\') }
+    }
+    return $m
+}
+function ConvertTo-UncPath([string]$path, $map) {
+    if (-not $path -or $path -notmatch '^([A-Za-z]:)(\\.*)?$' -or -not $map) { return $path }
+    $l = $Matches[1].ToUpper(); $rest = [string]$Matches[2]
+    if (-not $map.ContainsKey($l)) { return $path }
+    return ($map[$l] + $rest).TrimEnd('\')
+}
 function Get-DriveKey([string]$path) {
     if ($path -match '^(\\\\[^\\]+\\[^\\]+)') { return $Matches[1].ToUpper() }
     return $path.Substring(0, 2).ToUpper()
@@ -694,8 +712,28 @@ $btnAdd = New-Object System.Windows.Forms.Button
 $btnAdd.Text = 'Add Folders...'; $btnAdd.Location = '425,83'; $btnAdd.Size = '130,30'
 $btnAdd.add_Click({
     foreach ($p in (Show-FolderPicker (-not $rbFfs.Checked))) {
+        $p = ConvertTo-UncPath $p (Get-NetworkDriveMap)
         if (-not @($lstSrc.Items | Where-Object { $_ -ieq $p }).Count) { [void]$lstSrc.Items.Add($p) }
     }
+})
+
+# 1.3: a network folder or file typed as \\server\share\... (or a mapped drive, saved as its \\server\share path)
+$btnNet = New-Object System.Windows.Forms.Button
+$btnNet.Text = 'Add Network Path'; $btnNet.Location = '425,157'; $btnNet.Size = '130,30'
+$btnNet.add_Click({
+    Add-Type -AssemblyName Microsoft.VisualBasic
+    $what = if ($rbFfs.Checked) { 'folder' } else { 'folder or file' }
+    $p = [Microsoft.VisualBasic.Interaction]::InputBox("Type the network $what to back up, for example:`r`n\\server\share\Documents`r`n`r`nA mapped drive (Z:\...) is saved as its \\server\share path so a scheduled task can reach it.", 'Add Network Path', '\\')
+    $p = $p.Trim().Trim('"')
+    if (-not $p -or $p -eq '\\') { return }
+    $p = ConvertTo-UncPath $p (Get-NetworkDriveMap)
+    if ($p -notmatch '^\\\\[^\\]+\\[^\\]+') { [void][System.Windows.Forms.MessageBox]::Show("Not a network path: $p`r`nUse \\server\share\folder.", 'Backup Script Builder', 'OK', 'Warning'); return }
+    $form.Cursor = 'WaitCursor'
+    try { $isDir = [IO.Directory]::Exists($p); $isFile = -not $isDir -and [IO.File]::Exists($p) } finally { $form.Cursor = 'Default' }
+    if (-not ($isDir -or $isFile)) { [void][System.Windows.Forms.MessageBox]::Show("Cannot reach $p`r`nCheck the name, that the PC or NAS is on, and that you have access to the share.", 'Backup Script Builder', 'OK', 'Warning'); return }
+    if ($isFile -and $rbFfs.Checked) { [void][System.Windows.Forms.MessageBox]::Show('A FreeFileSync batch backs up folders only. Pick Robocopy or Xcopy to back up a single file.', 'Backup Script Builder', 'OK', 'Warning'); return }
+    $p = if ($isDir) { $p.TrimEnd('\') } else { $p }
+    if (-not @($lstSrc.Items | Where-Object { $_ -ieq $p }).Count) { [void]$lstSrc.Items.Add($p) }
 })
 
 $btnRemove = New-Object System.Windows.Forms.Button
@@ -721,14 +759,16 @@ $btnBrowse.add_Click({
     $fb.Description = 'Pick where the backup script and its folders will go'
     $fb.ShowNewFolderButton = $true
     if ($txtDest.Text -and (Test-Path $txtDest.Text)) { $fb.SelectedPath = $txtDest.Text }
-    if ($fb.ShowDialog() -eq 'OK') { $txtDest.Text = $fb.SelectedPath }
+    if ($fb.ShowDialog() -eq 'OK') { $script:NetMap = Get-NetworkDriveMap; $txtDest.Text = $fb.SelectedPath }
     $fb.Dispose()
 })
 
 # The script and its folders go in <chosen folder>\AutomaticFileBackups
 # (or straight into the chosen folder if it is already named that).
+$script:NetMap = Get-NetworkDriveMap
 function Get-DestRoot {
-    $p = $txtDest.Text.Trim().TrimEnd('\')
+    $p = $txtDest.Text.Trim().Trim('"').TrimEnd('\')
+    if ($p -match '^[A-Za-z]:') { $p = ConvertTo-UncPath $p $script:NetMap }   # a mapped drive: saved as \\server\share so the task can reach it
     if (-not $p) { return $null }
     if ((Split-Path $p -Leaf) -ieq $BaseName) { return $p }
     return $p + '\' + $BaseName
@@ -895,7 +935,7 @@ $tabs = New-Object System.Windows.Forms.TabControl
 $tabs.Dock = 'Fill'
 $tabBuild = New-Object System.Windows.Forms.TabPage 'Build Script'
 $tabSched = New-Object System.Windows.Forms.TabPage 'Schedule Task'
-$tabBuild.Controls.AddRange(@($lblType, $rbFfs, $rbRobo, $rbXcopy, $lblSrc, $lstSrc, $btnAdd, $btnRemove, $lblDst, $txtDest, $btnBrowse, $lblPreview, $pnlFfs, $pnlRobo, $pnlXcopy, $btnBuild))
+$tabBuild.Controls.AddRange(@($lblType, $rbFfs, $rbRobo, $rbXcopy, $lblSrc, $lstSrc, $btnAdd, $btnNet, $btnRemove, $lblDst, $txtDest, $btnBrowse, $lblPreview, $pnlFfs, $pnlRobo, $pnlXcopy, $btnBuild))
 $pnlFfs.Controls.AddRange(@($lblDays, $numDays))
 $tabs.TabPages.AddRange(@($tabBuild, $tabSched))
 $form.Controls.Add($tabs)
@@ -909,9 +949,10 @@ $form.Controls.Add($lnkFfs)
 $tabs.BringToFront()
 
 Add-Help $tabBuild 140 57 'Source folders' ("The folders you want backed up. Click 'Add Folders...' and tick as many folders as you like in the tree (it opens at C:\Users). Quick picks lists your own folders, OneDrive and the other users' profiles. Windows and program folders (Windows, Program Files, ProgramData ...) are left out of the tree until you tick 'Show Windows and program folders'. A folder inside another ticked folder is only added once. Empty folders can be ticked too.`r`n`r`nRobocopy and Xcopy scripts can also back up single files: the tree then lists the files in each folder as well (a FreeFileSync batch takes folders only).`r`n`r`n" +
+    "'Add Network Path' adds a folder (or, for Robocopy and Xcopy, a file) on another PC or NAS: type it as \\server\share\folder. Folders on a mapped drive (Z:) are saved as their \\server\share path, because a scheduled task often cannot see mapped drives. The task runs as you, so you need access to the share.`r`n`r`n" +
     "Each folder becomes one folder pair in the FreeFileSync script: the folder (left side) is mirrored to Current\<folder name> (right side).`r`n`r`n" +
     "Two folders with the same name (for example two users' Documents) get -2, -3 ... so they do not overwrite each other. 'Remove' takes the selected folders off the list.")
-Add-Help $tabBuild 165 242 'Destination folder' ("Where the backup lives. Usually a folder on an external or second drive, for example H:\.`r`n`r`n" +
+Add-Help $tabBuild 165 242 'Destination folder' ("Where the backup lives. Usually a folder on an external or second drive, for example H:\, or a network share typed as \\server\share\Backups (a mapped drive is saved as its \\server\share path).`r`n`r`n" +
     "The tool creates AutomaticFileBackups inside it (or uses the folder itself when it is already called AutomaticFileBackups) with:`r`n" +
     "  Current - the latest copy of every source folder`r`n  Archive-Deleted - files that were deleted or changed, in time-stamped folders`r`n  Logs - FreeFileSync's log of every run`r`n" +
     "and saves BackupScript.ffs_batch there.`r`n`r`nThe destination cannot be inside one of the source folders.")

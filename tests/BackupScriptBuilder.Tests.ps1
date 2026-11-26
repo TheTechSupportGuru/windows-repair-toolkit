@@ -4,7 +4,7 @@
 #   Invoke-Pester .\tests\BackupScriptBuilder.Tests.ps1
 $bsbFile = Join-Path (Split-Path $PSScriptRoot -Parent) 'tools\BackupScriptBuilder.ps1'
 $bsbAst = [Management.Automation.Language.Parser]::ParseFile($bsbFile, [ref]$null, [ref]$null)
-foreach ($fn in $bsbAst.FindAll({ $args[0] -is [Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -in 'ConvertTo-XmlText', 'Get-PairName', 'Get-DriveKey', 'Get-LogStampFormat', 'Get-UniqueFolders', 'Get-ScriptFromAction', 'Get-ScriptType', 'New-CopyScript', 'Get-PickerFiles', 'Get-SubFolders', 'Test-SkipFolder', 'Test-SystemFolder' }, $true)) { . ([scriptblock]::Create($fn.Extent.Text)) }
+foreach ($fn in $bsbAst.FindAll({ $args[0] -is [Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -in 'ConvertTo-XmlText', 'Get-PairName', 'Get-DriveKey', 'Get-LogStampFormat', 'Get-UniqueFolders', 'Get-ScriptFromAction', 'Get-ScriptType', 'New-CopyScript', 'Get-PickerFiles', 'Get-SubFolders', 'Test-SkipFolder', 'Test-SystemFolder', 'ConvertTo-UncPath' }, $true)) { . ([scriptblock]::Create($fn.Extent.Text)) }
 function Join-Out($r) { @($r) -join '|' }
 
 Describe 'Pair names, drive keys, log stamps, XML' {
@@ -15,7 +15,7 @@ Describe 'Pair names, drive keys, log stamps, XML' {
     It "Get-LogStampFormat returns empty string when mode is not New" { Get-LogStampFormat -log @{Mode='Append'} | Should Be "" }
     It "ConvertTo-XmlText escapes XML special characters" { ConvertTo-XmlText -s "<>&" | Should Be "&lt;&gt;&amp;" }
     It 'Get-PairName: same name in another case still gets -2, then -3' { $u = @{}; Get-PairName 'C:\Docs' $u | Out-Null; Get-PairName 'D:\docs' $u | Should Be 'docs-2'; Get-PairName 'E:\DOCS' $u | Should Be 'DOCS-3' }
-    It 'Get-PairName: UNC share root uses the share name' { Get-PairName '\srv\share' @{} | Should Be 'share' }
+    It 'Get-PairName: UNC share root uses the share name' { Get-PairName '\\srv\share' @{} | Should Be 'share' }
     It 'Get-LogStampFormat: New with date and time / date / time / neither' {
         Get-LogStampFormat @{ Mode = 'New'; Date = $true; Time = $true } | Should Be 'yyyy-MM-dd_HHmmss'
         Get-LogStampFormat @{ Mode = 'New'; Date = $true } | Should Be 'yyyy-MM-dd'
@@ -72,5 +72,36 @@ Describe 'Files and empty folders (1.3): scripts really run, only into $TestDriv
         @(Get-SubFolders $d).Name | Should Be 'EmptyOne'
         @(Get-PickerFiles $d).Name | Should Be 'f.txt'
         (Get-PickerFiles (Join-Path $TestDrive 'nope')).Count | Should Be 0
+    }
+}
+Describe 'Network paths (1.3)' {
+    $map = @{ 'Z:' = '\\nas\backup'; 'Y:' = '\\srv\share\' }
+    It 'a path on a mapped drive becomes its \\server\share path' { ConvertTo-UncPath 'z:\Docs\x' $map | Should Be '\\nas\backup\Docs\x' }
+    It 'a mapped drive root becomes the share' { ConvertTo-UncPath 'Z:\' $map | Should Be '\\nas\backup'; ConvertTo-UncPath 'Y:' $map | Should Be '\\srv\share' }
+    It 'local drives, UNC paths and empty input are left alone' {
+        ConvertTo-UncPath 'C:\Users' $map | Should Be 'C:\Users'; ConvertTo-UncPath '\\a\b\c' $map | Should Be '\\a\b\c'; ConvertTo-UncPath '' $map | Should Be ''
+        ConvertTo-UncPath 'Z:\x' @{} | Should Be 'Z:\x'
+    }
+    It 'a UNC share root is named after the share and keyed by server\share' { Get-PairName '\\nas\backup' @{} | Should Be 'backup'; Get-DriveKey '\\nas\backup\docs' | Should Be '\\NAS\BACKUP' }
+    # real copies through the admin share of this PC (\\localhost\C$), read and written only under $TestDrive
+    $unc = '\\localhost\' + ($TestDrive -replace ':', '$')
+    $reach = Test-Path -LiteralPath $unc
+    foreach ($case in @(@('Robocopy', 'ps1', @('/E', '/R:0', '/W:0', '/NP')), @('Xcopy', 'bat', @('/E', '/I', '/Y', '/Q')))) {
+        $tool, $fmt, $sw = $case
+        It "$tool ${fmt}: network folder and file as source, network folder as destination" -Skip:(-not $reach) {
+            $s = Join-Path $TestDrive "net-$tool"; New-Item -ItemType Directory "$s\Share\Empty" -Force | Out-Null; 'n' | Set-Content "$s\Share\n.txt"; 'f' | Set-Content "$s\one.txt"; 'x' | Set-Content "$s\other.txt"
+            $root = "$unc\net-$tool-out\AutomaticFileBackups"
+            $r = New-CopyScript $tool $fmt @("$unc\net-$tool\Share", "$unc\net-$tool\one.txt") $root $sw @{ Enabled = $true; Mode = 'Append' }
+            foreach ($d in $r.Dirs) { [void][IO.Directory]::CreateDirectory($d) }
+            [IO.File]::WriteAllText($r.File, $r.Text)
+            if ($fmt -eq 'ps1') { & powershell -NoProfile -ExecutionPolicy Bypass -File $r.File | Out-Null } else { Push-Location $TestDrive; & cmd /c "`"$($r.File)`"" | Out-Null; Pop-Location }
+            $LASTEXITCODE | Should Be 0
+            $out = "$TestDrive\net-$tool-out\AutomaticFileBackups\Current"
+            Test-Path "$out\Share\n.txt" | Should Be $true
+            Test-Path "$out\Share\Empty" -PathType Container | Should Be $true
+            Test-Path "$out\net-$tool\one.txt" | Should Be $true
+            Test-Path "$out\net-$tool\other.txt" | Should Be $false
+            Test-Path "$TestDrive\net-$tool-out\AutomaticFileBackups\Logs\Backup-$tool.log" | Should Be $true
+        }
     }
 }
