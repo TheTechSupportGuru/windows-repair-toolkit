@@ -93,11 +93,11 @@ Check 'check: a non-ASCII password is refused for zip but allowed for 7z' (((Tes
         Check "$name : ? buttons with help text" ($help.Count -ge $minHelp -and -not @($help | Where-Object { -not $_.Tag[1] }).Count) "$($help.Count)"
     }
     $m = $script:MainUi
-    & $layout 'main window' $m.Page 4
+    & $layout 'main window' $m.Page 7
     $m.Opt.Rb7z.Checked = $true; $hide7 = (Test-Shown $m.Opt.Hide) -and -not (Test-Shown $m.Opt.ZipPanel)
     $m.Opt.RbZip.Checked = $true; $zipShown = (Test-Shown $m.Opt.ZipPanel) -and -not (Test-Shown $m.Opt.Hide) -and $m.Opt.RbCrypto.Checked
     Check 'main: 7z shows "hide the file names", zip shows Standard / AES-256 (Standard first)' ($hide7 -and $zipShown)
-    & $layout 'main window with zip' $m.Page 4
+    & $layout 'main window with zip' $m.Page 7
     $m.Opt.Rb7z.Checked = $true
     [void]$m.List.Items.Add("$W\src\Folder A"); Update-MainOut
     Check 'main: Save as is filled in next to the first item, named after it' ($m.Out.Text -eq "$W\src\Folder A.7z")
@@ -119,6 +119,17 @@ Check 'check: a non-ASCII password is refused for zip but allowed for 7z' (((Tes
     Check 'start without 7-Zip: asks to install it with winget (answered No: nothing runs)' ([FakeMsg7]::Last -match 'not installed' -and [FakeMsg7]::Last -match 'winget install -e --id 7zip\.7zip' -and -not $g.Proc)
     $script:SevenZip = $keep7; [FakeMsg7]::Last = ''; Request-7ZipInstall $g
     Check 'start with 7-Zip: no question' ([FakeMsg7]::Last -eq ''); [FakeMsg7]::Answer = 'Yes'; Update-Get7Row $g
+    # every ? button: there, and its text says what the window does now (1.4)
+    $hb = @{}; foreach ($b in @($m.Page.Controls | Where-Object { $_ -is [Windows.Forms.Button] -and $_.Text -eq '?' })) { $hb[[string]$b.Tag[0]] = [string]$b.Tag[1] }
+    Check 'help: a ? for Files and folders, Format, Password, Save as, Send by email, 7-Zip and Remember settings' ((@('Files and folders', 'Format', 'Password', 'Save as', 'Show in folder / Send by email', '7-Zip', 'Remember settings') | Where-Object { -not $hb.ContainsKey($_) }).Count -eq 0) (($hb.Keys | Sort-Object) -join ', ')
+    Check 'help: Files and folders names the drop, Remove and one file' ($hb['Files and folders'] -match '7z-Encryptor\.bat' -and $hb['Files and folders'] -match "'Remove'" -and $hb['Files and folders'] -match 'ONE encrypted file')
+    Check 'help: Password says case and spaces count, no double quote, zip limits, never saved' ($hb['Password'] -match 'Upper and lower case count' -and $hb['Password'] -match 'space' -and $hb['Password'] -match 'double quote \("\)' -and $hb['Password'] -match 'zip: only English' -and $hb['Password'] -match 'never saved')
+    Check 'help: Save as says dropped items, not inside a folder being encrypted, share folder, never overwritten' ($hb['Save as'] -match 'dropped on 7z-Encryptor\.bat' -and $hb['Save as'] -match 'inside a folder that is being encrypted' -and $hb['Save as'] -match '\\\\server\\share\\file\.7z' -and $hb['Save as'] -match 'never overwritten')
+    Check 'help: Send by email explains all four ways, mailto: cannot attach' ($hb['Show in folder / Send by email'] -match 'Send to > Mail recipient' -and $hb['Show in folder / Send by email'] -match 'Windows Share' -and $hb['Show in folder / Send by email'] -match 'Choose program' -and $hb['Show in folder / Send by email'] -match 'mailto: link cannot attach' -and $hb['Show in folder / Send by email'] -notmatch 'attaches it to a new email')
+    Check 'help: Remember settings says off by default, what is kept, never a password, untick deletes' ($hb['Remember settings'] -match 'Off \(the default\)' -and $hb['Remember settings'] -match 'mailto: address' -and $hb['Remember settings'] -match 'Never a password' -and $hb['Remember settings'] -match 'Unticking it deletes')
+    Check 'help: no text mentions the old small drop window' (-not @($hb.Values | Where-Object { $_ -match 'small window|drop window|quick window' }).Count)
+    $rq = @($m.Page.Controls | Where-Object { $_.Text -eq '?' -and $_.Tag[0] -eq 'Remember settings' })[0]
+    Check 'help: the Remember settings ? sits right of its box, on the same line' ($rq.Left -ge $m.Remember.Right -and [Math]::Abs($rq.Top - $m.Remember.Top) -le 4)
     Check 'main window has a destination picker (Save as + Browse... save dialog)' ($m.Out -is [Windows.Forms.TextBox] -and $m.Browse.Text -eq 'Browse...')
     # ---- 1.2: Show in folder, Send by email (3 ways), remembered settings next to the script ----
     Check 'main: Show in folder and Send by email are off until a file is encrypted' (-not $m.ShowDir.Enabled -and -not $m.Mail.Enabled -and $m.ShowDir.Text -eq 'Show in folder' -and $m.Mail.Text -eq 'Send by email')
@@ -146,7 +157,7 @@ Check 'check: a non-ASCII password is refused for zip but allowed for 7z' (((Tes
     Check 'window: a mailto: option with an address box under the other three' ($m.RbMailto.Text -eq 'mailto:' -and $m.MailTo -is [Windows.Forms.TextBox] -and $m.MailTo.Parent -eq $m.MailPanel -and $m.RbMailto.Top -gt $m.RbClassic.Bottom)
     $m.MailTo.Text = 'a@example.com'
     Check 'window: typing an address picks mailto: and it is remembered (with Remember settings ticked)' ($m.RbMailto.Checked -and (Get-MainEmailMode) -eq 'Mailto' -and (Get-Content -LiteralPath $sf -Raw | ConvertFrom-Json).MailTo -eq 'a@example.com' -and (Get-Content -LiteralPath $sf -Raw | ConvertFrom-Json).EmailMode -eq 'Mailto')
-    & $layout 'main window with mailto:' $m.Page 4
+    & $layout 'main window with mailto:' $m.Page 7
     $m.RbShare.Checked = $true; Set-MainEmailMode $m.RbShare    Check 'email: Send to > Mail recipient is the MAPI call (Simple MAPI MAPISendMail with a dialog)' ([bool]('WrtMapi' -as [type]) -and $script:BsbEncSource -match 'MAPISendMail' -and $script:BsbEncSource -match 'fall back to the Windows Share window')
     $script:Settings.SaveFolder = "$W\out"; $m.OutEdited = $false; Update-MainOut
     Check 'settings: Save as uses the remembered folder of the last encrypted file' ($m.Out.Text -like "$W\out\Folder A.*")
@@ -160,7 +171,7 @@ Check 'check: a non-ASCII password is refused for zip but allowed for 7z' (((Tes
     $df = New-MainWindow @("$W\src\single file.txt", "$W\src\Folder A"); $d = $script:MainUi
     Check 'drop: the dropped items are in the list, with Add / Remove and Browse... there too' ($d.List.Items.Count -eq 2 -and $d.List.Items[0] -eq "$W\src\single file.txt" -and $d.Add.Text -eq 'Add Files/Folders' -and $d.Browse.Text -eq 'Browse...')
     Check 'drop: saved next to the first dropped item, not in the remembered folder' ($d.Out.Text -like "$W\src\Encrypted-*.7z") $d.Out.Text
-    & $layout 'window started by a drop' $d.Page 4
+    & $layout 'window started by a drop' $d.Page 7
     $df.Dispose(); $script:MainUi = $m; $script:Settings.Remove('SaveFolder')
     $ScriptDir = "$W\tooldir"
     $own = Get-DroppedItems @("`"$W\tooldir\7z-Encryptor.ps1`"", "$W\tooldir\7Z-ENCRYPTOR.BAT", '')

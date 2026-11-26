@@ -18,14 +18,20 @@
   - **`\\server\file.7z` was taken as a full path.** A share path now needs a share folder: `\\server\share\file.7z`.
   - **`;;` between email addresses** is now tidied instead of refused.
 - The drop window's "save next to the dropped item" tick is no longer saved. An old value in the settings file is ignored.
+- **Every ? button explains the 1.4 window.**
+  - New **?** buttons for **Password** (case and spaces count, no double quote, the zip limits, never saved) and **Remember settings** (what is kept and where, never a password, unticking deletes the file).
+  - **Files and folders** mentions Remove.
+  - **Save as** gives the new rules.
+  - **Send by email** no longer says the file is always attached.
 - `7z-Encryptor.bat` 1.1: see the first fix above.
 
 Tested:
 
-- 77 / 77 checks of `tests/Run-7zEncryptor.ps1`. New checks cover:
+- 85 / 85 checks of `tests/Run-7zEncryptor.ps1`. New checks cover:
   - mailto:
   - the window started by a drop
   - names with `& ^ % !` dropped on a copy of the launcher, and the console start
   - odd names and a password with `& ^ % ! \`, accents and a trailing space, encrypted and unpacked with 7-Zip
   - a save folder that does not exist yet
+  - every ? button is there and says what the window does now
 - 39 / 39 tests in the new `tests/7zEncryptor.Tests.ps1`, the edge cases of every helper.

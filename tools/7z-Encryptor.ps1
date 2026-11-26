@@ -517,9 +517,13 @@ function Set-EncRemember([bool]$on) {
     } else { $script:Settings.Remember = $false; Remove-Settings '7z-Encryptor' }
 }
 function New-RememberBox($parent, [string]$loc) {
-    $c = New-Ctl CheckBox 'Remember settings' $loc '170,24'; $c.Checked = [bool]$script:Settings.Remember
+    $c = New-Ctl CheckBox 'Remember settings' $loc '140,24'; $c.Checked = [bool]$script:Settings.Remember
     $c.add_CheckedChanged({ Set-EncRemember $this.Checked }); $parent.Controls.Add($c)
     $t = New-Object System.Windows.Forms.ToolTip; $t.SetToolTip($c, 'Off: nothing is saved. On: the save folder, email choice and mailto: address are kept in 7z-Encryptor.settings.json next to the script (never a password). Untick to delete that file.')
+    $pt = [Drawing.Point]$loc
+    Add-Help $parent ($pt.X + 145) ($pt.Y) 'Remember settings' ("Off (the default): nothing is written anywhere. Your choices stay in use until you close the tool, then they are forgotten.`r`n`r`n" +
+        "Ticked: the folder of your last encrypted file, the email choice, the chosen mail program and the mailto: address are saved in 7z-Encryptor.settings.json next to the script, right away and whenever they change, so they travel with the folder (USB stick, share). Never a password, never the list of files. Items dropped on 7z-Encryptor.bat are still saved next to the first one.`r`n`r`n" +
+        "Unticking it deletes that file. A damaged settings file is ignored and the tool starts with no memory.")
     $c
 }
 
@@ -613,7 +617,7 @@ function New-Ctl([string]$type, [string]$text, [string]$loc, [string]$size) {
     if ($size) { $c.Size = $size } elseif ($type -in 'Label', 'CheckBox', 'RadioButton') { $c.AutoSize = $true }
     return $c
 }
-# The "how to encrypt" block, used by both windows: format, what is hidden, password twice. Returns its controls.
+# The "how to encrypt" block: format, what is hidden, password twice. Returns its controls.
 function New-EncryptOptions($parent, [int]$y) {
     $u = @{}
     $u.Lbl = New-Ctl Label 'Format' "15,$y"; $u.Lbl.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
@@ -633,6 +637,9 @@ function New-EncryptOptions($parent, [int]$y) {
     Add-Help $parent 75 ($y - 3) 'Format' ("7z: 7-Zip's own format with AES-256, the strongest. 'Full encryption' also hides the file names, so nothing at all can be seen without the password (on by default).`r`n`r`n" +
         "zip: 'Standard' is the classic zip password (ZipCrypto): anyone can open it in Windows Explorer with the password, but it is weak and the file names stay visible. 'AES-256' is strong but needs 7-Zip, WinRAR or similar to open; file names stay visible.`r`n`r`n" +
         "There is no way to get the files back without the password: keep it somewhere safe. The originals are not changed or deleted.")
+    Add-Help $parent 92 ($y + 87) 'Password' ("Type the password twice; both must match exactly. Upper and lower case count, and so does every space, also one at the start or the end.`r`n`r`n" +
+        "7z: any characters (accents, other alphabets). zip: only English letters, digits, spaces and ordinary symbols, because 7-Zip refuses others in zip files. A double quote ("") cannot be used in either.`r`n`r`n" +
+        "'Show' shows what you typed. The password is never saved, also not with 'Remember settings' ticked. There is no way to get the files back without it, and send it some other way than the encrypted file (phone, text message).")
     return $u
 }
 function Get-EncryptChoice($u) {
@@ -725,9 +732,9 @@ function New-MainWindow([string[]]$items = @()) {
     $w.Get7 = New-Get7Row $p 599 { $script:MainUi.Go.Enabled = [bool]$script:SevenZip }
     $w.Remember = New-RememberBox $p '15,632'
     $w.Go.Enabled = [bool]$script:SevenZip
-    Add-Help $p 245 7 'Files and folders' "Tick files and folders in the tree ('Add Files/Folders'), or drop them on 7z-Encryptor.bat to start with them in the list. Everything in the list goes into ONE encrypted file; folders keep their name and everything inside them. The originals are not changed or deleted."
-    Add-Help $p 105 357 'Save as' "Where the encrypted file goes, named after the first item (or Encrypted-<date> for several items). Items dropped on 7z-Encryptor.bat are saved next to the first one. Otherwise, with 'Remember settings' ticked, the folder of your last encrypted file is remembered (in 7z-Encryptor.settings.json next to the script, so it travels with the folder) and used next time; until then it goes next to the first item. 'Browse...' picks another place or name. An existing file is never overwritten."
-    Add-Help $p 305 494 'Show in folder / Send by email' ("After a file is encrypted: 'Show in folder' opens its folder with the file selected; 'Send by email' attaches it to a new email.`r`n`r`nEmail with (remembered when 'Remember settings' is ticked):`r`n- Send to > Mail recipient: the classic Windows way, the same as right-click > Send to > Mail recipient. Needs a classic mail program (Outlook classic, Thunderbird, ...). If there is none (for example only the new Outlook or webmail), the Windows Share window opens instead.`r`n- Windows Share: the Windows 10 / 11 Share window (mail apps, nearby sharing, ...).`r`n- Choose program...: a mail program you pick (Outlook and Thunderbird get the file attached; other programs are started with the file name).`r`n- mailto: Windows' own mailto: link: your default mail program opens a new email to the address you type (several: separate them with ; ; or leave it empty). The file name is in the subject. A mailto: link cannot attach files, so the file is also selected in Explorer: drag it into the email.`r`n`r`nSend the password some other way (phone, text message), never in the same email.")
+    Add-Help $p 245 7 'Files and folders' "Tick files and folders in the tree ('Add Files/Folders'), or drop them on 7z-Encryptor.bat to start with them in the list. 'Remove' takes the selected lines out (Ctrl / Shift + click to select several). An item already in the list is not added twice.`r`n`r`nEverything in the list goes into ONE encrypted file; folders keep their name and everything inside them. The originals are not changed or deleted."
+    Add-Help $p 105 357 'Save as' "Where the encrypted file goes, named after the first item (or Encrypted-<date> for several items). Items dropped on 7z-Encryptor.bat are saved next to the first one. Otherwise, with 'Remember settings' ticked, the folder of your last encrypted file is remembered (in 7z-Encryptor.settings.json next to the script, so it travels with the folder) and used next time; until then it goes next to the first item. 'Browse...' picks another place or name.`r`n`r`nAn existing file is never overwritten: the name filled in skips taken names ('name (2)'), and a name you type that is taken is refused. It cannot be saved inside a folder that is being encrypted. A share needs the share folder: \\server\share\file.7z."
+    Add-Help $p 305 494 'Show in folder / Send by email' ("After a file is encrypted: 'Show in folder' opens its folder with the file selected; 'Send by email' starts a new email with it, the way chosen below.`r`n`r`nEmail with (remembered when 'Remember settings' is ticked):`r`n- Send to > Mail recipient: the classic Windows way, the same as right-click > Send to > Mail recipient. Needs a classic mail program (Outlook classic, Thunderbird, ...). If there is none (for example only the new Outlook or webmail), the Windows Share window opens instead.`r`n- Windows Share: the Windows 10 / 11 Share window (mail apps, nearby sharing, ...).`r`n- Choose program...: a mail program you pick (Outlook and Thunderbird get the file attached; other programs are started with the file name).`r`n- mailto: Windows' own mailto: link. Your default mail program opens a new email to the address typed in the box, with the file name as the subject. Separate several addresses with a semicolon, or leave the box empty. A mailto: link cannot attach files, so the file is also selected in Explorer: drag it into the email.`r`n`r`nSend the password some other way (phone, text message), never in the same email.")
 
     $w.Add.add_Click({ $x = $script:MainUi; foreach ($q in (Show-FolderPicker $true)) { if (-not @($x.List.Items | Where-Object { $_ -ieq $q }).Count) { [void]$x.List.Items.Add($q) } }; Update-MainOut })
     $w.Remove.add_Click({ $x = $script:MainUi; foreach ($s in @($x.List.SelectedItems)) { $x.List.Items.Remove($s) }; Update-MainOut })
