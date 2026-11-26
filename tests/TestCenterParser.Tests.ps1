@@ -54,3 +54,32 @@ Describe 'Get-TestSummary' {
     }
     It 'nothing at all: no file, no lines' { $r = Get-TestSummary $t (Join-Path $TestDrive 'none'); $r.File | Should Be $null; @($r.Lines).Count | Should Be 0 }
 }
+Describe 'Parser edge cases' {
+    It 'should match FAILED case-insensitively' {
+        $lines = @('FAILED: something went wrong')
+        $result = Get-FlaggedLines @{ Id = 'automation'; Kind = 'ps' } $lines
+        $result.Count | Should Be 1
+    }
+
+    It 'should not flag a line expected for its own test Id' {
+        $lines = @('winget is not available')
+        $result = Get-FlaggedLines @{ Id = 'automation'; Kind = 'ps' } $lines
+        $result.Count | Should Be 0
+    }
+
+    It 'should return FAILED for pester kind with nonzero exit code and empty lines' {
+        $status = Get-ResultStatus @{ Id = 'x'; Kind = 'pester' } 1 @()
+        $status | Should Be 'FAILED'
+    }
+
+    It 'should return OK when lines only contain expected patterns' {
+        $lines = @('winget is not available', '3 task(s) ran: 2 passed, 1 failed')
+        $status = Get-ResultStatus @{ Id = 'automation'; Kind = 'ps' } 0 $lines
+        $status | Should Be 'OK'
+    }
+
+    It 'should return NO SUMMARY for non-pester kind with empty lines' {
+        $status = Get-ResultStatus @{ Id = 'x'; Kind = 'ps' } 0 @()
+        $status | Should Be 'NO SUMMARY'
+    }
+}
