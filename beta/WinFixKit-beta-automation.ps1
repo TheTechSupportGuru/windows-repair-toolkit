@@ -1,4 +1,4 @@
-# Version 1.9 beta-automation 2 (2026-11-21). What changed: docs/changes/WinFixKit-1.9-beta-automation.2.md
+# Version 1.9 beta-automation 3 (2026-11-25). What changed: docs/changes/WinFixKit-1.9-beta-automation.3.md
 # BETA: WinFixKit 1.9 + an Automation tab (a queue of status checks and fixes), ported from WinSuperTool 1.9.
 # RULE: Automation changes are made in WinSuperTool FIRST and then ported here - never the other way round.
 #       The ported code is the AUTOMATION region near the end of this file; see CONTRIBUTING.md.
@@ -3222,7 +3222,540 @@ $script:Form.Add_FormClosing({
     if ($script:Auto.Running -and -not (Ask "The automation queue is still running (task $($script:Auto.Index + 1) of $(@($script:AutoRun).Count)).${NL}${NL}Close anyway? The current task's window keeps running, but the rest of the queue does not run and there is no final summary." 'Automation running' 'Warning' 'Button2')) { $_.Cancel = $true; return }
     try { $timer.Stop() } catch {}
 })
-#endregion AUTOMATION
+#endregion AUTOMATION
+
+#region REGISTRY-CHANGES
+# =============================================================================================
+#  REGISTRY CHANGES (beta-automation 3) - which registry keys changed since a date, what they were before, and
+#  revert the ones you tick, one by one, with a backup of each key first. Nothing changes before "Revert ticked items".
+#  Old values come from the reference sources the tech ticks, in the order they set:
+#    shadow  - a Volume Shadow Copy / restore point from before the date (its registry files, loaded read-only)
+#    backups - WinFixKit's own registry backups (RegistryBackups\Keys)
+#    iso     - a Windows ISO / install.wim / install.esd: the registry of a fresh install of the chosen edition
+#    defaults- the built-in list of known Windows 10 / 11 defaults below (value absent = default for most policies)
+# =============================================================================================
+try {
+    Add-Type -Namespace WfkReg -Name Native -MemberDefinition @'
+[DllImport("advapi32.dll", CharSet = CharSet.Unicode)] public static extern int RegQueryInfoKey(Microsoft.Win32.SafeHandles.SafeRegistryHandle hKey, System.Text.StringBuilder lpClass, IntPtr lpcClass, IntPtr lpReserved, IntPtr lpcSubKeys, IntPtr lpcMaxSubKeyLen, IntPtr lpcMaxClassLen, IntPtr lpcValues, IntPtr lpcMaxValueNameLen, IntPtr lpcMaxValueLen, IntPtr lpcbSecurityDescriptor, out long lpftLastWriteTime);
+'@ -ErrorAction Stop
+} catch {}
+# last write time of an open RegistryKey ([datetime]::MinValue when it cannot be read)
+function Get-RegKeyTime([Microsoft.Win32.RegistryKey]$k) {
+    $ft = 0L
+    try { if ([WfkReg.Native]::RegQueryInfoKey($k.Handle, $null, [IntPtr]::Zero, [IntPtr]::Zero, [IntPtr]::Zero, [IntPtr]::Zero, [IntPtr]::Zero, [IntPtr]::Zero, [IntPtr]::Zero, [IntPtr]::Zero, [IntPtr]::Zero, [ref]$ft) -eq 0) { return [datetime]::FromFileTime($ft) } } catch {}
+    return [datetime]::MinValue
+}
+# areas: what each tick box scans (HKLM: / HKCU: paths, every subkey below them)
+$RegAreas = [ordered]@{
+    'Power'                   = @('HKLM:\SYSTEM\CurrentControlSet\Control\Power', 'HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Power')
+    'UAC and administrator'   = @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System', 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon')
+    'Defender and firewall'   = @('HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender', 'HKLM:\SOFTWARE\Policies\Microsoft\WindowsFirewall', 'HKLM:\SYSTEM\CurrentControlSet\Services\SharedAccess\Parameters\FirewallPolicy')
+    'SMB, Remote Desktop, printing' = @('HKLM:\SYSTEM\CurrentControlSet\Services\LanmanWorkstation\Parameters', 'HKLM:\SYSTEM\CurrentControlSet\Services\LanmanServer\Parameters', 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server', 'HKLM:\SYSTEM\CurrentControlSet\Control\Print', 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers', 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\LanmanWorkstation')
+    'Policies'                = @('HKLM:\SOFTWARE\Policies', 'HKCU:\Software\Policies', 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies', 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Policies')
+    'Run and startup keys'    = @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run', 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce', 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run', 'HKCU:\Software\Microsoft\Windows\CurrentVersion\RunOnce', 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Run')
+    'Services (start types)'  = @('HKLM:\SYSTEM\CurrentControlSet\Services')
+    'Explorer and Start'      = @('HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced', 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Advanced', 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Search')
+    'Software (all programs - slow, many changes)' = @('HKLM:\SOFTWARE', 'HKCU:\Software')
+    'Everything (slow, very many changes)' = @('HKLM:\SOFTWARE', 'HKLM:\SYSTEM\CurrentControlSet', 'HKCU:\Software')
+}
+$RegAreasOff = @('Software (all programs - slow, many changes)', 'Everything (slow, very many changes)')
+$RegSkip = '\\(Classes|WOW6432Node\\Classes|Microsoft\\Windows\\CurrentVersion\\Installer|Microsoft\\Windows NT\\CurrentVersion\\Prefetcher)(\\|$)'
+# built-in defaults: Path, Name, Kind, Data ($null = the value does not exist by default), OS ('all', '10', '11')
+# Only settings whose default is certain are listed; for everything else use a shadow copy or a Windows ISO.
+$RegDefaults = @(
+    # UAC
+    , @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System', 'EnableLUA', 'DWord', 1, 'all')
+    , @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System', 'ConsentPromptBehaviorAdmin', 'DWord', 5, 'all')
+    , @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System', 'ConsentPromptBehaviorUser', 'DWord', 3, 'all')
+    , @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System', 'PromptOnSecureDesktop', 'DWord', 1, 'all')
+    , @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System', 'EnableInstallerDetection', 'DWord', 1, 'all')
+    , @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System', 'EnableVirtualization', 'DWord', 1, 'all')
+    , @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System', 'EnableSecureUIAPaths', 'DWord', 1, 'all')
+    , @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System', 'ValidateAdminCodeSignatures', 'DWord', 0, 'all')
+    , @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System', 'FilterAdministratorToken', 'DWord', $null, 'all')
+    , @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System', 'LocalAccountTokenFilterPolicy', 'DWord', $null, 'all')
+    # sign-in
+    , @('HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon', 'Shell', 'String', 'explorer.exe', 'all')
+    , @('HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon', 'Userinit', 'String', ($env:SystemRoot + '\system32\userinit.exe,'), 'all')
+    , @('HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon', 'AutoAdminLogon', 'String', '0', 'all')
+    , @('HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon', 'DefaultPassword', 'String', $null, 'all')
+    # Remote Desktop
+    , @('HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server', 'fDenyTSConnections', 'DWord', 1, 'all')
+    , @('HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp', 'UserAuthentication', 'DWord', 1, 'all')
+    , @('HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp', 'PortNumber', 'DWord', 3389, 'all')
+    # printing (WinFixKit's Printer Share Fixes change these)
+    , @('HKLM:\SYSTEM\CurrentControlSet\Control\Print', 'RpcAuthnLevelPrivacyEnabled', 'DWord', $null, 'all')
+    , @('HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers\PointAndPrint', 'RestrictDriverInstallationToAdministrators', 'DWord', $null, 'all')
+    , @('HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers\PointAndPrint', 'NoWarningNoElevationOnInstall', 'DWord', $null, 'all')
+    , @('HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Printers\PointAndPrint', 'UpdatePromptSettings', 'DWord', $null, 'all')
+    # SMB policies (WinFixKit's SMB 24H2 fix changes these)
+    , @('HKLM:\SOFTWARE\Policies\Microsoft\Windows\LanmanWorkstation', 'AllowInsecureGuestAuth', 'DWord', $null, 'all')
+    # firewall
+    , @('HKLM:\SYSTEM\CurrentControlSet\Services\SharedAccess\Parameters\FirewallPolicy\DomainProfile', 'EnableFirewall', 'DWord', 1, 'all')
+    , @('HKLM:\SYSTEM\CurrentControlSet\Services\SharedAccess\Parameters\FirewallPolicy\StandardProfile', 'EnableFirewall', 'DWord', 1, 'all')
+    , @('HKLM:\SYSTEM\CurrentControlSet\Services\SharedAccess\Parameters\FirewallPolicy\PublicProfile', 'EnableFirewall', 'DWord', 1, 'all')
+    , @('HKLM:\SOFTWARE\Policies\Microsoft\WindowsFirewall\DomainProfile', 'EnableFirewall', 'DWord', $null, 'all')
+    , @('HKLM:\SOFTWARE\Policies\Microsoft\WindowsFirewall\StandardProfile', 'EnableFirewall', 'DWord', $null, 'all')
+    , @('HKLM:\SOFTWARE\Policies\Microsoft\WindowsFirewall\PublicProfile', 'EnableFirewall', 'DWord', $null, 'all')
+    # Defender, SmartScreen, Windows Update policies: not set by default
+    , @('HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender', 'DisableAntiSpyware', 'DWord', $null, 'all')
+    , @('HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender', 'DisableAntiVirus', 'DWord', $null, 'all')
+    , @('HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection', 'DisableRealtimeMonitoring', 'DWord', $null, 'all')
+    , @('HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection', 'DisableBehaviorMonitoring', 'DWord', $null, 'all')
+    , @('HKLM:\SOFTWARE\Policies\Microsoft\Windows\System', 'EnableSmartScreen', 'DWord', $null, 'all')
+    , @('HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate', 'WUServer', 'String', $null, 'all')
+    , @('HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate', 'WUStatusServer', 'String', $null, 'all')
+    , @('HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate', 'DisableWindowsUpdateAccess', 'DWord', $null, 'all')
+    , @('HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU', 'NoAutoUpdate', 'DWord', $null, 'all')
+    , @('HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU', 'AUOptions', 'DWord', $null, 'all')
+    , @('HKLM:\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate\AU', 'UseWUServer', 'DWord', $null, 'all')
+    # power: fast startup
+    , @('HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Power', 'HiberbootEnabled', 'DWord', 1, 'all')
+    # Explorer
+    , @('HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced', 'Hidden', 'DWord', 2, 'all')
+    , @('HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced', 'HideFileExt', 'DWord', 1, 'all')
+    , @('HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced', 'ShowSuperHidden', 'DWord', 0, 'all')
+) + @(
+    # service start types (2 = automatic, 3 = manual, 4 = disabled)
+    foreach ($s in @(@('wuauserv', 3), @('WinDefend', 2), @('mpssvc', 2), @('BFE', 2), @('Spooler', 2), @('LanmanServer', 2), @('LanmanWorkstation', 2), @('Dhcp', 2), @('Dnscache', 2),
+                     @('EventLog', 2), @('W32Time', 3), @('Audiosrv', 2), @('AudioEndpointBuilder', 2), @('RemoteRegistry', 4), @('TermService', 3), @('CryptSvc', 2), @('TrustedInstaller', 3),
+                     @('msiserver', 3), @('Schedule', 2), @('Winmgmt', 2), @('RpcSs', 2), @('DcomLaunch', 2), @('Themes', 2), @('ShellHWDetection', 2), @('fdPHost', 3), @('FDResPub', 3), @('SSDPSRV', 3), @('upnphost', 3))) {
+        , @("HKLM:\SYSTEM\CurrentControlSet\Services\$($s[0])", 'Start', 'DWord', $s[1], 'all')
+    }
+)
+$RegSourceInfo = [ordered]@{
+    shadow   = 'Shadow copy / restore point'
+    backups  = 'WinFixKit registry backups'
+    iso      = 'Windows ISO / install image'
+    defaults = 'Built-in defaults list'
+}
+$RegStateFile = Join-Path $script:RootDir 'registry-changes.json'
+function Get-RegSourceState {
+    $s = @{ Order = @('shadow', 'backups', 'iso', 'defaults'); On = @('shadow', 'backups', 'iso', 'defaults') }
+    try { if (Test-Path -LiteralPath $RegStateFile) { $j = Get-Content -LiteralPath $RegStateFile -Raw | ConvertFrom-Json; if (@($j.Order).Count -eq 4) { $s.Order = @($j.Order); $s.On = @($j.On) } } } catch {}
+    $s
+}
+function Save-RegSourceState($order, $on) { try { @{ Order = @($order); On = @($on) } | ConvertTo-Json | Set-Content -LiteralPath $RegStateFile -Encoding UTF8 } catch {} }
+
+# ---- reading the registry: current values, and a reference hive loaded under HKLM\WFK_REF_* ----
+function ConvertTo-RegNet([string]$p) {   # 'HKLM:\X' -> hive + subkey
+    if ($p -match '^HKLM:\\?(.*)$') { return @([Microsoft.Win32.Registry]::LocalMachine, $Matches[1]) }
+    if ($p -match '^HKCU:\\?(.*)$') { return @([Microsoft.Win32.Registry]::CurrentUser, $Matches[1]) }
+    throw "unsupported path $p"
+}
+function Get-RegValues([string]$path) {   # @{ name = @{ Kind; Data } }, or $null when the key does not exist
+    $h, $sub = ConvertTo-RegNet $path
+    $k = $null; try { $k = $h.OpenSubKey($sub, $false) } catch {}
+    if (-not $k) { return $null }
+    try {
+        $r = @{}
+        foreach ($n in $k.GetValueNames()) { $r[$n] = @{ Kind = $k.GetValueKind($n).ToString(); Data = $k.GetValue($n, $null, 'DoNotExpandEnvironmentNames') } }
+        return $r
+    } finally { $k.Close() }
+}
+# every key below the roots whose last write is on or after $since; progress via $onProgress, stops when $script:RegCancel
+function Get-ChangedRegKeys([string[]]$roots, [datetime]$since, [scriptblock]$onProgress = $null, [int]$max = 400000) {
+    $found = New-Object Collections.ArrayList; $script:RegScanned = 0
+    foreach ($root in ($roots | Select-Object -Unique)) {
+        $h, $sub = ConvertTo-RegNet $root
+        $stack = New-Object Collections.Stack; $stack.Push($sub)
+        while ($stack.Count -and -not $script:RegCancel -and $script:RegScanned -lt $max) {
+            $s = $stack.Pop()
+            $k = $null; try { $k = $h.OpenSubKey($s, $false) } catch {}
+            if (-not $k) { continue }
+            try {
+                $script:RegScanned++
+                if ((Get-RegKeyTime $k) -ge $since) { [void]$found.Add(($root.Substring(0, 5) + '\' + $s)) }
+                foreach ($c in $k.GetSubKeyNames()) { $cp = if ($s) { "$s\$c" } else { $c }; if (('\' + $cp) -notmatch $RegSkip) { $stack.Push($cp) } }
+            } catch {} finally { $k.Close() }
+            if ($onProgress -and ($script:RegScanned % 500) -eq 0) { & $onProgress }
+        }
+    }
+    @($found | Select-Object -Unique)
+}
+# where a live key lives inside a loaded reference: SOFTWARE / SYSTEM (CurrentControlSet -> the hive's current set) / the user hive
+function Get-RefPath([string]$livePath, $ref) {
+    if ($livePath -match '^HKLM:\\SOFTWARE(\\.*)?$') { if ($ref.Software) { return "HKLM:\$($ref.Software)$($Matches[1])" } }
+    elseif ($livePath -match '^HKLM:\\SYSTEM\\CurrentControlSet(\\.*)?$') { if ($ref.System) { return "HKLM:\$($ref.System)\$($ref.ControlSet)$($Matches[1])" } }
+    elseif ($livePath -match '^HKLM:\\SYSTEM(\\.*)?$') { if ($ref.System) { return "HKLM:\$($ref.System)$($Matches[1])" } }
+    elseif ($livePath -match '^HKCU:(\\.*)?$') { if ($ref.User) { return "HKLM:\$($ref.User)$($Matches[1])" } }
+    return $null
+}
+# copies SOFTWARE, SYSTEM and a user hive out of a Windows folder (shadow copy or mounted image) and loads them read-only
+function Mount-RefHives([string]$winRoot, [string]$userHive, [string]$tag) {
+    $tmp = Join-Path $env:TEMP "wfk-ref-$tag"; [void][IO.Directory]::CreateDirectory($tmp)
+    $ref = @{ Tag = $tag; Temp = $tmp; Loaded = @(); ControlSet = 'ControlSet001' }
+    foreach ($h in @(@('SOFTWARE', "$winRoot\Windows\System32\config\SOFTWARE", 'Software'), @('SYSTEM', "$winRoot\Windows\System32\config\SYSTEM", 'System'), @('USER', $userHive, 'User'))) {
+        if (-not $h[1]) { continue }
+        $copy = Join-Path $tmp $h[0]
+        cmd.exe /c "copy /y `"$($h[1])`" `"$copy`"" 2>&1 | Out-Null
+        if (-not (Test-Path -LiteralPath $copy)) { continue }
+        $name = "WFK_REF_$($tag)_$($h[0])"
+        & reg.exe load "HKLM\$name" "$copy" 2>&1 | Out-Null
+        if ($LASTEXITCODE -eq 0) { $ref[$h[2]] = $name; $ref.Loaded += $name }
+    }
+    if ($ref.System) { try { $cur = (Get-ItemProperty -LiteralPath "HKLM:\$($ref.System)\Select" -ErrorAction Stop).Current; $ref.ControlSet = 'ControlSet{0:D3}' -f [int]$cur } catch {} }
+    $ref
+}
+function Dismount-RefHives($ref) {
+    if (-not $ref) { return }
+    [GC]::Collect(); [GC]::WaitForPendingFinalizers()
+    foreach ($n in @($ref.Loaded)) { & reg.exe unload "HKLM\$n" 2>&1 | Out-Null }
+    Remove-Item -LiteralPath $ref.Temp -Recurse -Force -ErrorAction SilentlyContinue
+}
+# shadow copies of the system drive, newest first
+function Get-SystemShadowCopies {
+    try {
+        $vol = (Get-CimInstance Win32_Volume -Filter "DriveLetter='$($env:SystemDrive)'" -ErrorAction Stop).DeviceID
+        @(Get-CimInstance Win32_ShadowCopy -ErrorAction Stop | Where-Object { $_.VolumeName -eq $vol } | Sort-Object InstallDate -Descending |
+            ForEach-Object { [pscustomobject]@{ Device = $_.DeviceObject; Date = $_.InstallDate; Text = ('{0:yyyy-MM-dd HH:mm}' -f $_.InstallDate) } })
+    } catch { @() }
+}
+function Mount-ShadowRef($shadow) {
+    $link = Join-Path $env:TEMP 'wfk-shadow-link'
+    if (Test-Path -LiteralPath $link) { cmd.exe /c "rmdir `"$link`"" 2>&1 | Out-Null }
+    cmd.exe /c "mklink /d `"$link`" `"$($shadow.Device)\`"" 2>&1 | Out-Null
+    $user = $link + $env:USERPROFILE.Substring(2) + '\NTUSER.DAT'
+    try { $ref = Mount-RefHives $link $user 'SHADOW'; $ref.Name = "shadow copy $($shadow.Text)"; $ref }
+    finally { cmd.exe /c "rmdir `"$link`"" 2>&1 | Out-Null }
+}
+# a Windows ISO / WIM / ESD: the editions in it (Index, Name, Build)
+function Get-IsoImageFile([string]$path) {
+    $iso = $null; $img = $path
+    if ($path -like '*.iso') {
+        $iso = Mount-DiskImage -ImagePath $path -PassThru -ErrorAction Stop
+        $dl = ($iso | Get-Volume).DriveLetter
+        $img = @("${dl}:\sources\install.wim", "${dl}:\sources\install.esd") | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+        if (-not $img) { Dismount-DiskImage -ImagePath $path | Out-Null; throw 'No sources\install.wim or install.esd on this ISO.' }
+    }
+    $info = & dism.exe /English /Get-WimInfo "/WimFile:$img" 2>&1 | Out-String
+    $eds = @([regex]::Matches($info, '(?s)Index : (\d+)\s+Name : ([^\r\n]+)') | ForEach-Object { [pscustomobject]@{ Index = [int]$_.Groups[1].Value; Name = $_.Groups[2].Value.Trim() } })
+    @{ Iso = $(if ($iso) { $path } else { $null }); Image = $img; Editions = $eds }
+}
+function Mount-IsoRef($isoInfo, [int]$index, [scriptblock]$say) {
+    $mnt = Join-Path $env:TEMP 'wfk-iso-mount'; [void][IO.Directory]::CreateDirectory($mnt)
+    $img = $isoInfo.Image; $tmpWim = $null
+    try {
+        if ($img -like '*.esd') {   # an ESD cannot be mounted: export the one edition to a temporary WIM first (several minutes)
+            & $say 'Exporting the edition from install.esd (a few minutes)...'
+            $tmpWim = Join-Path $env:TEMP 'wfk-iso-edition.wim'; Remove-Item -LiteralPath $tmpWim -ErrorAction SilentlyContinue
+            & dism.exe /English /Export-Image "/SourceImageFile:$img" "/SourceIndex:$index" "/DestinationImageFile:$tmpWim" /Compress:fast 2>&1 | Out-Null
+            if ($LASTEXITCODE) { throw "dism /Export-Image failed (exit code $LASTEXITCODE)" }
+            $img = $tmpWim; $index = 1
+        }
+        & $say 'Mounting the image read-only...'
+        & dism.exe /English /Mount-Image "/ImageFile:$img" "/Index:$index" "/MountDir:$mnt" /ReadOnly 2>&1 | Out-Null
+        if ($LASTEXITCODE) { throw "dism /Mount-Image failed (exit code $LASTEXITCODE)" }
+        try { $ref = Mount-RefHives $mnt "$mnt\Users\Default\NTUSER.DAT" 'ISO' }   # copies the hives out, so the image can go at once
+        finally { & dism.exe /English /Unmount-Image "/MountDir:$mnt" /Discard 2>&1 | Out-Null }
+        $ref.Name = 'Windows install image'
+        $ref
+    } finally {
+        if ($tmpWim) { Remove-Item -LiteralPath $tmpWim -ErrorAction SilentlyContinue }
+        if ($isoInfo.Iso) { Dismount-DiskImage -ImagePath $isoInfo.Iso -ErrorAction SilentlyContinue | Out-Null }
+    }
+}
+# WinFixKit's own backups: the FIRST backup of each value is its original
+function Get-WfkBackupMap {
+    $map = @{}
+    foreach ($f in @(Get-ChildItem -LiteralPath $script:RegKeyDir -Filter *.json -ErrorAction SilentlyContinue | Sort-Object LastWriteTime)) {
+        try { $m = Get-Content -LiteralPath $f.FullName -Raw | ConvertFrom-Json } catch { continue }
+        if ($m.Type -ne 'Value') { continue }
+        $id = ("$($m.Key)|$($m.Name)").ToLower()
+        if (-not $map.ContainsKey($id)) { $map[$id] = @{ Exists = [bool]$m.Existed; Kind = $m.Kind; Data = $(if ($m.Kind -eq 'Binary' -and $m.Data) { [Convert]::FromBase64String([string]$m.Data) } else { $m.Data }) } }
+    }
+    $map
+}
+function Get-DefaultsMap {
+    $os = if ([Environment]::OSVersion.Version.Build -ge 22000) { '11' } else { '10' }
+    $map = @{}
+    foreach ($d in $RegDefaults) { if ($d[4] -eq 'all' -or $d[4] -eq $os) { $map[("$($d[0])|$($d[1])").ToLower()] = @{ Exists = ($null -ne $d[3]); Kind = $d[2]; Data = $d[3] } } }
+    $map
+}
+function Format-RegData($v) {
+    if ($null -eq $v) { return '(not set)' }
+    if (-not $v.Exists) { return '(not set)' }
+    $d = $v.Data
+    if ($d -is [byte[]]) { return 'hex: ' + (($d | Select-Object -First 24 | ForEach-Object { '{0:x2}' -f $_ }) -join ' ') + $(if ($d.Length -gt 24) { ' ...' } else { '' }) }
+    if ($d -is [array]) { return ($d -join ' | ') }
+    if ($v.Kind -in 'DWord', 'QWord') { return ('{0} (0x{0:x})' -f [int64]$d) }
+    [string]$d
+}
+function Test-RegSame($a, $b) {
+    if ([bool]$a.Exists -ne [bool]$b.Exists) { return $false }
+    if (-not $a.Exists) { return $true }
+    $x = $a.Data; $y = $b.Data
+    if ($x -is [array] -or $y -is [array]) { return ((@($x) -join "`n") -eq (@($y) -join "`n")) }
+    if ($a.Kind -in 'DWord', 'QWord' -or $b.Kind -in 'DWord', 'QWord') { try { return [int64]$x -eq [int64]$y } catch { return $false } }
+    return ([string]$x -ceq [string]$y)
+}
+# the rows of the results window: for each changed key, every value whose reference differs from now
+#   $sources = ordered list of @{ Id; Name; Ref (loaded hives) or Map (value table) }
+function Get-RegChangeRows([string[]]$keys, $sources, [hashtable]$times) {
+    $rows = New-Object Collections.ArrayList
+    foreach ($key in $keys) {
+        $now = Get-RegValues $key; if ($null -eq $now) { continue }
+        # value names to check: what is there now, plus what the hive references had
+        $names = @{}; foreach ($n in $now.Keys) { $names[$n] = 1 }
+        foreach ($s in $sources) { if ($s.Ref) { $rp = Get-RefPath $key $s.Ref; if ($rp) { $old = Get-RegValues $rp; if ($old) { foreach ($n in $old.Keys) { $names[$n] = 1 } } } } }
+        foreach ($n in $names.Keys) {
+            $cur = if ($now.ContainsKey($n)) { @{ Exists = $true; Kind = $now[$n].Kind; Data = $now[$n].Data } } else { @{ Exists = $false } }
+            $ref = $null; $src = $null
+            foreach ($s in $sources) {
+                if ($s.Ref) {
+                    $rp = Get-RefPath $key $s.Ref; if (-not $rp) { continue }
+                    $old = Get-RegValues $rp
+                    $ref = if ($old -and $old.ContainsKey($n)) { @{ Exists = $true; Kind = $old[$n].Kind; Data = $old[$n].Data } } else { @{ Exists = $false; KeyMissing = ($null -eq $old) } }
+                    $src = $s; break
+                } elseif ($s.Map) {
+                    $id = ("$key|$n").ToLower()
+                    if ($s.Map.ContainsKey($id)) { $ref = $s.Map[$id]; $src = $s; break }
+                }
+            }
+            if ($ref -and (Test-RegSame $cur $ref)) { continue }
+            # "did not exist before" from a whole-registry source is information only (apps and drivers add keys all the time);
+            # the defaults list and WinFixKit's backups name exact values, so those can be reverted
+            $canRevert = [bool]$ref -and ($ref.Exists -or $src.Id -in 'defaults', 'backups')
+            [void]$rows.Add([pscustomobject]@{ Revert = $false; CanRevert = $canRevert; Key = $key; Name = $(if ($n) { $n } else { '(Default)' }); RawName = $n
+                Current = (Format-RegData $cur); Old = $(if ($ref) { Format-RegData $ref } else { '(no reference)' }); Source = $(if ($src) { $src.Name } else { '-' })
+                Changed = $(if ($times -and $times.ContainsKey($key)) { '{0:yyyy-MM-dd HH:mm}' -f $times[$key] } else { '' }); Cur = $cur; Ref = $ref })
+        }
+    }
+    $rows
+}
+# revert one row: back the key up first (WinFixKit backup + a .reg in the chosen folder), then set or delete the value
+function Invoke-RegRevert($row, [string]$folder) {
+    $key = $row.Key; $n = $row.RawName
+    try {
+        if ($folder) {
+            [void][IO.Directory]::CreateDirectory($folder)
+            if (Test-Path -LiteralPath $key) {
+                $file = Join-Path $folder (('{0:yyyyMMdd-HHmmss}_' -f (Get-Date)) + (($key -replace '^HK(LM|CU):\\', '') -replace '[\\/:*?"<>| ]+', '_') + '.reg')
+                if ($file.Length -gt 240) { $file = Join-Path $folder (('{0:yyyyMMdd-HHmmss}_' -f (Get-Date)) + [Math]::Abs($key.GetHashCode()) + '.reg') }
+                if (-not (Test-Path -LiteralPath $file)) { & reg.exe export (ConvertTo-RegExePath $key) $file /y 2>&1 | Out-Null }
+            }
+        }
+        [void](Backup-RegValue $key $n 'Registry changes: revert')
+        $r = $row.Ref
+        if ($r.Exists) {
+            if (-not (Test-Path -LiteralPath $key)) { New-Item -Path $key -Force -ErrorAction Stop | Out-Null }
+            $val = $r.Data
+            switch ($r.Kind) { 'DWord' { $val = [int]$val } 'QWord' { $val = [int64]$val } 'MultiString' { $val = [string[]]@($val) } 'Binary' { $val = [byte[]]$val } default { $val = [string]$val } }
+            New-ItemProperty -LiteralPath $key -Name $n -Value $val -PropertyType $r.Kind -Force -ErrorAction Stop | Out-Null
+            return "Reverted: $key [$($row.Name)] = $($row.Old)"
+        } else {
+            if ((Test-Path -LiteralPath $key) -and ((Get-Item -LiteralPath $key).GetValueNames() -contains $n)) { Remove-ItemProperty -LiteralPath $key -Name $n -ErrorAction Stop }
+            return "Reverted: $key [$($row.Name)] removed (not set by default)"
+        }
+    } catch { return "FAILED: $key [$($row.Name)]: $($_.Exception.Message)" }
+}
+
+# ---- the results window: one row per changed value, tick Revert? yes / no ----
+function Show-RegChanges($rows) {
+    $f = New-Object Windows.Forms.Form; Set-WrtScaling $f
+    $f.Text = "Registry changes found ($(@($rows).Count))"; $f.Size = New-Object Drawing.Size(1150, 700); $f.MinimumSize = New-Object Drawing.Size(760, 460); $f.StartPosition = 'CenterParent'
+    $top = New-Object Windows.Forms.Panel; $top.Size = New-Object Drawing.Size($f.ClientSize.Width, 40); $top.Dock = 'Top'
+    $lf = New-Object Windows.Forms.Label; $lf.Text = 'Filter:'; $lf.Location = '8,11'; $lf.AutoSize = $true
+    $tf = New-Object Windows.Forms.TextBox; $tf.Location = '55,8'; $tf.Width = 260
+    $bAll = New-Object Windows.Forms.Button; $bAll.Text = 'Tick all shown'; $bAll.Location = '325,6'; $bAll.Size = '120,28'
+    $bNone = New-Object Windows.Forms.Button; $bNone.Text = 'Untick all'; $bNone.Location = '450,6'; $bNone.Size = '100,28'
+    $bDet = New-Object Windows.Forms.Button; $bDet.Text = 'Details'; $bDet.Location = '555,6'; $bDet.Size = '90,28'
+    $qh = New-Object Windows.Forms.Button; $qh.Text = '?'; $qh.Location = '650,6'; $qh.Size = '30,28'
+    $qh.Add_Click({ Show-Help 'Registry changes found' ("One row per registry value that differs from the reference. Revert? = tick to put the old value back.`r`n`r`n" +
+        "Old / default = the value in the reference source named in 'Source' ('(not set)' = the value did not exist there).`r`n`r`nGreyed rows are information only: the value is new compared with a whole-registry reference (programs and drivers add values all the time), or no reference knows it. They cannot be ticked.`r`n`r`n" +
+        "Rows that can be reverted are always listed first. Click a column header to sort, type in Filter to show only matching rows, double-click a row (or Details) for the full path and values.") })
+    $top.Controls.AddRange(@($lf, $tf, $bAll, $bNone, $bDet, $qh))
+    $bot = New-Object Windows.Forms.Panel; $bot.Size = New-Object Drawing.Size($f.ClientSize.Width, 84); $bot.Dock = 'Bottom'
+    $lb = New-Object Windows.Forms.Label; $lb.Text = 'Back up the original keys to:'; $lb.Location = '8,12'; $lb.AutoSize = $true
+    $tb = New-Object Windows.Forms.TextBox; $tb.Location = '190,9'; $tb.Width = 560; $tb.Text = $script:RegKeyDir; $tb.Anchor = 'Top,Left,Right'
+    $bb = New-Object Windows.Forms.Button; $bb.Text = 'Browse...'; $bb.Location = '760,7'; $bb.Size = '90,28'; $bb.Anchor = 'Top,Right'
+    $bh = New-Object Windows.Forms.Button; $bh.Text = '?'; $bh.Location = '855,7'; $bh.Size = '30,28'; $bh.Anchor = 'Top,Right'
+    $bh.Add_Click({ Show-Help 'Backup folder' ("Before a value is reverted, its whole key is exported to this folder as a .reg file (double-click it later to put the key back), and a summary of what was reverted is saved here.`r`n`r`nEvery revert is also backed up the usual WinFixKit way, so it appears in the Registry Backups tab with one-click restore. Default: WinFixKit's RegistryBackups\Keys folder.") })
+    $br = New-Object Windows.Forms.Button; $br.Text = 'Revert ticked items...'; $br.Location = '8,44'; $br.Size = '200,32'; $br.Font = New-Object Drawing.Font('Segoe UI', 9, [Drawing.FontStyle]::Bold)
+    $lc = New-Object Windows.Forms.Label; $lc.Location = '220,51'; $lc.AutoSize = $true
+    $bc = New-Object Windows.Forms.Button; $bc.Text = 'Close'; $bc.Location = '760,44'; $bc.Size = '125,32'; $bc.Anchor = 'Top,Right'; $bc.DialogResult = 'Cancel'
+    $bot.Controls.AddRange(@($lb, $tb, $bb, $bh, $br, $lc, $bc)); $f.CancelButton = $bc
+    $lv = New-Object Windows.Forms.ListView; $lv.Dock = 'Fill'; $lv.View = 'Details'; $lv.CheckBoxes = $true; $lv.FullRowSelect = $true; $lv.GridLines = $true; $lv.HideSelection = $false
+    foreach ($c in @(@('Revert?', 70), @('Key', 360), @('Value', 160), @('Current value', 170), @('Old / default value', 170), @('Source', 160), @('Key changed', 115))) { [void]$lv.Columns.Add($c[0], $c[1]) }
+    $f.Controls.Add($lv); $f.Controls.Add($top); $f.Controls.Add($bot)
+    $script:Rc = @{ Rows = @($rows); Sort = 1; Desc = $false; Filling = $false; Lv = $lv; Tf = $tf; Lc = $lc; Tb = $tb; F = $f }
+    function script:Update-RcList {
+        $script:Rc.Filling = $true; $script:Rc.Lv.BeginUpdate(); $script:Rc.Lv.Items.Clear()
+        $prop = @('Revert', 'Key', 'Name', 'Current', 'Old', 'Source', 'Changed')[$script:Rc.Sort]
+        $flt = $script:Rc.Tf.Text.Trim()
+        foreach ($r in @($script:Rc.Rows | Sort-Object -Property @{ Expression = { -not $_.CanRevert } }, @{ Expression = $prop; Descending = $script:Rc.Desc })) {
+            if ($flt -and -not ("$($r.Key) $($r.Name) $($r.Current) $($r.Old) $($r.Source)" -like "*$flt*")) { continue }
+            $it = New-Object Windows.Forms.ListViewItem($(if ($r.CanRevert) { 'yes / no' } else { 'info' }))
+            foreach ($v in $r.Key, $r.Name, $r.Current, $r.Old, $r.Source, $r.Changed) { [void]$it.SubItems.Add([string]$v) }
+            $it.Tag = $r; $it.Checked = $r.Revert
+            if (-not $r.CanRevert) { $it.ForeColor = [Drawing.Color]::Gray }
+            [void]$script:Rc.Lv.Items.Add($it)
+        }
+        $script:Rc.Lv.EndUpdate(); $script:Rc.Filling = $false
+        $script:Rc.Lc.Text = "$(@($script:Rc.Rows | Where-Object Revert).Count) ticked for revert, $($script:Rc.Lv.Items.Count) shown of $($script:Rc.Rows.Count)"
+    }
+    $script:Rc.Lv.Add_ItemCheck({ param($s, $e) if ($script:Rc.Filling) { return }; $r = $script:Rc.Lv.Items[$e.Index].Tag; if (-not $r.CanRevert) { $e.NewValue = 'Unchecked'; return }; $r.Revert = ($e.NewValue -eq 'Checked') })
+    $script:Rc.Lv.Add_ItemChecked({ if (-not $script:Rc.Filling) { $script:Rc.Lc.Text = "$(@($script:Rc.Rows | Where-Object Revert).Count) ticked for revert, $($script:Rc.Lv.Items.Count) shown of $($script:Rc.Rows.Count)" } })
+    $script:Rc.Lv.Add_ColumnClick({ param($s, $e) if ($script:Rc.Sort -eq $e.Column) { $script:Rc.Desc = -not $script:Rc.Desc } else { $script:Rc.Sort = $e.Column; $script:Rc.Desc = $false }; Update-RcList })
+    $script:Rc.Tf.Add_TextChanged({ Update-RcList })
+    $bAll.Add_Click({ foreach ($it in $script:Rc.Lv.Items) { if ($it.Tag.CanRevert) { $it.Tag.Revert = $true } }; Update-RcList })
+    $bNone.Add_Click({ foreach ($r in $script:Rc.Rows) { $r.Revert = $false }; Update-RcList })
+    $det = { $it = $script:Rc.Lv.SelectedItems | Select-Object -First 1; if (-not $it) { return }; $r = $it.Tag
+        Show-Help 'Registry value' ("Key:`r`n$($r.Key)`r`n`r`nValue: $($r.Name)`r`n`r`nCurrent:`r`n$($r.Current)$(if ($r.Cur.Exists) { "  ($($r.Cur.Kind))" })`r`n`r`nOld / default:`r`n$($r.Old)$(if ($r.Ref -and $r.Ref.Exists) { "  ($($r.Ref.Kind))" })`r`n`r`nSource: $($r.Source)`r`nKey last changed: $($r.Changed)`r`n`r`n$(if ($r.CanRevert) { 'Can be reverted.' } else { 'Information only - cannot be reverted.' })") }
+    $bDet.Add_Click($det); $lv.Add_DoubleClick($det)
+    $bb.Add_Click({ $d = New-Object Windows.Forms.FolderBrowserDialog; $d.Description = 'Where the original keys are backed up'; $d.ShowNewFolderButton = $true; if ($d.ShowDialog() -eq 'OK') { $script:Rc.Tb.Text = $d.SelectedPath } })
+    $br.Add_Click({
+        $sel = @($script:Rc.Rows | Where-Object Revert)
+        if (-not $sel.Count) { [void][Windows.Forms.MessageBox]::Show('Tick the rows to revert first (Revert? column).', 'Registry changes', 'OK', 'Information'); return }
+        if (-not (Test-Admin)) { [void][Windows.Forms.MessageBox]::Show('Reverting needs administrator rights. Use "Relaunch as Administrator" at the bottom of WinFixKit.', 'Registry changes', 'OK', 'Warning'); return }
+        $list = ($sel | Select-Object -First 25 | ForEach-Object { "  $($_.Key) [$($_.Name)]: $($_.Current)  ->  $($_.Old)" }) -join "`r`n"
+        if ($sel.Count -gt 25) { $list += "`r`n  ... and $($sel.Count - 25) more" }
+        $folder = $script:Rc.Tb.Text.Trim()
+        if ([Windows.Forms.MessageBox]::Show("Revert these $($sel.Count) value(s)?`r`n`r`n$list`r`n`r`nEach key is backed up first to:`r`n$folder", 'Revert registry values', 'YesNo', 'Warning', 'Button2') -ne 'Yes') { return }
+        $script:Rc.F.Cursor = 'WaitCursor'
+        $res = @(foreach ($r in $sel) { Invoke-RegRevert $r $folder })
+        $script:Rc.F.Cursor = 'Default'
+        try { [IO.File]::WriteAllText((Join-Path $folder ('Revert-summary-{0:yyyyMMdd-HHmmss}.txt' -f (Get-Date))), ("Registry changes reverted by WinFixKit on $(Get-Date)`r`n`r`n" + ($res -join "`r`n"))) } catch {}
+        foreach ($l in $res) { Write-Out $l $(if ($l -like 'FAILED*') { 'Red' } else { 'LightGreen' }) }
+        $ok = @($res | Where-Object { $_ -like 'Reverted*' }).Count
+        Show-Help 'Revert result' ("$ok of $($sel.Count) reverted.`r`n`r`n" + ($res -join "`r`n") + "`r`n`r`nBackups: $folder (and the Registry Backups tab). A restart may be needed for some settings.")
+        foreach ($r in $sel) { if ($res | Where-Object { $_ -like "Reverted: $($r.Key) ``[$($r.Name)``]*" }) { $r.Revert = $false; $r.CanRevert = $false; $r.Current = $r.Old + '  (reverted)' } }
+        Update-RcList; Update-RegBackupList
+    })
+    $f.Add_Load({ Move-WrtIntoView $this })
+    Update-RcList
+    [void]$f.ShowDialog($script:Form); $f.Dispose()
+}
+
+# ---- the tab ----
+$tpReg = New-Ctl TabPage @{ Text = 'Registry changes (beta)'; Padding = (New-Object System.Windows.Forms.Padding 6); AutoScroll = $true }
+$tpReg.Size = New-Object Drawing.Size(1100, 300)
+function New-RegCtl([string]$type, [string]$text, [int]$x, [int]$y, [int]$w, [int]$h) { $c = New-Object "System.Windows.Forms.$type"; if ($text) { $c.Text = $text }; $c.Location = New-Object Drawing.Point($x, $y); if ($w) { $c.Size = New-Object Drawing.Size($w, $h) } else { $c.AutoSize = $true }; $tpReg.Controls.Add($c); $c }
+function New-RegHelp([int]$x, [int]$y, [string]$title, [string]$text) { $b = New-RegCtl Button '?' $x $y 26 24; $b.Font = New-Object Drawing.Font('Segoe UI', 9, [Drawing.FontStyle]::Bold); $b.Tag = @($title, $text); $b.Add_Click({ Show-Help $this.Tag[0] $this.Tag[1] }); $tip.SetToolTip($b, 'Click for an explanation') }
+$bold = New-Object Drawing.Font('Segoe UI', 9, [Drawing.FontStyle]::Bold)
+$l = New-RegCtl Label 'BETA. Finds registry keys changed since a date, shows what they were before, and reverts only the values you tick (each key backed up first). Scanning changes nothing.' 8 8 1060 20; $l.ForeColor = [Drawing.Color]::FromArgb(200, 110, 0)
+$l = New-RegCtl Label 'Changed since' 8 38 0 0; $l.Font = $bold
+$dtRegSince = New-RegCtl DateTimePicker '' 120 35 130 24; $dtRegSince.Format = 'Short'; $dtRegSince.Value = (Get-Date).Date.AddDays(-7)
+New-RegHelp 255 35 'Changed since' 'Lists registry keys whose last change (the time Windows keeps for every key) is on or after this date. Windows itself changes many keys every day, so a short period and a few areas give the clearest list.'
+$l = New-RegCtl Label 'Areas to scan' 8 70 0 0; $l.Font = $bold
+$clbRegAreas = New-RegCtl CheckedListBox '' 8 92 330 175; $clbRegAreas.CheckOnClick = $true
+foreach ($a in $RegAreas.Keys) { [void]$clbRegAreas.Items.Add($a, ($RegAreasOff -notcontains $a)) }
+New-RegHelp 312 66 'Areas to scan' ("Which parts of the registry are scanned (every key below them):`r`n" + (($RegAreas.Keys | ForEach-Object { "  $_ - " + ($RegAreas[$_] -join ', ') }) -join "`r`n") + "`r`n`r`nSoftware and Everything are slow and list many harmless changes by programs: use them only when hunting something specific.")
+$l = New-RegCtl Label 'Reference sources (tried in this order; the first that knows a value wins)' 360 70 0 0; $l.Font = $bold
+$clbRegSrc = New-RegCtl CheckedListBox '' 360 92 430 100; $clbRegSrc.CheckOnClick = $true
+$btnRegUp = New-RegCtl Button 'Move up' 800 92 100 28; $btnRegDown = New-RegCtl Button 'Move down' 800 124 100 28; $btnRegReset = New-RegCtl Button 'Reset order' 800 156 100 28
+New-RegHelp 905 92 'Reference sources' ("Where the OLD value of each changed key comes from. Tick the sources to use; Move up / Move down set the order; the first source that knows a value is used, and the results show which one.`r`n`r`n" +
+    "Shadow copy / restore point - Windows' snapshot of the system drive from before the date (pick which one below): the real earlier registry. Needs System Protection or shadow copies on the drive.`r`n`r`n" +
+    "WinFixKit registry backups - the originals WinFixKit saved before its own fixes changed them.`r`n`r`n" +
+    "Windows ISO / install image - the registry of a fresh install of the edition you pick (download the ISO free from Microsoft; use the same version as this PC).`r`n`r`n" +
+    "Built-in defaults list - $(@($RegDefaults).Count) settings whose Windows 10 / 11 default is known for certain (UAC, sign-in, Remote Desktop, printing and SMB policies, firewall, Defender and Update policies, fast startup, Explorer, service start types).`r`n`r`nThe choice and order are remembered.")
+$l = New-RegCtl Label 'Shadow copy' 360 202 0 0
+$cboRegShadow = New-RegCtl ComboBox '' 450 199 340 24; $cboRegShadow.DropDownStyle = 'DropDownList'
+$l = New-RegCtl Label 'Windows ISO' 360 234 0 0
+$txtRegIso = New-RegCtl TextBox '' 450 231 340 24
+$btnRegIso = New-RegCtl Button 'ISO or WIM...' 800 229 100 28
+$l = New-RegCtl Label 'Edition' 360 266 0 0
+$cboRegEd = New-RegCtl ComboBox '' 450 263 340 24; $cboRegEd.DropDownStyle = 'DropDownList'
+New-RegHelp 905 229 'Windows ISO' ("Pick a Windows ISO, or an install.wim / install.esd, then the edition that matches this PC (Home, Pro ...). The tool mounts it read-only, copies out only its registry files and unmounts it again; nothing is written to the image.`r`n`r`nUse the same Windows version (for example 11 24H2) as this PC - a different build has different defaults, and you get a warning. An install.esd is converted first, which takes a few minutes. Needs administrator rights.")
+$btnRegScan = New-RegCtl Button 'Scan for changes' 300 32 200 30; $btnRegScan.Font = New-Object Drawing.Font('Segoe UI', 10, [Drawing.FontStyle]::Bold)
+$btnRegStop = New-RegCtl Button 'Stop' 505 32 70 30; $btnRegStop.Enabled = $false
+$lblRegStatus = New-RegCtl Label '' 615 39 490 20; $lblRegStatus.AutoEllipsis = $true; $lblRegStatus.ForeColor = [Drawing.Color]::DimGray
+$script:RegIso = $null
+function Update-RegSourceList {
+    $st = Get-RegSourceState
+    $sh = @(Get-SystemShadowCopies)
+    $cboRegShadow.Items.Clear(); foreach ($s in $sh) { [void]$cboRegShadow.Items.Add($s.Text) }; if ($sh.Count) { $cboRegShadow.SelectedIndex = 0 }
+    $script:RegShadows = $sh
+    $bk = @(Get-ChildItem -LiteralPath $script:RegKeyDir -Filter *.json -ErrorAction SilentlyContinue).Count
+    $status = @{
+        shadow   = $(if ($sh.Count) { "$($sh.Count) found, newest $($sh[0].Text)" } elseif (Test-Admin) { 'none found on ' + $env:SystemDrive } else { 'needs administrator rights to list' })
+        backups  = "$bk backup(s)"
+        iso      = $(if ($script:RegIso) { 'edition chosen below' } else { 'no ISO chosen - pick one below' })
+        defaults = "Windows $(if ([Environment]::OSVersion.Version.Build -ge 22000) { '11' } else { '10' }) list, $(@($RegDefaults).Count) entries"
+    }
+    $clbRegSrc.Items.Clear()
+    foreach ($id in $st.Order) { [void]$clbRegSrc.Items.Add([pscustomobject]@{ Id = $id; Text = "$($RegSourceInfo[$id])   ($($status[$id]))" }, ($st.On -contains $id)) }
+    $clbRegSrc.DisplayMember = 'Text'
+}
+function Save-RegSources { $o = @($clbRegSrc.Items | ForEach-Object { $_.Id }); $on = @($clbRegSrc.CheckedItems | ForEach-Object { $_.Id }); Save-RegSourceState $o $on }
+$clbRegSrc.Add_ItemCheck({ $this.BeginInvoke([Action]{ Save-RegSources }) | Out-Null })
+$move = { param($d) $i = $clbRegSrc.SelectedIndex; $j = $i + $d; if ($i -lt 0 -or $j -lt 0 -or $j -ge $clbRegSrc.Items.Count) { return }
+    $it = $clbRegSrc.Items[$i]; $ck = $clbRegSrc.GetItemChecked($i); $clbRegSrc.Items.RemoveAt($i); $clbRegSrc.Items.Insert($j, $it); $clbRegSrc.SetItemChecked($j, $ck); $clbRegSrc.SelectedIndex = $j; Save-RegSources }
+$btnRegUp.Add_Click({ & $move -1 }); $btnRegDown.Add_Click({ & $move 1 })
+$btnRegReset.Add_Click({ Save-RegSourceState @('shadow', 'backups', 'iso', 'defaults') @('shadow', 'backups', 'iso', 'defaults'); Update-RegSourceList })
+$btnRegIso.Add_Click({
+    $d = New-Object Windows.Forms.OpenFileDialog; $d.Filter = 'Windows ISO or image (*.iso;*.wim;*.esd)|*.iso;*.wim;*.esd'
+    if ($d.ShowDialog() -ne 'OK') { return }
+    if (-not (Test-Admin)) { [void][Windows.Forms.MessageBox]::Show('Reading a Windows ISO needs administrator rights. Use "Relaunch as Administrator".', 'Registry changes', 'OK', 'Warning'); return }
+    $script:Form.Cursor = 'WaitCursor'; $lblRegStatus.Text = 'Reading the editions in the image...'; [Windows.Forms.Application]::DoEvents()
+    try {
+        $info = Get-IsoImageFile $d.FileName
+        if ($info.Iso) { Dismount-DiskImage -ImagePath $info.Iso -ErrorAction SilentlyContinue | Out-Null }   # mounted again when scanning
+        $script:RegIso = @{ Path = $d.FileName; Editions = $info.Editions }
+        $txtRegIso.Text = $d.FileName; $cboRegEd.Items.Clear(); foreach ($e in $info.Editions) { [void]$cboRegEd.Items.Add("$($e.Index): $($e.Name)") }
+        $mine = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -ErrorAction SilentlyContinue).ProductName
+        $pick = 0; for ($i = 0; $i -lt $info.Editions.Count; $i++) { if ($mine -and $info.Editions[$i].Name -eq ($mine -replace '^Windows 10', 'Windows 1')) { $pick = $i } elseif ($mine -and $mine -match ($info.Editions[$i].Name -replace '^Windows 1\d ', '')) { $pick = $i } }
+        if ($cboRegEd.Items.Count) { $cboRegEd.SelectedIndex = $pick }
+        $lblRegStatus.Text = "$($info.Editions.Count) edition(s) found. Pick the one that matches this PC ($mine)."
+        Update-RegSourceList
+    } catch { $lblRegStatus.Text = 'Could not read the image: ' + $_.Exception.Message }
+    finally { $script:Form.Cursor = 'Default' }
+})
+$btnRegStop.Add_Click({ $script:RegCancel = $true })
+$btnRegScan.Add_Click({
+    $areas = @($clbRegAreas.CheckedItems); if (-not $areas.Count) { [void][Windows.Forms.MessageBox]::Show('Tick at least one area to scan.', 'Registry changes', 'OK', 'Information'); return }
+    $srcIds = @($clbRegSrc.CheckedItems | ForEach-Object { $_.Id }); if (-not $srcIds.Count) { [void][Windows.Forms.MessageBox]::Show('Tick at least one reference source.', 'Registry changes', 'OK', 'Information'); return }
+    $since = $dtRegSince.Value.Date; $script:RegCancel = $false
+    $btnRegScan.Enabled = $false; $btnRegStop.Enabled = $true; $script:Form.Cursor = 'WaitCursor'
+    $say = { param($t) $lblRegStatus.Text = $t; Write-Out "Registry changes: $t" 'LightSkyBlue'; [Windows.Forms.Application]::DoEvents() }
+    $loaded = @()
+    try {
+        $roots = @($areas | ForEach-Object { $RegAreas[$_] }) | Select-Object -Unique
+        & $say "Scanning $($roots.Count) registry area(s) for keys changed since $($since.ToString('yyyy-MM-dd'))..."
+        $keys = @(Get-ChangedRegKeys $roots $since { $lblRegStatus.Text = "Scanning... $($script:RegScanned) keys checked"; [Windows.Forms.Application]::DoEvents() })
+        if ($script:RegCancel) { & $say 'Stopped.'; return }
+        $times = @{}; foreach ($k in $keys) { $h, $sub = ConvertTo-RegNet $k; $kk = $h.OpenSubKey($sub, $false); if ($kk) { $times[$k] = Get-RegKeyTime $kk; $kk.Close() } }
+        & $say "$($keys.Count) changed key(s) out of $($script:RegScanned) checked. Loading the reference sources..."
+        $sources = @()
+        foreach ($id in $srcIds) {
+            try {
+                switch ($id) {
+                    'shadow' {
+                        if (-not (Test-Admin)) { & $say 'Shadow copy skipped: needs administrator rights.'; continue }
+                        $sh = $script:RegShadows | Where-Object { $_.Text -eq [string]$cboRegShadow.SelectedItem } | Select-Object -First 1
+                        if (-not $sh) { & $say 'Shadow copy skipped: none chosen.'; continue }
+                        if ($sh.Date -gt $since) { & $say "Note: the chosen shadow copy ($($sh.Text)) is newer than the date - changes made before it will not show." }
+                        $ref = Mount-ShadowRef $sh; $loaded += $ref; $sources += @{ Id = 'shadow'; Name = $RegSourceInfo.shadow + " $($sh.Text)"; Ref = $ref }
+                    }
+                    'backups' { $sources += @{ Id = 'backups'; Name = $RegSourceInfo.backups; Map = (Get-WfkBackupMap) } }
+                    'iso' {
+                        if (-not $script:RegIso -or $cboRegEd.SelectedIndex -lt 0) { & $say 'Windows ISO skipped: no ISO / edition chosen.'; continue }
+                        if (-not (Test-Admin)) { & $say 'Windows ISO skipped: needs administrator rights.'; continue }
+                        $ed = $script:RegIso.Editions[$cboRegEd.SelectedIndex]
+                        $info = Get-IsoImageFile $script:RegIso.Path
+                        $ref = Mount-IsoRef $info $ed.Index $say; $loaded += $ref
+                        try { $isoBuild = (Get-ItemProperty "HKLM:\$($ref.Software)\Microsoft\Windows NT\CurrentVersion" -ErrorAction Stop).CurrentBuild; $myBuild = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion').CurrentBuild
+                            if ($isoBuild -ne $myBuild) { & $say "WARNING: the ISO is build $isoBuild, this PC is build $myBuild - defaults can differ." } } catch {}
+                        $sources += @{ Id = 'iso'; Name = "$($RegSourceInfo.iso) ($($ed.Name))"; Ref = $ref }
+                    }
+                    'defaults' { $sources += @{ Id = 'defaults'; Name = $RegSourceInfo.defaults; Map = (Get-DefaultsMap) } }
+                }
+            } catch { & $say "Source '$($RegSourceInfo[$id])' could not be loaded: $($_.Exception.Message)" }
+        }
+        if (-not $sources.Count) { & $say 'No reference source could be used - nothing to compare with.'; return }
+        & $say 'Comparing values...'
+        $rows = @(Get-RegChangeRows $keys $sources $times)
+        & $say "$($keys.Count) changed key(s), $($rows.Count) value(s) differ from the reference, $(@($rows | Where-Object CanRevert).Count) can be reverted."
+    } finally {
+        foreach ($r in $loaded) { Dismount-RefHives $r }
+        $btnRegScan.Enabled = $true; $btnRegStop.Enabled = $false; $script:Form.Cursor = 'Default'
+    }
+    if ($rows -and $rows.Count) { Show-RegChanges $rows } elseif (-not $script:RegCancel) { [void][Windows.Forms.MessageBox]::Show('No value differs from the reference sources.', 'Registry changes', 'OK', 'Information') }
+})
+New-RegHelp 580 35 'Scan for changes' ("Scans the ticked areas for keys changed since the date, loads the ticked reference sources (read-only) and lists every value that differs, in a window where you tick what to revert. Scanning itself changes nothing.`r`n`r`nShadow copies and ISOs need administrator rights; without them those sources are skipped.")
+$script:Tabs.TabPages.Add($tpReg)
+$script:Form.Add_Shown({ try { Update-RegSourceList } catch {} })
+#endregion REGISTRY-CHANGES
 
 
 # Bottom bar
@@ -3272,5 +3805,5 @@ $script:Form.Add_Shown({
     Write-Out "Data folder (logs, reports, registry backups): $script:RootDir" 'LightGray'
 })
 
-Initialize-WrtWindow $script:Form @($tpAuto) 900 600
+Initialize-WrtWindow $script:Form @($tpAuto, $tpReg) 900 600
 [void]$script:Form.ShowDialog()

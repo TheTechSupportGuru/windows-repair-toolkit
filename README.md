@@ -28,7 +28,7 @@ Windows marks downloaded files as blocked: right-click the zip > **Properties** 
 ## New in 1.9.1
 
 - **Backup Script Builder 1.0**, a new tool for [FreeFileSync](https://freefilesync.org/) backups (see [below](#backup-script-builder)).
-- **Betas to try** (in the latest release, under "Betas"): **WinFixKit with an Automation tab** (beta-automation 2: a queue of its status checks and fixes, each with a pass / fail result) and **Test Center beta 3**. The 8 tools are unchanged from 1.9 ([V1.9.1](docs/changes/V1.9.1.md)).
+- **Betas to try** (in the latest release, under "Betas"): **WinFixKit with Automation and Registry changes tabs** (beta-automation 3: a queue of its status checks and fixes, each with a pass / fail result; and find registry changes since a date and revert only the ones you tick) and **Test Center beta 3**. The 8 tools are unchanged from 1.9 ([V1.9.1](docs/changes/V1.9.1.md)).
 
 ## New in 1.9
 
@@ -103,7 +103,7 @@ On every tab:
 
 The registry is backed up before each fix, with one-click restore. Folders are renamed instead of deleted where possible, so fixes can be undone. Logs, reports and backups go to `Desktop\WinFixKit`.
 
-**Beta:** WinFixKit with an **Automation** tab (a queue of up to 10 status checks and fixes, each with a pass / fail result, a final summary and an HTML report) is in the latest release as WinFixKit-v1.9-beta-automation.2.zip. Notes: [beta-automation 2](docs/changes/WinFixKit-1.9-beta-automation.2.md).
+**Beta:** WinFixKit with an **Automation** tab (a queue of up to 10 status checks and fixes, each with a pass / fail result, a final summary and an HTML report) and a **Registry changes** tab (registry keys changed since a date, compared with a shadow copy, WinFixKit's backups, a Windows ISO or a built-in defaults list; tick the values to revert, each key backed up first) is in the latest release as WinFixKit-v1.9-beta-automation.3.zip. Notes: [beta-automation 3](docs/changes/WinFixKit-1.9-beta-automation.3.md).
 
 ### Individual tools
 
@@ -225,7 +225,7 @@ The other scripts in `tests/` are the admin and windowed test runs used on the V
 
 ```
 tools/            the current scripts and launchers (v1.9.1), incl. the generated no-AI edition
-beta/             the current beta: WinFixKit 1.9 beta-automation (WinFixKit with an Automation tab)
+beta/             the current beta: WinFixKit 1.9 beta-automation (WinFixKit with Automation and Registry changes tabs)
 build/            Build-NoAIEdition.ps1 (generates the no-AI edition), Promote-Beta.ps1 (makes a beta stable)
 docs/changes/     what each version fixed (V1.2 ... V1.9.1, the 1.9 betas, Test Center and Backup Script Builder)
 docs/testing/     the test plan, results of each phase, and the v1.6 code review

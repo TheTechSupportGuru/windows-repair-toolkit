@@ -46,9 +46,11 @@ Describe 'W1 WinFixKit beta-automation: the file' {
     It 'changes nothing else of WinFixKit: outside the Automation region only the header, title and window set-up differ' -Skip:(-not $HasBeta) {
         $stable = @([IO.File]::ReadAllLines((Join-Path $Root 'tools\WinFixKit.ps1')))
         $s = [regex]::Match($BetaText, '(?m)^#region AUTOMATION\r?$').Index; $e = [regex]::Match($BetaText, '(?m)^#endregion AUTOMATION').Index
-        $outside = @(($BetaText.Substring(0, $s) + $BetaText.Substring($e + '#endregion AUTOMATION'.Length)) -split '\r?\n')
+        $outside = ($BetaText.Substring(0, $s) + $BetaText.Substring($e + '#endregion AUTOMATION'.Length))
+        # the Registry changes tab (beta-automation 3) is its own region too
+        $outside = @([regex]::Replace($outside, '(?s)\r?\n#region REGISTRY-CHANGES.*?#endregion REGISTRY-CHANGES', '') -split '\r?\n')
         $cmp = @(Compare-Object $stable $outside | Where-Object { $_.InputObject.Trim() })
-        $allowed = '^# (Version 1\.9|BETA:|RULE:|\s+The ported code)|WinFixKit \(BETA: Automation\)|WinFixKit - Windows Troubleshooting Power Tool|^Initialize-WrtWindow \$script:Form @\((\$tpAuto)?\) 900 600$'
+        $allowed = '^# (Version 1\.9|BETA:|RULE:|\s+The ported code)|WinFixKit \(BETA: Automation\)|WinFixKit - Windows Troubleshooting Power Tool|^Initialize-WrtWindow \$script:Form @\((\$tpAuto(, \$tpReg)?)?\) 900 600$'
         # fixes to WinFixKit itself found while testing the beta: each changed line is marked "(beta-automation N fix: ...)"
         $marked = @($cmp | Where-Object { $_.SideIndicator -eq '=>' -and $_.InputObject -match '\(beta-automation \d+ fix: ' })
         $other = @($cmp | Where-Object { $_.InputObject.Trim() -notmatch $allowed -and $_.InputObject -notmatch '\(beta-automation \d+ fix: ' })
@@ -144,4 +146,65 @@ Describe 'W3 the WinFixKit task list' {
         (Get-AutoWhyNot 'restore-point') | Should Be ''
     }
     if ($HasBeta) { Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue }
+}
+
+Describe 'W4 Registry changes tab (beta-automation 3) - safe tests on a throwaway HKCU key' {
+    if ($HasBeta) {
+        $tmp4 = Join-Path $env:TEMP ('wfk-reg-test-' + [guid]::NewGuid().ToString('N'))
+        $script:RootDir = $tmp4; $script:RegDir = "$tmp4\Reg"; $script:RegKeyDir = "$tmp4\Reg\Keys"; $script:RegFullDir = "$tmp4\Reg\Full"; [void][IO.Directory]::CreateDirectory($script:RegKeyDir)
+        foreach ($s in $BetaAst.EndBlock.Statements) { if ($s.Extent.Text -match 'Add-Type -Namespace WfkReg' -or $s.Extent.Text -match '^\$(RegAreas|RegSkip|RegDefaults|RegSourceInfo) *=') { . ([scriptblock]::Create($s.Extent.Text)) } }
+        foreach ($fn in $BetaAst.FindAll({ param($x) $x -is [Management.Automation.Language.FunctionDefinitionAst] -and $x.Name -in 'Get-RegKeyTime', 'ConvertTo-RegNet', 'Get-RegValues', 'Get-ChangedRegKeys', 'Get-RefPath', 'Get-DefaultsMap', 'Format-RegData', 'Test-RegSame', 'Get-RegChangeRows', 'Invoke-RegRevert', 'Backup-RegValue', 'Get-BackupId', 'Test-BackupPending', 'ConvertTo-RegExePath', 'Get-WfkBackupMap' }, $true)) { . ([scriptblock]::Create($fn.Extent.Text)) }
+        $tk = 'HKCU:\Software\WfkRegChangesTest'
+        Remove-Item $tk -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    It 'reads the last-change time of a key' -Skip:(-not $HasBeta) {
+        New-Item $tk -Force | Out-Null; New-ItemProperty $tk -Name Probe -Value 1 -PropertyType DWord -Force | Out-Null
+        $k = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Software\WfkRegChangesTest'); $tm = Get-RegKeyTime $k; $k.Close()
+        ((Get-Date) - $tm).TotalMinutes | Should BeLessThan 2
+    }
+    It 'the scan finds a key changed after the date and not one before it' -Skip:(-not $HasBeta) {
+        New-Item "$tk\Sub" -Force | Out-Null; New-ItemProperty "$tk\Sub" -Name X -Value 5 -PropertyType DWord -Force | Out-Null
+        @(Get-ChangedRegKeys @($tk) (Get-Date).AddMinutes(-2)) -contains "$tk\Sub" | Should Be $true
+        @(Get-ChangedRegKeys @($tk) (Get-Date).AddMinutes(5)).Count | Should Be 0
+    }
+    It 'every built-in default is well-formed and every area path is a registry path' -Skip:(-not $HasBeta) {
+        foreach ($d in $RegDefaults) {
+            $d[0] | Should Match '^HK(LM|CU):\\'
+            $d[2] | Should Match '^(DWord|QWord|String|ExpandString|MultiString|Binary)$'
+            if ($d[2] -eq 'DWord' -and $null -ne $d[3]) { $d[3] -is [int] | Should Be $true }
+            $d[4] | Should Match '^(all|10|11)$'
+        }
+        @($RegDefaults).Count | Should BeGreaterThan 60
+        foreach ($a in $RegAreas.Values) { foreach ($p in $a) { $p | Should Match '^HK(LM|CU):\\' } }
+    }
+    It 'maps live keys into a loaded reference hive (SOFTWARE, CurrentControlSet, user)' -Skip:(-not $HasBeta) {
+        $ref = @{ Software = 'WFK_REF_S_SOFTWARE'; System = 'WFK_REF_S_SYSTEM'; User = 'WFK_REF_S_USER'; ControlSet = 'ControlSet002' }
+        Get-RefPath 'HKLM:\SOFTWARE\Policies\X' $ref | Should Be 'HKLM:\WFK_REF_S_SOFTWARE\Policies\X'
+        Get-RefPath 'HKLM:\SYSTEM\CurrentControlSet\Services\Spooler' $ref | Should Be 'HKLM:\WFK_REF_S_SYSTEM\ControlSet002\Services\Spooler'
+        Get-RefPath 'HKCU:\Software\X' $ref | Should Be 'HKLM:\WFK_REF_S_USER\Software\X'
+    }
+    It 'lists a value that differs from the reference, can revert it, and the revert restores it with a backup first' -Skip:(-not $HasBeta) {
+        $map = @{ ("$tk\Sub|X").ToLower() = @{ Exists = $true; Kind = 'DWord'; Data = 1 }; ("$tk\Sub|Gone").ToLower() = @{ Exists = $false; Kind = 'DWord'; Data = $null } }
+        New-ItemProperty "$tk\Sub" -Name Gone -Value 7 -PropertyType DWord -Force | Out-Null
+        $rows = @(Get-RegChangeRows @("$tk\Sub") @(@{ Id = 'defaults'; Name = 'test list'; Map = $map }) @{})
+        $x = $rows | Where-Object Name -eq 'X'; $g = $rows | Where-Object Name -eq 'Gone'
+        $x.CanRevert | Should Be $true; $x.Old | Should Match '^1 '; $x.Current | Should Match '^5 '
+        $g.CanRevert | Should Be $true; $g.Old | Should Be '(not set)'
+        $bk = "$tmp4\chosen-backup-folder"
+        (Invoke-RegRevert $x $bk) | Should Match '^Reverted'
+        (Invoke-RegRevert $g $bk) | Should Match '^Reverted'
+        (Get-ItemProperty "$tk\Sub").X | Should Be 1
+        ((Get-Item "$tk\Sub").GetValueNames() -contains 'Gone') | Should Be $false
+        @(Get-ChildItem $bk -Filter *.reg).Count | Should BeGreaterThan 0
+        @(Get-ChildItem $script:RegKeyDir -Filter *.json).Count | Should Be 2
+    }
+    It 'a value that did not exist in a whole-registry reference is information only (not revertable)' -Skip:(-not $HasBeta) {
+        New-ItemProperty "$tk\Sub" -Name NewByApp -Value 'x' -PropertyType String -Force | Out-Null
+        $fakeRef = @{ User = 'WfkNoSuchHive'; Software = $null; System = $null }   # a reference that does not have the key
+        $rows = @(Get-RegChangeRows @("$tk\Sub") @(@{ Id = 'shadow'; Name = 'test shadow'; Ref = $fakeRef }) @{})
+        $r = $rows | Where-Object Name -eq 'NewByApp'
+        $r | Should Not BeNullOrEmpty
+        $r.CanRevert | Should Be $false
+    }
+    if ($HasBeta) { Remove-Item $tk -Recurse -Force -ErrorAction SilentlyContinue; Remove-Item $tmp4 -Recurse -Force -ErrorAction SilentlyContinue }
 }
