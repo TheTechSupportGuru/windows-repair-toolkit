@@ -177,17 +177,90 @@ $tests = {
         $cboTask.SelectedItem = $NewTaskText; $txtName.Text = 'zz-test bad'; $cboScript.Text = 'C:\does\not\exist.ffs_batch'
         Invoke-Click $btnSave
         Check 'a missing script is refused' (-not (Get-ScheduledTask -TaskPath $TaskFolder -TaskName 'zz-test bad' -ErrorAction SilentlyContinue) -and [FakeMsg]::Last -match 'exists')
+        # (1.1) Robocopy / Xcopy tasks: a .ps1 runs with PowerShell, a .bat with cmd, and both read back with their type
+        foreach ($c in @(@('Robocopy', 'BackupScript-Robocopy.ps1', 'powershell.exe'), @('Xcopy', 'BackupScript-Xcopy.bat', 'cmd.exe'))) {
+            $sp = Join-Path $tmp2 $c[1]; Set-Content $sp 'rem test'
+            $cboTask.SelectedItem = $NewTaskText; $cboType.SelectedItem = $c[0]; $txtName.Text = "zz-test $($c[0])"; $cboScript.Text = $sp; $cboFreq.SelectedItem = $FreqDaily
+            Check "$($c[0]) type hides the FreeFileSync.exe row" (-not $txtExe.Visible -and -not $lblExe.Visible)
+            Invoke-Click $btnSave
+            $t = Get-ScheduledTask -TaskPath $TaskFolder -TaskName "zz-test $($c[0])" -ErrorAction SilentlyContinue
+            Check "$($c[0]) task runs its script with $($c[2])" ($t -and $t.Actions[0].Execute -eq $c[2] -and $t.Actions[0].Arguments -like "*`"$sp`"" -and $t.Description -match $c[0]) ("$($t.Actions[0].Execute) $($t.Actions[0].Arguments) / " + [FakeMsg]::Last)
+            $cboTask.SelectedItem = $NewTaskText; $cboTask.SelectedItem = "zz-test $($c[0])"
+            Check "$($c[0]) task reads back as $($c[0]) with its script" ($cboType.SelectedItem -eq $c[0] -and $cboScript.Text -eq $sp) "$($cboType.SelectedItem) $($cboScript.Text)"
+        }
     } finally {
-        foreach ($k in 'zz-test button', 'zz-test renamed', 'zz-test bad') { Unregister-ScheduledTask -TaskPath $TaskFolder -TaskName $k -Confirm:$false -ErrorAction SilentlyContinue }
+        foreach ($k in 'zz-test button', 'zz-test renamed', 'zz-test bad', 'zz-test Robocopy', 'zz-test Xcopy') { Unregister-ScheduledTask -TaskPath $TaskFolder -TaskName $k -Confirm:$false -ErrorAction SilentlyContinue }
         Remove-Item -Recurse -Force $tmp2 -ErrorAction SilentlyContinue
     }
 
+    # ---- 5. (1.1) folder picker: user folders, OneDrive, junctions ----
+    $qf = @(Get-QuickFolders)
+    Check 'Quick picks list Desktop and Documents (wherever they really are)' (($qf.Name -contains 'Desktop') -and ($qf.Name -contains 'Documents')) (($qf | ForEach-Object { $_.Name + '=' + $_.Path }) -join '; ')
+    if ($env:OneDrive) { Check 'Quick picks list OneDrive' (@($qf | Where-Object { $_.Name -like 'OneDrive*' }).Count -gt 0) }
+    $jt = Join-Path $env:TEMP ('bsb-junction-' + (Get-Random)); New-Item -ItemType Directory -Force "$jt\real" | Out-Null
+    New-Item -ItemType Junction -Path "$jt\link" -Target "$jt\real" -ErrorAction SilentlyContinue | Out-Null
+    Check 'a real folder is listed in the picker' (-not (Test-SkipFolder (New-Object IO.DirectoryInfo "$jt\real")))
+    if (Test-Path "$jt\link") { Check 'a junction is still skipped (no loops)' (Test-SkipFolder (New-Object IO.DirectoryInfo "$jt\link")) }
+    cmd /c rmdir "$jt\link" 2>$null; Remove-Item $jt -Recurse -Force -ErrorAction SilentlyContinue
+
+    # ---- 6. (1.1) Robocopy / Xcopy scripts, run for real on test folders ----
+    $w = Join-Path $env:TEMP ('bsb-copy-' + (Get-Random)); New-Item -ItemType Directory -Force "$w\src\Docs\sub", "$w\src2\Pics", "$w\x" | Out-Null
+    'one' | Set-Content "$w\src\Docs\a.txt"; 'two' | Set-Content "$w\src\Docs\sub\b.txt"; 'pic' | Set-Content "$w\src2\Pics\p.txt"
+    # a second drive letter (subst, no admin needed) so the per-drive threads have two drives to run at once
+    $sd = @('Q', 'R', 'S', 'T') | Where-Object { -not (Test-Path "${_}:\") } | Select-Object -First 1
+    if ($sd) { subst "${sd}:" "$w\src2" | Out-Null }
+    $src2 = if ($sd) { "${sd}:\Pics" } else { "$w\src2\Pics" }
+    $robo = @($RoboSwitches | Where-Object On | ForEach-Object { $_.Key }); $xc = @($XcopySwitches | Where-Object On | ForEach-Object { $_.Key })
+    $cases = @(
+        @{ T = 'Robocopy'; F = 'ps1'; P = $false; L = @{ Enabled = $true; Mode = 'New'; Date = $true; Time = $true } }
+        @{ T = 'Robocopy'; F = 'bat'; P = $false; L = @{ Enabled = $true; Mode = 'Append' } }
+        @{ T = 'Robocopy'; F = 'ps1'; P = $true;  L = @{ Enabled = $true; Mode = 'Append' } }
+        @{ T = 'Robocopy'; F = 'bat'; P = $true;  L = @{ Enabled = $true; Mode = 'New'; Date = $true } }
+        @{ T = 'Xcopy';    F = 'ps1'; P = $false; L = @{ Enabled = $true; Mode = 'Append' } }
+        @{ T = 'Xcopy';    F = 'bat'; P = $false; L = @{ Enabled = $true; Mode = 'New'; Date = $true; Time = $true } }
+        @{ T = 'Xcopy';    F = 'bat'; P = $false; L = @{ Enabled = $false } }
+    )
+    $n = 0
+    foreach ($c in $cases) {
+        $n++; $root = "$w\dest$n\AutomaticFileBackups"
+        $sw = if ($c.T -eq 'Robocopy') { $robo | Where-Object { $_ -ne '/TEE' } } else { $xc }
+        $r = New-CopyScript $c.T $c.F @("$w\src\Docs", $src2) $root $sw $c.L $c.P $(if ($c.T -eq 'Robocopy') { 4 } else { 0 })
+        foreach ($d in $r.Dirs) { [void][IO.Directory]::CreateDirectory($d) }
+        if ($c.F -eq 'bat') { [IO.File]::WriteAllText($r.File, $r.Text, [Text.Encoding]::Default) } else { [IO.File]::WriteAllText($r.File, $r.Text, (New-Object Text.UTF8Encoding $true)) }
+        $label = "$($c.T) .$($c.F)" + $(if ($c.P) { ' per-drive threads' } else { '' }) + ' log ' + $(if ($c.L.Enabled) { $c.L.Mode } else { 'off' })
+        $runs = if ($c.L.Mode -eq 'Append') { 2 } else { 1 }
+        $code = 0
+        for ($k = 0; $k -lt $runs; $k++) {
+            if ($c.F -eq 'ps1') { $null = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $r.File 2>&1 } else { $null = & cmd.exe /c "`"$($r.File)`"" 2>&1 }
+            $code = $LASTEXITCODE
+        }
+        $copied = (Test-Path "$root\Current\Docs\a.txt") -and (Test-Path "$root\Current\Docs\sub\b.txt") -and (Test-Path "$root\Current\Pics\p.txt")
+        Check "$label : script runs and copies every folder (exit $code)" ($code -eq 0 -and $copied) ($r.File)
+        $logs = @(Get-ChildItem "$root\Logs" -Filter *.log -ErrorAction SilentlyContinue)
+        if (-not $c.L.Enabled) { Check "$label : no log written" ($logs.Count -eq 0) }
+        else {
+            $want = if ($c.P) { 2 } else { 1 }   # one log per drive when the drives run at the same time
+            Check "$label : log files ($want expected)" ($logs.Count -eq $want) (($logs.Name) -join ', ')
+            if ($c.L.Mode -eq 'New' -and $c.L.Date) { Check "$label : log name has the date" (@($logs | Where-Object { $_.Name -match '\d{4}-\d{2}-\d{2}' }).Count -eq $logs.Count) (($logs.Name) -join ', ') }
+            if ($c.L.Mode -eq 'Append' -and -not $c.P) {
+                $txt = Get-Content $logs[0].FullName -Raw
+                $hits = ([regex]::Matches($txt, $(if ($c.T -eq 'Robocopy') { 'Started :' } else { 'File\(s\) copied' }))).Count
+                Check "$label : the 2nd run appended to the same log" ($hits -ge 2) "$hits run(s) in the log"
+            }
+        }
+    }
+    if ($sd) { subst "${sd}:" /D | Out-Null }
+    Remove-Item $w -Recurse -Force -ErrorAction SilentlyContinue
+
     # ---- 4. layout ----
-    foreach ($page in $tabBuild, $tabSched) {
+    # the three "what to create" pages are alternatives in the same place: each is checked on its own
+    $typePages = @($pnlFfs, $pnlRobo, $pnlXcopy)
+    foreach ($page in @($tabBuild, $tabSched) + $typePages) {
         $ctl = @($page.Controls | Where-Object { $_.Visible -or $true })
         $bad = @()
         for ($i = 0; $i -lt $ctl.Count; $i++) { for ($j = $i + 1; $j -lt $ctl.Count; $j++) {
             $a = $ctl[$i]; $b = $ctl[$j]
+            if ($typePages -contains $a -and $typePages -contains $b) { continue }
             $ra = $a.Bounds; $rb2 = $b.Bounds
             if ($a -is [Windows.Forms.Label] -and $a.AutoSize) { $ra.Size = $a.PreferredSize }
             if ($b -is [Windows.Forms.Label] -and $b.AutoSize) { $rb2.Size = $b.PreferredSize }
@@ -195,9 +268,11 @@ $tests = {
             if ($b -is [Windows.Forms.CheckBox]) { $rb2.Size = $b.PreferredSize }
             if ($ra.IntersectsWith($rb2)) { $bad += "$($a.GetType().Name)'$($a.Text)' x $($b.GetType().Name)'$($b.Text)'" }
         } }
-        Check "no overlapping controls on '$($page.Text)'" ($bad.Count -eq 0) ($bad -join '; ')
+        $pname = if ($page.Text) { $page.Text } else { 'type page ' + ($typePages.IndexOf($page) + 1) }
+        Check "no overlapping controls on '$pname'" ($bad.Count -eq 0) ($bad -join '; ')
         $help = @($page.Controls | Where-Object { $_ -is [Windows.Forms.Button] -and $_.Text -eq '?' })
-        Check "'$($page.Text)' has ? buttons, all with help text" ($help.Count -ge 4 -and -not @($help | Where-Object { -not $_.Tag[1] }).Count) "$($help.Count) buttons"
+        $min = if ($typePages -contains $page) { 1 } elseif ($page -eq $tabBuild) { 3 } else { 4 }
+        Check "'$pname' has ? buttons, all with help text" ($help.Count -ge $min -and -not @($help | Where-Object { -not $_.Tag[1] }).Count) "$($help.Count) buttons"
     }
     Check 'FreeFileSync link points at https://freefilesync.org/' ($lnkFfs.Text.Substring($lnkFfs.LinkArea.Start, $lnkFfs.LinkArea.Length) -eq 'https://freefilesync.org/')
 }

@@ -1,5 +1,5 @@
-# Version 1.0 (2026-11-22)
-# Backup Script Builder - builds a FreeFileSync batch file (BackupScript.ffs_batch)
+# Version 1.1 (2026-11-25)
+# Backup Script Builder - builds a FreeFileSync batch file (BackupScript.ffs_batch), or a Robocopy / Xcopy script (.ps1 or .bat)
 # Windows Repair Toolkit - Copyright (C) 2026 TheTechSupportGuru - SPDX-License-Identifier: GPL-3.0-or-later
 # Free software under the GNU General Public License v3 or (at your option) any later version, WITHOUT ANY WARRANTY. See LICENSE
 # Uses only what ships with Windows (PowerShell 5.1 + WinForms).
@@ -247,8 +247,176 @@ function New-BatchXml([string[]]$sources, [string]$root, [int]$days) {
     return @{ Xml = $sb.ToString(); Dirs = @($current, $archive, $logs) + $pairDirs }
 }
 
+# ---------- Robocopy / Xcopy scripts (1.1) ----------
+# Switch lists: Key = what goes on the command line, Text = what the tech sees, On = ticked by default.
+$RoboSwitches = @(
+    @{ Key = '/E';        On = $true;  Text = '/E - copy all subfolders, including empty ones' }
+    @{ Key = '/MIR';      On = $false; Text = '/MIR - mirror: also DELETES backup files that were deleted from the source' }
+    @{ Key = '/Z';        On = $true;  Text = '/Z - restartable mode (resumes a large file after a network drop)' }
+    @{ Key = '/B';        On = $false; Text = '/B - backup mode: copies files you have no rights to (needs admin)' }
+    @{ Key = '/J';        On = $false; Text = '/J - unbuffered I/O, faster for very large files' }
+    @{ Key = '/COPY:DAT'; On = $true;  Text = '/COPY:DAT - copy data, attributes and timestamps' }
+    @{ Key = '/DCOPY:T';  On = $true;  Text = '/DCOPY:T - keep the folders'' timestamps' }
+    @{ Key = '/SEC';      On = $false; Text = '/SEC - also copy NTFS permissions' }
+    @{ Key = '/XO';       On = $false; Text = '/XO - skip files that are older than the copy in the backup' }
+    @{ Key = '/FFT';      On = $false; Text = '/FFT - 2-second time tolerance (backups to a NAS or FAT drive)' }
+    @{ Key = '/XJ';       On = $true;  Text = '/XJ - skip junction points (avoids endless loops)' }
+    @{ Key = '/R:2';      On = $true;  Text = '/R:2 - retry a failed file 2 times (default is 1 million)' }
+    @{ Key = '/W:5';      On = $true;  Text = '/W:5 - wait 5 seconds between retries (default is 30)' }
+    @{ Key = '/NP';       On = $true;  Text = '/NP - no progress percentages (keeps the log readable)' }
+    @{ Key = '/NDL';      On = $false; Text = '/NDL - do not list folder names in the log' }
+    @{ Key = '/NFL';      On = $false; Text = '/NFL - do not list file names in the log' }
+    @{ Key = '/TEE';      On = $true;  Text = '/TEE - show the output on screen as well as in the log' }
+    @{ Key = '/XD $RECYCLE.BIN "System Volume Information"'; On = $true; Text = '/XD - skip the Recycle Bin and System Volume Information folders' }
+)
+$XcopySwitches = @(
+    @{ Key = '/E'; On = $true;  Text = '/E - copy all subfolders, including empty ones' }
+    @{ Key = '/I'; On = $true;  Text = '/I - the destination is a folder (needed when copying several files)' }
+    @{ Key = '/H'; On = $true;  Text = '/H - also copy hidden and system files' }
+    @{ Key = '/C'; On = $true;  Text = '/C - keep going when a file fails' }
+    @{ Key = '/K'; On = $true;  Text = '/K - keep the read-only attribute' }
+    @{ Key = '/R'; On = $true;  Text = '/R - overwrite read-only files in the backup' }
+    @{ Key = '/Y'; On = $true;  Text = '/Y - overwrite without asking (needed for unattended runs)' }
+    @{ Key = '/D'; On = $true;  Text = '/D - only copy files that are newer than the backup copy' }
+    @{ Key = '/Q'; On = $false; Text = '/Q - do not list the file names' }
+    @{ Key = '/Z'; On = $false; Text = '/Z - restartable network copy' }
+    @{ Key = '/J'; On = $false; Text = '/J - unbuffered I/O, faster for very large files' }
+    @{ Key = '/O'; On = $false; Text = '/O - also copy file ownership and permissions' }
+    @{ Key = '/X'; On = $false; Text = '/X - also copy audit settings (includes /O)' }
+)
+# The drive (C:) or network share (\\server\share) a source folder is on: robocopy can copy one drive per thread
+function Get-DriveKey([string]$path) {
+    if ($path -match '^(\\\\[^\\]+\\[^\\]+)') { return $Matches[1].ToUpper() }
+    return $path.Substring(0, 2).ToUpper()
+}
+# Log file name: Backup-<Tool>[-<stamp>].log; the stamp is worked out when the script RUNS
+function Get-LogStampFormat($log) {
+    if ($log.Mode -ne 'New') { return '' }
+    if ($log.Date -and $log.Time) { return 'yyyy-MM-dd_HHmmss' }
+    if ($log.Date) { return 'yyyy-MM-dd' }
+    if ($log.Time) { return 'HHmmss' }
+    return ''
+}
+# Builds a Robocopy or Xcopy backup script.
+#   $tool 'Robocopy' / 'Xcopy', $format 'ps1' / 'bat', $switches = keys from the lists above,
+#   $log = @{ Enabled; Folder; Mode = 'Append' / 'New'; Date; Time }, $parallel = one thread per source drive (Robocopy), $mt = /MT threads (0 = off)
+function New-CopyScript([string]$tool, [string]$format, [string[]]$sources, [string]$root, [string[]]$switches, $log, [bool]$parallel = $false, [int]$mt = 0) {
+    $current = $root + '\Current'
+    $used = @{}; $pairs = @()
+    foreach ($s in $sources) { $pairs += , @($s.TrimEnd('\'), ($current + '\' + (Get-PairName $s $used))) }
+    if ($pairs.Count) { foreach ($p in $pairs) { if ($p[0] -match '^[A-Za-z]:$') { $p[0] = $p[0] + '\.' } } }
+    $isRobo = $tool -eq 'Robocopy'
+    $sw = @($switches)
+    if ($isRobo -and $mt -gt 0) { $sw += "/MT:$mt" }
+    $failAt = if ($isRobo) { 8 } else { 2 }     # robocopy: 0-7 = success; xcopy: 0-1 = success
+    $logOn = [bool]$log.Enabled
+    $logDir = if ($log.Folder) { $log.Folder.TrimEnd('\') } else { $root + '\Logs' }
+    $stampFmt = Get-LogStampFormat $log
+    $base = "Backup-$tool"
+    $groups = [ordered]@{}
+    foreach ($p in $pairs) { $k = Get-DriveKey $p[0]; if (-not $groups.Contains($k)) { $groups[$k] = @() }; $groups[$k] += , $p }
+    $useParallel = $isRobo -and $parallel -and $groups.Count -gt 1
+    $nl = "`r`n"; $sb = New-Object System.Text.StringBuilder
+    $head = "Backup script created by Backup Script Builder 1.1 ($tool, $(if ($useParallel) { 'one thread per source drive' } else { 'one copy at a time' })) on $(Get-Date -Format 'yyyy-MM-dd HH:mm')"
+    if ($format -eq 'ps1') {
+        $q = { param($t) "'" + ($t -replace "'", "''") + "'" }
+        [void]$sb.Append("# $head${nl}# Windows Repair Toolkit - https://github.com/TheTechSupportGuru/windows-repair-toolkit${nl}")
+        [void]$sb.Append("`$ErrorActionPreference = 'Continue'${nl}`$Switches = @(")
+        $swArgs = foreach ($x in $sw) { foreach ($part in [regex]::Matches($x, '"[^"]*"|\S+')) { & $q ($part.Value.Trim('"')) } }
+        [void]$sb.Append(($swArgs -join ', ') + ")${nl}")
+        if ($logOn) {
+            [void]$sb.Append("`$LogDir = $(& $q $logDir)${nl}[void][IO.Directory]::CreateDirectory(`$LogDir)${nl}")
+            $stampExpr = if ($stampFmt) { " + '-' + (Get-Date -Format '$stampFmt')" } else { '' }
+            [void]$sb.Append("`$Log = Join-Path `$LogDir ('$base'$stampExpr + '.log')${nl}")
+            if ($log.Mode -eq 'New' -and -not $stampFmt) { [void]$sb.Append("Remove-Item -LiteralPath `$Log -ErrorAction SilentlyContinue${nl}") }
+        } else { [void]$sb.Append("`$Log = `$null${nl}") }
+        # one function runs a list of pairs; the parallel version runs it once per drive in a background job
+        $fn = "function Invoke-Pairs(`$Pairs, `$Switches, `$Log) {${nl}    `$worst = 0${nl}    foreach (`$p in `$Pairs) {${nl}        `$src, `$dst = `$p -split '\|', 2${nl}"
+        if ($isRobo) { $fn += "        `$a = @(`$src, `$dst) + `$Switches${nl}        if (`$Log) { `$a += '/LOG+:' + `$Log }${nl}        & robocopy.exe @a${nl}" }
+        else {
+            $fn += "        `$a = @(`$src, (`$dst + '\')) + `$Switches${nl}"
+            $fn += "        if (`$Log) { & xcopy.exe @a 2>&1 | Tee-Object -FilePath `$Log -Append } else { & xcopy.exe @a }${nl}"
+        }
+        $fn += "        if (`$LASTEXITCODE -gt `$worst) { `$worst = `$LASTEXITCODE }${nl}    }${nl}    `$worst${nl}}${nl}"
+        [void]$sb.Append($fn)
+        if ($useParallel) {
+            [void]$sb.Append("`$Groups = [ordered]@{${nl}")
+            foreach ($k in $groups.Keys) { [void]$sb.Append("    $(& $q $k) = @(" + (($groups[$k] | ForEach-Object { & $q ($_[0] + '|' + $_[1]) }) -join ', ') + ")${nl}") }
+            [void]$sb.Append("}${nl}`$fnText = `${function:Invoke-Pairs}.ToString()${nl}`$jobs = foreach (`$k in `$Groups.Keys) {${nl}")
+            [void]$sb.Append("    `$gl = if (`$Log) { `$Log -replace '\.log`$', ('-' + (`$k -replace '[\\:]', '') + '.log') } else { `$null }${nl}")
+            [void]$sb.Append("    Start-Job -Name ('Backup ' + `$k) -ArgumentList `$fnText, @(`$Groups[`$k]), `$Switches, `$gl -ScriptBlock { param(`$f, `$Pairs, `$Switches, `$Log) . ([scriptblock]::Create('function Invoke-Pairs {' + `$f + '}')); Invoke-Pairs `$Pairs `$Switches `$Log | Select-Object -Last 1 }${nl}}${nl}")
+            [void]$sb.Append("Write-Host ('Copying ' + @(`$jobs).Count + ' drives at the same time...')${nl}`$codes = @(`$jobs | Wait-Job | Receive-Job)${nl}`$jobs | Remove-Job${nl}")
+            [void]$sb.Append("`$Worst = (`$codes | Measure-Object -Maximum).Maximum${nl}")
+        } else {
+            [void]$sb.Append("`$Pairs = @(${nl}" + (($pairs | ForEach-Object { '    ' + (& $q ($_[0] + '|' + $_[1])) }) -join ",${nl}") + "${nl})${nl}")
+            [void]$sb.Append("`$Worst = Invoke-Pairs `$Pairs `$Switches `$Log | Select-Object -Last 1${nl}")
+        }
+        [void]$sb.Append("if ([int]`$Worst -ge $failAt) { Write-Host ""Backup finished WITH ERRORS (exit code `$Worst) - see the log."" -ForegroundColor Red; exit 1 }${nl}")
+        [void]$sb.Append("Write-Host 'Backup finished.' -ForegroundColor Green${nl}exit 0${nl}")
+    } else {
+        $b = { param($t) $t -replace '%', '%%' }      # a % in a .bat line must be doubled
+        $swLine = $sw -join ' '
+        [void]$sb.Append("@echo off${nl}rem $head${nl}rem Windows Repair Toolkit - https://github.com/TheTechSupportGuru/windows-repair-toolkit${nl}setlocal${nl}")
+        if ($useParallel) { [void]$sb.Append("if ""%~1""==""group"" goto :group%~2${nl}") }
+        if ($logOn) {
+            [void]$sb.Append("set ""LOGDIR=$(& $b $logDir)""${nl}if not exist ""%LOGDIR%"" mkdir ""%LOGDIR%""${nl}")
+            if ($stampFmt) { [void]$sb.Append("for /f %%a in ('powershell -NoProfile -Command ""Get-Date -Format $stampFmt""') do set ""STAMP=-%%a""${nl}") } else { [void]$sb.Append("set ""STAMP=""${nl}") }
+            [void]$sb.Append("set ""LOG=%LOGDIR%\$base%STAMP%.log""${nl}")
+            if ($log.Mode -eq 'New' -and -not $stampFmt) { [void]$sb.Append("if exist ""%LOG%"" del ""%LOG%""${nl}") }
+        }
+        $line = {
+            param($p, $logVar)
+            if ($isRobo) { $l = "robocopy ""$(& $b $p[0])"" ""$(& $b $p[1])"" $swLine"; if ($logOn) { $l += " /LOG+:""%$logVar%""" } }
+            else { $l = "xcopy ""$(& $b $p[0])"" ""$(& $b $p[1])\"" $swLine"; if ($logOn) { $l += " >> ""%$logVar%"" 2>&1" } }
+            $l + "${nl}" + "if %ERRORLEVEL% GTR %WORST% set WORST=%ERRORLEVEL%${nl}"
+        }
+        if ($useParallel) {
+            [void]$sb.Append("set ""RUN=%RANDOM%%RANDOM%""${nl}echo Copying $($groups.Count) drives at the same time...${nl}")
+            $i = 0
+            foreach ($k in $groups.Keys) { $i++; [void]$sb.Append("start ""Backup $(& $b $k)"" /min cmd /c """"%~f0"" group $i ""%RUN%"" ""%LOG%""""${nl}") }
+            [void]$sb.Append(":wait${nl}ping -n 6 127.0.0.1 >nul${nl}")
+            for ($j = 1; $j -le $i; $j++) { [void]$sb.Append("if not exist ""%TEMP%\bsb-%RUN%-$j.done"" goto :wait${nl}") }
+            [void]$sb.Append("set WORST=0${nl}")
+            for ($j = 1; $j -le $i; $j++) { [void]$sb.Append("set /p CODE=<""%TEMP%\bsb-%RUN%-$j.done""${nl}if %CODE% GTR %WORST% set WORST=%CODE%${nl}del ""%TEMP%\bsb-%RUN%-$j.done""${nl}") }
+            [void]$sb.Append("goto :end${nl}")
+            $i = 0
+            foreach ($k in $groups.Keys) {
+                $i++
+                [void]$sb.Append(":group$i${nl}set WORST=0${nl}")
+                if ($logOn) { [void]$sb.Append("set ""GLOG=%~4""${nl}set ""GLOG=%GLOG:~0,-4%-$(($k -replace '[\\:]', '') -replace '%', '%%').log""${nl}") }
+                foreach ($p in $groups[$k]) { [void]$sb.Append((& $line $p 'GLOG')) }
+                [void]$sb.Append(">""%TEMP%\bsb-%~3-$i.done"" echo %WORST%${nl}exit /b 0${nl}")
+            }
+        } else {
+            [void]$sb.Append("set WORST=0${nl}")
+            foreach ($p in $pairs) { [void]$sb.Append((& $line $p 'LOG')) }
+        }
+        [void]$sb.Append(":end${nl}if %WORST% GEQ $failAt (echo Backup finished WITH ERRORS ^(exit code %WORST%^) - see the log. & exit /b 1)${nl}echo Backup finished.${nl}exit /b 0${nl}")
+    }
+    $dirs = @($current) + @($pairs | ForEach-Object { $_[1] }); if ($logOn) { $dirs += $logDir }
+    return @{ Text = $sb.ToString(); Dirs = $dirs; File = ($root + "\BackupScript-$tool.$format") }
+}
+
 # ---------- folder picker (checkbox tree) ----------
 function Add-DummyChild($node) { [void]$node.Nodes.Add((New-Object System.Windows.Forms.TreeNode '...')) }
+# Skip only real junctions and symbolic links (they can loop, like "Documents and Settings"). OneDrive marks its
+# folders as reparse points too (files on demand), and those must stay: 1.0 hid Desktop / Documents / OneDrive that way.
+function Test-SkipFolder([System.IO.DirectoryInfo]$di) {
+    if (-not ($di.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) { return $false }
+    try { $lt = (Get-Item -LiteralPath $di.FullName -Force -ErrorAction Stop).LinkType } catch { return $true }
+    return ($lt -in 'Junction', 'SymbolicLink')
+}
+# The user's own folders wherever they really are (moved into OneDrive or elsewhere), and every OneDrive folder
+function Get-QuickFolders {
+    $list = New-Object System.Collections.ArrayList; $seen = @{}
+    $add = { param($n, $p) if ($p -and -not $seen.ContainsKey($p.ToLower()) -and [IO.Directory]::Exists($p)) { $seen[$p.ToLower()] = 1; [void]$list.Add([pscustomobject]@{ Name = $n; Path = $p.TrimEnd('\') }) } }
+    foreach ($f in @(@('Desktop', 'Desktop'), @('Documents', 'MyDocuments'), @('Pictures', 'MyPictures'), @('Music', 'MyMusic'), @('Videos', 'MyVideos'))) { & $add $f[0] ([Environment]::GetFolderPath($f[1])) }
+    try { $dl = (Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders' -ErrorAction Stop).'{374DE290-123F-4565-9164-39C4925E467B}'; & $add 'Downloads' ([Environment]::ExpandEnvironmentVariables([string]$dl)) } catch {}
+    & $add 'OneDrive' $env:OneDrive; & $add 'OneDrive' $env:OneDriveConsumer; & $add 'OneDrive (work or school)' $env:OneDriveCommercial
+    foreach ($a in @(Get-ChildItem 'HKCU:\Software\Microsoft\OneDrive\Accounts' -ErrorAction SilentlyContinue)) { & $add ('OneDrive - ' + $a.PSChildName) ([string](Get-ItemProperty $a.PSPath -ErrorAction SilentlyContinue).UserFolder) }
+    & $add 'Your user folder' $env:USERPROFILE
+    return $list
+}
 
 function Expand-FolderNode($node) {
     if ($node.Nodes.Count -ne 1 -or $node.Nodes[0].Tag) { return }
@@ -259,8 +427,8 @@ function Expand-FolderNode($node) {
     foreach ($d in $dirs) {
         try {
             $di = New-Object System.IO.DirectoryInfo $d
-            # skip junctions/symlinks (avoids loops like "Documents and Settings")
-            if ($di.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { continue }
+            # skip junctions/symlinks (avoids loops like "Documents and Settings"), keep OneDrive folders
+            if (Test-SkipFolder $di) { continue }
             $child = New-Object System.Windows.Forms.TreeNode $di.Name
             $child.Tag = $d
             if ($di.Attributes -band [System.IO.FileAttributes]::Hidden) { $child.ForeColor = [System.Drawing.Color]::Gray }
@@ -290,6 +458,14 @@ function Show-FolderPicker {
     $tree.Font = New-Object System.Drawing.Font('Segoe UI', 10)
     $tree.add_BeforeExpand({ Expand-FolderNode $_.Node })
 
+    # quick picks first: the user's folders and OneDrive, wherever they really are
+    $quick = New-Object System.Windows.Forms.TreeNode 'Quick picks (your folders and OneDrive)'
+    $quick.NodeFont = New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
+    foreach ($q in Get-QuickFolders) {
+        $n = New-Object System.Windows.Forms.TreeNode ($q.Name + '  -  ' + $q.Path); $n.Tag = $q.Path
+        Add-DummyChild $n; [void]$quick.Nodes.Add($n)
+    }
+    [void]$tree.Nodes.Add($quick); $quick.Expand()
     foreach ($drv in [System.IO.DriveInfo]::GetDrives()) {
         if (-not $drv.IsReady) { continue }
         $label = $drv.Name.TrimEnd('\')
@@ -328,7 +504,7 @@ function Show-FolderPicker {
 # ---------- main window ----------
 $form = New-Object System.Windows.Forms.Form; Set-WrtScaling $form
 $form.Text = 'Backup Script Builder'
-$form.Size = New-Object System.Drawing.Size(580, 600)
+$form.Size = New-Object System.Drawing.Size(620, 950)
 $form.StartPosition = 'CenterScreen'
 $form.FormBorderStyle = 'FixedDialog'
 $form.MaximizeBox = $false
@@ -350,16 +526,16 @@ function Add-Help($parent, [int]$x, [int]$y, [string]$title, [string]$text) {
 # 1. Source folders
 $lblSrc = New-Object System.Windows.Forms.Label
 $lblSrc.Text = '1. Source folders'
-$lblSrc.Location = '15,12'; $lblSrc.AutoSize = $true
+$lblSrc.Location = '15,60'; $lblSrc.AutoSize = $true
 $lblSrc.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
 
 $lstSrc = New-Object System.Windows.Forms.ListBox
-$lstSrc.Location = '15,35'; $lstSrc.Size = '400,200'
+$lstSrc.Location = '15,83'; $lstSrc.Size = '400,150'
 $lstSrc.SelectionMode = 'MultiExtended'
 $lstSrc.HorizontalScrollbar = $true
 
 $btnAdd = New-Object System.Windows.Forms.Button
-$btnAdd.Text = 'Add Folders...'; $btnAdd.Location = '425,35'; $btnAdd.Size = '110,30'
+$btnAdd.Text = 'Add Folders...'; $btnAdd.Location = '425,83'; $btnAdd.Size = '110,30'
 $btnAdd.add_Click({
     foreach ($p in (Show-FolderPicker)) {
         if (-not $lstSrc.Items.Contains($p)) { [void]$lstSrc.Items.Add($p) }
@@ -367,7 +543,7 @@ $btnAdd.add_Click({
 })
 
 $btnRemove = New-Object System.Windows.Forms.Button
-$btnRemove.Text = 'Remove'; $btnRemove.Location = '425,72'; $btnRemove.Size = '110,30'
+$btnRemove.Text = 'Remove'; $btnRemove.Location = '425,120'; $btnRemove.Size = '110,30'
 $btnRemove.add_Click({
     $sel = @($lstSrc.SelectedItems)
     foreach ($s in $sel) { $lstSrc.Items.Remove($s) }
@@ -376,14 +552,14 @@ $btnRemove.add_Click({
 # 2. Destination folder
 $lblDst = New-Object System.Windows.Forms.Label
 $lblDst.Text = '2. Destination folder'
-$lblDst.Location = '15,250'; $lblDst.AutoSize = $true
+$lblDst.Location = '15,245'; $lblDst.AutoSize = $true
 $lblDst.Font = $lblSrc.Font
 
 $txtDest = New-Object System.Windows.Forms.TextBox
-$txtDest.Location = '15,273'; $txtDest.Size = '400,25'
+$txtDest.Location = '15,268'; $txtDest.Size = '400,25'
 
 $btnBrowse = New-Object System.Windows.Forms.Button
-$btnBrowse.Text = 'Browse...'; $btnBrowse.Location = '425,271'; $btnBrowse.Size = '110,28'
+$btnBrowse.Text = 'Browse...'; $btnBrowse.Location = '425,266'; $btnBrowse.Size = '110,28'
 $btnBrowse.add_Click({
     $fb = New-Object System.Windows.Forms.FolderBrowserDialog
     $fb.Description = 'Pick where the backup script and its folders will go'
@@ -403,7 +579,7 @@ function Get-DestRoot {
 }
 
 $lblPreview = New-Object System.Windows.Forms.Label
-$lblPreview.Location = '15,303'; $lblPreview.Size = '520,20'
+$lblPreview.Location = '15,296'; $lblPreview.Size = '520,20'
 $lblPreview.ForeColor = [System.Drawing.Color]::DimGray
 $lblPreview.AutoEllipsis = $true
 $txtDest.add_TextChanged({
@@ -414,17 +590,17 @@ $txtDest.add_TextChanged({
 # 3. Keep days
 $lblDays = New-Object System.Windows.Forms.Label
 $lblDays.Text = '3. Keep deleted/changed files for (days)'
-$lblDays.Location = '15,338'; $lblDays.AutoSize = $true
+$lblDays.Location = '5,8'; $lblDays.AutoSize = $true
 $lblDays.Font = $lblSrc.Font
 
 $numDays = New-Object System.Windows.Forms.NumericUpDown
-$numDays.Location = '15,361'; $numDays.Size = '100,25'
+$numDays.Location = '5,31'; $numDays.Size = '100,25'
 $numDays.Minimum = 1; $numDays.Maximum = 36500; $numDays.Value = 365
 
 # 4. Build
 $btnBuild = New-Object System.Windows.Forms.Button
-$btnBuild.Text = '4. Build Script'
-$btnBuild.Location = '15,410'; $btnBuild.Size = '485,45'
+$btnBuild.Text = '4. Build FreeFileSync batch'
+$btnBuild.Location = '15,778'; $btnBuild.Size = '485,45'
 $btnBuild.Font = New-Object System.Drawing.Font('Segoe UI', 11, [System.Drawing.FontStyle]::Bold)
 $btnBuild.add_Click({
     if ($lstSrc.Items.Count -eq 0) {
@@ -441,6 +617,7 @@ $btnBuild.add_Click({
             [void][System.Windows.Forms.MessageBox]::Show("The destination is inside the source folder $s.`r`nThat would back the backup up into itself. Pick another folder.", 'Backup Script Builder', 'OK', 'Error'); return
         }
     }
+    if (-not $rbFfs.Checked) { Invoke-BuildCopyScript $sources $root; return }
     $out = ($root + '\' + 'BackupScript.ffs_batch')
     if (Test-Path $out) {
         $a = [System.Windows.Forms.MessageBox]::Show("$out already exists.`r`nOverwrite it?", 'Backup Script Builder', 'YesNo', 'Question')
@@ -459,11 +636,106 @@ $btnBuild.add_Click({
     }
 })
 
+# ---------- 1.1: what to create (FreeFileSync batch, Robocopy or Xcopy script) ----------
+$lblType = New-Object System.Windows.Forms.Label
+$lblType.Text = 'What to create'; $lblType.Location = '15,8'; $lblType.AutoSize = $true; $lblType.Font = $lblSrc.Font
+$rbFfs = New-Object System.Windows.Forms.RadioButton;   $rbFfs.Text = 'Create FreeFileSync batch'; $rbFfs.Location = '15,30';  $rbFfs.Size = '180,24'; $rbFfs.Checked = $true
+$rbRobo = New-Object System.Windows.Forms.RadioButton;  $rbRobo.Text = 'Create Robocopy batch';    $rbRobo.Location = '200,30'; $rbRobo.Size = '170,24'
+$rbXcopy = New-Object System.Windows.Forms.RadioButton; $rbXcopy.Text = 'Create Xcopy batch';      $rbXcopy.Location = '375,30'; $rbXcopy.Size = '160,24'
+$pnlFfs = New-Object System.Windows.Forms.Panel; $pnlFfs.Location = '10,325'; $pnlFfs.Size = '570,445'
+
+# one page for Robocopy, one for Xcopy: script type, log options, (robocopy) threads, then all switches at the bottom
+$CopyUi = @{}
+function New-CopyPanel([string]$tool, $switchList) {
+    $p = New-Object System.Windows.Forms.Panel; $p.Location = '10,325'; $p.Size = '570,445'; $p.AutoScroll = $true; $p.Visible = $false
+    $u = @{ Panel = $p }
+    $mk = { param($type, $text, $loc, $size) $c = New-Object "System.Windows.Forms.$type"; if ($text) { $c.Text = $text }; $c.Location = $loc; if ($size) { $c.Size = $size } else { $c.AutoSize = $true }; $p.Controls.Add($c); $c }
+    $l = & $mk 'Label' 'Script type' '5,8' $null; $l.Font = $lblSrc.Font
+    $g1 = New-Object System.Windows.Forms.Panel; $g1.Location = '130,4'; $g1.Size = '300,26'; $p.Controls.Add($g1)
+    $u.RbPs1 = New-Object System.Windows.Forms.RadioButton; $u.RbPs1.Text = 'PowerShell (.ps1)'; $u.RbPs1.Location = '0,2'; $u.RbPs1.AutoSize = $true; $u.RbPs1.Checked = $true
+    $u.RbBat = New-Object System.Windows.Forms.RadioButton; $u.RbBat.Text = 'Batch file (.bat)'; $u.RbBat.Location = '150,2'; $u.RbBat.AutoSize = $true
+    $g1.Controls.AddRange(@($u.RbPs1, $u.RbBat))
+    $l = & $mk 'Label' 'Log' '5,40' $null; $l.Font = $lblSrc.Font
+    $u.ChkLog = & $mk 'CheckBox' 'Create a log of every run' '130,38' $null; $u.ChkLog.Checked = $true
+    [void](& $mk 'Label' 'Log folder' '5,70' $null)
+    $u.TxtLog = & $mk 'TextBox' '' '130,67' '300,25'
+    $u.BtnLog = & $mk 'Button' 'Browse...' '440,65' '100,28'
+    $u.LblLogHint = & $mk 'Label' 'Empty = the Logs folder next to the backup' '130,93' '400,18'; $u.LblLogHint.ForeColor = [System.Drawing.Color]::DimGray
+    $g2 = New-Object System.Windows.Forms.Panel; $g2.Location = '130,113'; $g2.Size = '420,26'; $p.Controls.Add($g2)
+    $u.RbAppend = New-Object System.Windows.Forms.RadioButton; $u.RbAppend.Text = 'Append to one log file'; $u.RbAppend.Location = '0,2'; $u.RbAppend.AutoSize = $true
+    $u.RbNew = New-Object System.Windows.Forms.RadioButton; $u.RbNew.Text = 'New log file every run'; $u.RbNew.Location = '190,2'; $u.RbNew.AutoSize = $true; $u.RbNew.Checked = $true
+    $g2.Controls.AddRange(@($u.RbAppend, $u.RbNew))
+    $u.ChkDate = & $mk 'CheckBox' 'Add the date to the log name' '150,141' $null; $u.ChkDate.Checked = $true
+    $u.ChkTime = & $mk 'CheckBox' 'Add the time' '370,141' $null; $u.ChkTime.Checked = $true
+    $y = 175
+    if ($tool -eq 'Robocopy') {
+        $l = & $mk 'Label' 'Threads' '5,177' $null; $l.Font = $lblSrc.Font
+        $g3 = New-Object System.Windows.Forms.Panel; $g3.Location = '130,173'; $g3.Size = '380,50'; $p.Controls.Add($g3)
+        $u.RbSingle = New-Object System.Windows.Forms.RadioButton; $u.RbSingle.Text = 'One drive at a time (single thread)'; $u.RbSingle.Location = '0,2'; $u.RbSingle.AutoSize = $true; $u.RbSingle.Checked = $true
+        $u.RbParallel = New-Object System.Windows.Forms.RadioButton; $u.RbParallel.Text = 'One thread per source drive (drives copy at the same time)'; $u.RbParallel.Location = '0,26'; $u.RbParallel.AutoSize = $true
+        $g3.Controls.AddRange(@($u.RbSingle, $u.RbParallel))
+        [void](& $mk 'Label' 'Threads per copy (/MT, 0 = off)' '150,230' $null)
+        $u.NumMt = & $mk 'NumericUpDown' '' '370,227' '70,25'; $u.NumMt.Minimum = 0; $u.NumMt.Maximum = 128; $u.NumMt.Value = 8
+        $y = 262
+    }
+    $l = & $mk 'Label' "$tool switches (ticked = used)" "5,$y" $null; $l.Font = $lblSrc.Font
+    $u.Switches = & $mk 'CheckedListBox' '' "5,$($y + 22)" '540,150'; $u.Switches.CheckOnClick = $true; $u.Switches.HorizontalScrollbar = $true
+    foreach ($s in $switchList) { [void]$u.Switches.Items.Add($s.Text, [bool]$s.On) }
+    $u.SwitchKeys = @($switchList | ForEach-Object { $_.Key })
+    $u.ChkLog.Tag = $u; $u.RbNew.Tag = $u; $u.BtnLog.Tag = $u
+    $sync = { $x = $this.Tag; foreach ($c in $x.TxtLog, $x.BtnLog, $x.RbAppend, $x.RbNew) { $c.Enabled = $x.ChkLog.Checked }; $x.ChkDate.Enabled = $x.ChkLog.Checked -and $x.RbNew.Checked; $x.ChkTime.Enabled = $x.ChkDate.Enabled }
+    $u.ChkLog.Add_CheckedChanged($sync); $u.RbNew.Add_CheckedChanged($sync)
+    $u.BtnLog.Add_Click({ $fb = New-Object System.Windows.Forms.FolderBrowserDialog; $fb.Description = 'Where the log files go'; $fb.ShowNewFolderButton = $true; if ($fb.ShowDialog() -eq 'OK') { $this.Tag.TxtLog.Text = $fb.SelectedPath }; $fb.Dispose() })
+    $hy = if ($tool -eq 'Robocopy') { 171 } else { -1 }
+    Add-Help $p 435 4 'Script type' ("PowerShell (.ps1) or a classic batch file (.bat) - both do the same copy. The task on the Schedule Task tab runs a .ps1 with PowerShell and a .bat with cmd.`r`n`r`nThe script is saved next to the backup as BackupScript-$tool.ps1 or .bat.")
+    Add-Help $p 440 36 'Log' ("Writes what $tool did on every run to a .log file. 'Log folder' empty = the Logs folder inside the backup folder.`r`n`r`n" +
+        "Append to one log file: every run adds to Backup-$tool.log.`r`nNew log file every run: a new file each time; tick date and / or time to put them in its name (Backup-$tool-2026-11-25_230000.log). With neither ticked, the one log file is replaced every run.")
+    if ($hy -gt 0) { Add-Help $p 520 $hy 'Threads' ("One drive at a time: every folder is copied one after the other.`r`n`r`nOne thread per source drive: folders on different drives (or network shares) copy at the same time, one copy per drive, each with its own log (Backup-Robocopy-...-C.log). Faster when the sources are on separate disks; no gain for folders on the same disk.`r`n`r`n" +
+        "Threads per copy (/MT): robocopy copies this many files at once inside each copy (1-128, 8 is robocopy's default). 0 = off. Not useful on a single slow USB disk.") }
+    Add-Help $p 520 ($y - 2) "$tool switches" ("Every switch that matters for a backup, with what it does. Ticked switches go into the script; the defaults are a safe backup that only adds and updates files.`r`n`r`n" +
+        $(if ($tool -eq 'Robocopy') { "/MIR also deletes files from the backup that were deleted from the source - only tick it if you want an exact mirror. /B needs the task to run as administrator." } else { "Keep /I and /Y ticked for unattended runs, or xcopy stops and asks a question." }))
+    $script:CopyUi[$tool] = $u
+    return $p
+}
+$pnlRobo = New-CopyPanel 'Robocopy' $RoboSwitches
+$pnlXcopy = New-CopyPanel 'Xcopy' $XcopySwitches
+function Get-BuildType { if ($rbRobo.Checked) { 'Robocopy' } elseif ($rbXcopy.Checked) { 'Xcopy' } else { 'FreeFileSync' } }
+$typeChanged = {
+    $t = Get-BuildType
+    $pnlFfs.Visible = $t -eq 'FreeFileSync'; $pnlRobo.Visible = $t -eq 'Robocopy'; $pnlXcopy.Visible = $t -eq 'Xcopy'
+    $btnBuild.Text = '4. Build ' + $(if ($t -eq 'FreeFileSync') { 'FreeFileSync batch' } else { "$t script" })
+    $r = Get-DestRoot
+    if ($r) { $lblPreview.Text = 'Creates ' + $r + '\  ' + $(if ($t -eq 'FreeFileSync') { '(Current, Archive-Deleted, Logs)' } else { "(Current, Logs, BackupScript-$t)" }) }
+}
+foreach ($rb in $rbFfs, $rbRobo, $rbXcopy) { $rb.Add_CheckedChanged($typeChanged) }
+$txtDest.add_TextChanged($typeChanged)
+
+function Invoke-BuildCopyScript([string[]]$sources, [string]$root) {
+    $tool = Get-BuildType; $u = $CopyUi[$tool]
+    $sw = @(for ($i = 0; $i -lt $u.Switches.Items.Count; $i++) { if ($u.Switches.GetItemChecked($i)) { $u.SwitchKeys[$i] } })
+    $log = @{ Enabled = $u.ChkLog.Checked; Folder = $u.TxtLog.Text.Trim(); Mode = $(if ($u.RbNew.Checked) { 'New' } else { 'Append' }); Date = $u.ChkDate.Checked; Time = $u.ChkTime.Checked }
+    $par = ($tool -eq 'Robocopy') -and $u.RbParallel.Checked
+    $mt = if ($tool -eq 'Robocopy') { [int]$u.NumMt.Value } else { 0 }
+    $r = New-CopyScript $tool $(if ($u.RbBat.Checked) { 'bat' } else { 'ps1' }) $sources $root $sw $log $par $mt
+    if (Test-Path -LiteralPath $r.File) {
+        if ([System.Windows.Forms.MessageBox]::Show("$($r.File) already exists.`r`nOverwrite it?", 'Backup Script Builder', 'YesNo', 'Question') -ne 'Yes') { return }
+    }
+    try {
+        foreach ($d in $r.Dirs) { [void][System.IO.Directory]::CreateDirectory($d) }
+        # a .bat must be in the console's code page: keep it ASCII-safe; a .ps1 gets a BOM so PowerShell 5.1 reads it right
+        if ($r.File -like '*.bat') { [System.IO.File]::WriteAllText($r.File, $r.Text, [System.Text.Encoding]::Default) }
+        else { [System.IO.File]::WriteAllText($r.File, $r.Text, (New-Object System.Text.UTF8Encoding $true)) }
+        Add-ScriptChoice $r.File; $cboType.SelectedItem = $tool; $cboScript.Text = $r.File
+        if ([System.Windows.Forms.MessageBox]::Show("$tool script created:`r`n$($r.File)`r`n`r`nOpen the folder?", 'Backup Script Builder', 'YesNo', 'Information') -eq 'Yes') { Start-Process explorer.exe $root }
+    } catch { [void][System.Windows.Forms.MessageBox]::Show("Could not build the script:`r`n" + $_.Exception.Message, 'Backup Script Builder', 'OK', 'Error') }
+}
+
 $tabs = New-Object System.Windows.Forms.TabControl
 $tabs.Dock = 'Fill'
 $tabBuild = New-Object System.Windows.Forms.TabPage 'Build Script'
 $tabSched = New-Object System.Windows.Forms.TabPage 'Schedule Task'
-$tabBuild.Controls.AddRange(@($lblSrc, $lstSrc, $btnAdd, $btnRemove, $lblDst, $txtDest, $btnBrowse, $lblPreview, $lblDays, $numDays, $btnBuild))
+$tabBuild.Controls.AddRange(@($lblType, $rbFfs, $rbRobo, $rbXcopy, $lblSrc, $lstSrc, $btnAdd, $btnRemove, $lblDst, $txtDest, $btnBrowse, $lblPreview, $pnlFfs, $pnlRobo, $pnlXcopy, $btnBuild))
+$pnlFfs.Controls.AddRange(@($lblDays, $numDays))
 $tabs.TabPages.AddRange(@($tabBuild, $tabSched))
 $form.Controls.Add($tabs)
 
@@ -475,16 +747,16 @@ $lnkFfs.add_LinkClicked({ Start-Process 'https://freefilesync.org/' })
 $form.Controls.Add($lnkFfs)
 $tabs.BringToFront()
 
-Add-Help $tabBuild 140 9 'Source folders' ("The folders you want backed up. Click 'Add Folders...' and tick as many folders as you like in the tree (it opens at C:\Users).`r`n`r`n" +
+Add-Help $tabBuild 140 57 'Source folders' ("The folders you want backed up. Click 'Add Folders...' and tick as many folders as you like in the tree (it opens at C:\Users).`r`n`r`n" +
     "Each folder becomes one folder pair in the FreeFileSync script: the folder (left side) is mirrored to Current\<folder name> (right side).`r`n`r`n" +
     "Two folders with the same name (for example two users' Documents) get -2, -3 ... so they do not overwrite each other. 'Remove' takes the selected folders off the list.")
-Add-Help $tabBuild 165 247 'Destination folder' ("Where the backup lives. Usually a folder on an external or second drive, for example H:\.`r`n`r`n" +
+Add-Help $tabBuild 165 242 'Destination folder' ("Where the backup lives. Usually a folder on an external or second drive, for example H:\.`r`n`r`n" +
     "The tool creates AutomaticFileBackups inside it (or uses the folder itself when it is already called AutomaticFileBackups) with:`r`n" +
     "  Current - the latest copy of every source folder`r`n  Archive-Deleted - files that were deleted or changed, in time-stamped folders`r`n  Logs - FreeFileSync's log of every run`r`n" +
     "and saves BackupScript.ffs_batch there.`r`n`r`nThe destination cannot be inside one of the source folders.")
-Add-Help $tabBuild 290 335 'Keep days' ("How many days FreeFileSync keeps files in Archive-Deleted. When a file is deleted or changed in a source folder, the old copy is moved there instead of being thrown away.`r`n`r`n" +
+Add-Help $pnlFfs 290 5 'Keep days' ("How many days FreeFileSync keeps files in Archive-Deleted. When a file is deleted or changed in a source folder, the old copy is moved there instead of being thrown away.`r`n`r`n" +
     "Older archived copies are removed after this many days (the script's MaxAge). 365 = one year.")
-Add-Help $tabBuild 510 420 'Build Script' ("Creates the folders and writes BackupScript.ffs_batch, a FreeFileSync batch job with your folders, destination and keep days.`r`n`r`n" +
+Add-Help $tabBuild 510 788 'Build Script' ("Creates the folders and writes BackupScript.ffs_batch, a FreeFileSync batch job with your folders, destination and keep days.`r`n`r`n" +
     "Run it by double-clicking it (with FreeFileSync installed) or schedule it on the Schedule Task tab. An existing script is only overwritten after you confirm.")
 # =====================================================================
 # Tab 2: Scheduled task
@@ -527,39 +799,44 @@ $txtName = New-Object System.Windows.Forms.TextBox
 $txtName.Location = '130,49'; $txtName.Size = '285,25'
 
 # --- action ---
-[void](New-Lbl 'Backup script' '15,89' -Bold)
+[void](New-Lbl 'Backup type' '15,89' -Bold)
+$cboType = New-Object System.Windows.Forms.ComboBox
+$cboType.Location = '130,86'; $cboType.Size = '255,25'; $cboType.DropDownStyle = 'DropDownList'
+$cboType.Items.AddRange(@('FreeFileSync', 'Robocopy', 'Xcopy')); $cboType.SelectedIndex = 0
+$tabSched.Controls.Add($cboType)
+[void](New-Lbl 'Backup script' '15,126' -Bold)
 $cboScript = New-Object System.Windows.Forms.ComboBox
-$cboScript.Location = '130,86'; $cboScript.Size = '255,25'
+$cboScript.Location = '130,123'; $cboScript.Size = '255,25'
 $btnScript = New-Object System.Windows.Forms.Button
-$btnScript.Text = 'Browse...'; $btnScript.Location = '425,84'; $btnScript.Size = '110,28'
+$btnScript.Text = 'Browse...'; $btnScript.Location = '425,121'; $btnScript.Size = '110,28'
 
-[void](New-Lbl 'FreeFileSync.exe' '15,126')
+$lblExe = New-Lbl 'FreeFileSync.exe' '15,163'
 $txtExe = New-Object System.Windows.Forms.TextBox
-$txtExe.Location = '130,123'; $txtExe.Size = '255,25'
+$txtExe.Location = '130,160'; $txtExe.Size = '255,25'
 $txtExe.Text = 'C:\Program Files\FreeFileSync\FreeFileSync.exe'
 $btnExe = New-Object System.Windows.Forms.Button
-$btnExe.Text = 'Browse...'; $btnExe.Location = '425,121'; $btnExe.Size = '110,28'
+$btnExe.Text = 'Browse...'; $btnExe.Location = '425,158'; $btnExe.Size = '110,28'
 
 # --- trigger ---
-[void](New-Lbl 'Schedule' '15,170' -Bold)
+[void](New-Lbl 'Schedule' '15,207' -Bold)
 $cboFreq = New-Object System.Windows.Forms.ComboBox
-$cboFreq.Location = '130,167'; $cboFreq.Size = '130,25'; $cboFreq.DropDownStyle = 'DropDownList'
+$cboFreq.Location = '130,204'; $cboFreq.Size = '130,25'; $cboFreq.DropDownStyle = 'DropDownList'
 $cboFreq.Items.AddRange(@($FreqOnce, $FreqDaily, $FreqWeekly, $FreqHours, $FreqLogon))
 
-$lblStart = New-Lbl 'Start' '15,207'
+$lblStart = New-Lbl 'Start' '15,244'
 $dtDate = New-Object System.Windows.Forms.DateTimePicker
-$dtDate.Location = '130,204'; $dtDate.Size = '150,25'; $dtDate.Format = 'Short'
+$dtDate.Location = '130,241'; $dtDate.Size = '150,25'; $dtDate.Format = 'Short'
 $dtTime = New-Object System.Windows.Forms.DateTimePicker
-$dtTime.Location = '290,204'; $dtTime.Size = '125,25'; $dtTime.Format = 'Time'; $dtTime.ShowUpDown = $true
+$dtTime.Location = '290,241'; $dtTime.Size = '125,25'; $dtTime.Format = 'Time'; $dtTime.ShowUpDown = $true
 $dtTime.Value = [datetime]::Today.AddHours(2)
 
-$lblEvery = New-Lbl 'Repeat every' '15,244'
+$lblEvery = New-Lbl 'Repeat every' '15,281'
 $numEvery = New-Object System.Windows.Forms.NumericUpDown
-$numEvery.Location = '130,241'; $numEvery.Size = '70,25'; $numEvery.Minimum = 1; $numEvery.Maximum = 365
-$lblUnit = New-Lbl 'days' '205,244'
+$numEvery.Location = '130,278'; $numEvery.Size = '70,25'; $numEvery.Minimum = 1; $numEvery.Maximum = 365
+$lblUnit = New-Lbl 'days' '205,281'
 
 $pnlDays = New-Object System.Windows.Forms.FlowLayoutPanel
-$pnlDays.Location = '128,272'; $pnlDays.Size = '410,28'
+$pnlDays.Location = '128,309'; $pnlDays.Size = '410,28'
 $dayBoxes = @()
 foreach ($d in 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday') {
     $cb = New-Object System.Windows.Forms.CheckBox
@@ -568,47 +845,66 @@ foreach ($d in 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday
 }
 
 # --- settings ---
-[void](New-Lbl 'Settings' '15,315' -Bold)
+[void](New-Lbl 'Settings' '15,352' -Bold)
 $chkMissed = New-Object System.Windows.Forms.CheckBox
 $chkMissed.Text = 'Run as soon as possible after a missed start'
-$chkMissed.Location = '130,313'; $chkMissed.AutoSize = $true; $chkMissed.Checked = $true
+$chkMissed.Location = '130,350'; $chkMissed.AutoSize = $true; $chkMissed.Checked = $true
 
-[void](New-Lbl 'Stop task after' '15,348')
+[void](New-Lbl 'Stop task after' '15,385')
 $cboLimit = New-Object System.Windows.Forms.ComboBox
-$cboLimit.Location = '130,345'; $cboLimit.Size = '130,25'; $cboLimit.DropDownStyle = 'DropDownList'
+$cboLimit.Location = '130,382'; $cboLimit.Size = '130,25'; $cboLimit.DropDownStyle = 'DropDownList'
 foreach ($k in $TimeLimits.Keys) { [void]$cboLimit.Items.Add($k) }
 $cboLimit.SelectedItem = '4 hours'
 
 $btnSave = New-Object System.Windows.Forms.Button
-$btnSave.Text = 'Create Task'; $btnSave.Location = '15,400'; $btnSave.Size = '370,45'
+$btnSave.Text = 'Create Task'; $btnSave.Location = '15,437'; $btnSave.Size = '370,45'
 $btnSave.Font = $btnBuild.Font
 $btnRun = New-Object System.Windows.Forms.Button
-$btnRun.Text = 'Run Now'; $btnRun.Location = '425,400'; $btnRun.Size = '110,45'
+$btnRun.Text = 'Run Now'; $btnRun.Location = '425,437'; $btnRun.Size = '110,45'
 
 $lblStatus = New-Object System.Windows.Forms.Label
-$lblStatus.Location = '15,455'; $lblStatus.Size = '520,20'; $lblStatus.ForeColor = [System.Drawing.Color]::DimGray
+$lblStatus.Location = '15,492'; $lblStatus.Size = '520,20'; $lblStatus.ForeColor = [System.Drawing.Color]::DimGray
 
 $tabSched.Controls.AddRange(@($cboTask, $btnDelete, $txtName, $cboScript, $btnScript, $txtExe, $btnExe, $cboFreq,
     $dtDate, $dtTime, $numEvery, $pnlDays, $chkMissed, $cboLimit, $btnSave, $btnRun, $lblStatus))
 
 Add-Help $tabSched 390 12 'Task' ("Pick <New task> to make a new scheduled backup, or one of the tasks this tool already made to change, run or delete it.`r`n`r`n" +
     "The tool keeps its tasks in their own Task Scheduler folder, \BackupScriptBuilder\, so it only ever lists and changes its own tasks. 'Delete Task' removes only the task, never the script or the backups.")
+Add-Help $tabSched 390 86 'Backup type' ("Which kind of backup script the task runs:`r`n  FreeFileSync - starts FreeFileSync.exe with the .ffs_batch file`r`n  Robocopy / Xcopy - runs the script built on the first tab: a .ps1 with PowerShell, a .bat with cmd`r`n`r`nThe list of scripts shows the ones of this type.")
 Add-Help $tabSched 425 49 'Task name' ("A name you will recognise, for example 'Nightly backup to H'. It is the task's name in Task Scheduler (folder \BackupScriptBuilder\).`r`n`r`nRenaming a task and saving replaces the old one.")
-Add-Help $tabSched 390 86 'Backup script' ("The FreeFileSync batch file (.ffs_batch) the task runs. The script you built on the first tab is already in the list, as are the scripts your existing tasks use. 'Browse...' picks any other .ffs_batch file.")
-Add-Help $tabSched 390 123 'FreeFileSync.exe' ("The task starts this program with the backup script as its argument. FreeFileSync is normally installed at C:\Program Files\FreeFileSync\FreeFileSync.exe.`r`n`r`nGet it free from https://freefilesync.org/ if it is not installed.")
-Add-Help $tabSched 270 167 'Schedule' ("When the backup runs:`r`n  Once - one time, at the start date and time`r`n  Daily - every N days at that time`r`n  Weekly - on the ticked days, every N weeks`r`n" +
+Add-Help $tabSched 390 123 'Backup script' ("The FreeFileSync batch file (.ffs_batch) the task runs. The script you built on the first tab is already in the list, as are the scripts your existing tasks use. 'Browse...' picks any other .ffs_batch file.")
+Add-Help $tabSched 390 160 'FreeFileSync.exe' ("The task starts this program with the backup script as its argument. FreeFileSync is normally installed at C:\Program Files\FreeFileSync\FreeFileSync.exe.`r`n`r`nGet it free from https://freefilesync.org/ if it is not installed.")
+Add-Help $tabSched 270 204 'Schedule' ("When the backup runs:`r`n  Once - one time, at the start date and time`r`n  Daily - every N days at that time`r`n  Weekly - on the ticked days, every N weeks`r`n" +
     "  Every X hours - from the start time, repeating every N hours`r`n  At log on - each time you sign in to Windows")
-Add-Help $tabSched 425 204 'Start' ("The first date and the time of day the task runs. Daily and weekly tasks run at this time on every matching day.")
-Add-Help $tabSched 270 241 'Repeat every' ("Daily: run every N days (1 = every day). Weekly: every N weeks on the ticked days. Every X hours: every N hours (1-23).")
-Add-Help $tabSched 425 311 'Run after a missed start' ("When ticked, a backup that was missed because the PC was off or asleep runs as soon as possible afterwards.`r`n`r`nWhen not ticked, a missed run is skipped until the next scheduled time.")
-Add-Help $tabSched 270 345 'Stop task after' ("Task Scheduler stops the backup if it is still running after this long, for example when a drive is stuck. Pick 'No limit' to never stop it.`r`n`r`nA first full backup of many files can take hours, so leave enough time.")
-Add-Help $tabSched 390 410 'Create / Save, Run Now' ("Create Task (or Save Changes for an existing one) registers the task for your user account. It runs while you are logged on, with no password stored.`r`n`r`nRun Now starts the selected task straight away, to test it.")
+Add-Help $tabSched 425 241 'Start' ("The first date and the time of day the task runs. Daily and weekly tasks run at this time on every matching day.")
+Add-Help $tabSched 270 278 'Repeat every' ("Daily: run every N days (1 = every day). Weekly: every N weeks on the ticked days. Every X hours: every N hours (1-23).")
+Add-Help $tabSched 425 348 'Run after a missed start' ("When ticked, a backup that was missed because the PC was off or asleep runs as soon as possible afterwards.`r`n`r`nWhen not ticked, a missed run is skipped until the next scheduled time.")
+Add-Help $tabSched 270 382 'Stop task after' ("Task Scheduler stops the backup if it is still running after this long, for example when a drive is stuck. Pick 'No limit' to never stop it.`r`n`r`nA first full backup of many files can take hours, so leave enough time.")
+Add-Help $tabSched 390 447 'Create / Save, Run Now' ("Create Task (or Save Changes for an existing one) registers the task for your user account. It runs while you are logged on, with no password stored.`r`n`r`nRun Now starts the selected task straight away, to test it.")
 
 # --- logic ---
 function Add-ScriptChoice([string]$path) {
     if ($path -and -not $cboScript.Items.Contains($path)) { [void]$cboScript.Items.Add($path) }
 }
 
+# the script a task runs: the last quoted path in its arguments (FreeFileSync "x.ffs_batch", powershell -File "x.ps1", cmd /c "x.bat")
+function Get-ScriptFromAction($a) {
+    $m = [regex]::Matches([string]$a.Arguments, '"([^"]+)"')
+    if ($m.Count) { return $m[$m.Count - 1].Groups[1].Value }
+    return ([string]$a.Arguments).Trim()
+}
+function Get-ScriptType([string]$exe, [string]$script) {
+    if ($exe -like '*FreeFileSync*' -or $script -like '*.ffs_batch') { return 'FreeFileSync' }
+    if ($script -match 'xcopy') { return 'Xcopy' }
+    if ($script -match 'robocopy') { return 'Robocopy' }
+    try { if ((Get-Content -LiteralPath $script -TotalCount 5 -ErrorAction Stop) -match 'Xcopy') { return 'Xcopy' } } catch {}
+    return 'Robocopy'
+}
+function Update-TypeUi {
+    $ffs = [string]$cboType.SelectedItem -eq 'FreeFileSync'
+    $lblExe.Visible = $ffs; $txtExe.Visible = $ffs; $btnExe.Visible = $ffs
+    foreach ($c in $tabSched.Controls) { if ($c -is [System.Windows.Forms.Button] -and $c.Text -eq '?' -and $c.Tag -and $c.Tag[0] -eq 'FreeFileSync.exe') { $c.Visible = $ffs } }
+}
 function Get-OurTasks {
     return @(Get-ScheduledTask -TaskPath $TaskFolder -ErrorAction SilentlyContinue | Sort-Object TaskName)
 }
@@ -618,7 +914,7 @@ function Update-TaskList([string]$select) {
     [void]$cboTask.Items.Add($NewTaskText)
     foreach ($t in Get-OurTasks) {
         [void]$cboTask.Items.Add($t.TaskName)
-        foreach ($a in $t.Actions) { Add-ScriptChoice ($a.Arguments -replace '"', '') }
+        foreach ($a in $t.Actions) { Add-ScriptChoice (Get-ScriptFromAction $a) }
     }
     if ($select -and $cboTask.Items.Contains($select)) { $cboTask.SelectedItem = $select } else { $cboTask.SelectedIndex = 0 }
 }
@@ -634,9 +930,11 @@ function Update-FreqUi {
     $pnlDays.Visible = $f -eq $FreqWeekly
 }
 $cboFreq.add_SelectedIndexChanged({ Update-FreqUi })
+$cboType.add_SelectedIndexChanged({ Update-TypeUi })
 
 function Reset-TaskForm {
     $txtName.Text = ''
+    $cboType.SelectedItem = 'FreeFileSync'
     $cboFreq.SelectedItem = $FreqDaily
     $numEvery.Value = 1
     $dtDate.Value = [datetime]::Today
@@ -654,7 +952,7 @@ function Read-TaskIntoForm([string]$name) {
     Reset-TaskForm
     $txtName.Text = $t.TaskName
     $a = $t.Actions | Select-Object -First 1
-    if ($a) { $txtExe.Text = $a.Execute; $cboScript.Text = ($a.Arguments -replace '"', '') }
+    if ($a) { $sp = Get-ScriptFromAction $a; $cboType.SelectedItem = (Get-ScriptType $a.Execute $sp); if ($cboType.SelectedItem -eq 'FreeFileSync') { $txtExe.Text = $a.Execute }; $cboScript.Text = $sp }
     $tr = $t.Triggers | Select-Object -First 1
     if ($tr) {
         if ($tr.StartBoundary) {
@@ -696,7 +994,7 @@ $cboTask.add_SelectedIndexChanged({
 
 $btnScript.add_Click({
     $ofd = New-Object System.Windows.Forms.OpenFileDialog
-    $ofd.Filter = 'FreeFileSync batch (*.ffs_batch)|*.ffs_batch|All files (*.*)|*.*'
+    $ofd.Filter = if ([string]$cboType.SelectedItem -eq 'FreeFileSync') { 'FreeFileSync batch (*.ffs_batch)|*.ffs_batch|All files (*.*)|*.*' } else { 'Backup script (*.ps1;*.bat;*.cmd)|*.ps1;*.bat;*.cmd|All files (*.*)|*.*' }
     if ($ofd.ShowDialog() -eq 'OK') { Add-ScriptChoice $ofd.FileName; $cboScript.Text = $ofd.FileName }
     $ofd.Dispose()
 })
@@ -714,8 +1012,10 @@ $btnSave.add_Click({
     $script = $cboScript.Text.Trim().Trim('"')
     $exe = $txtExe.Text.Trim().Trim('"')
     if (-not $name) { [void][System.Windows.Forms.MessageBox]::Show('Give the task a name.', $msgTitle, 'OK', 'Warning'); return }
-    if (-not (Test-Path -LiteralPath $script -PathType Leaf)) { [void][System.Windows.Forms.MessageBox]::Show('Pick a backup script (.ffs_batch) that exists.', $msgTitle, 'OK', 'Warning'); return }
-    if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) {
+    $kind = [string]$cboType.SelectedItem
+    if (-not (Test-Path -LiteralPath $script -PathType Leaf)) { [void][System.Windows.Forms.MessageBox]::Show('Pick a backup script that exists (' + $(if ($kind -eq 'FreeFileSync') { '.ffs_batch' } else { '.ps1 or .bat' }) + ').', $msgTitle, 'OK', 'Warning'); return }
+    if ($kind -ne 'FreeFileSync' -and $script -notmatch '\.(ps1|bat|cmd)$') { [void][System.Windows.Forms.MessageBox]::Show('A Robocopy or Xcopy task runs a .ps1 or .bat script. Pick one, or change the backup type.', $msgTitle, 'OK', 'Warning'); return }
+    if ($kind -eq 'FreeFileSync' -and -not (Test-Path -LiteralPath $exe -PathType Leaf)) {
         $a = [System.Windows.Forms.MessageBox]::Show("FreeFileSync was not found at:`r`n$exe`r`n`r`nCreate the task anyway?", $msgTitle, 'YesNo', 'Warning')
         if ($a -ne 'Yes') { return }
     }
@@ -740,11 +1040,13 @@ $btnSave.add_Click({
             $FreqHours  { $trigger = New-ScheduledTaskTrigger -Once -At $at -RepetitionInterval (New-TimeSpan -Hours $n) }
             $FreqLogon  { $trigger = New-ScheduledTaskTrigger -AtLogOn -User ([System.Security.Principal.WindowsIdentity]::GetCurrent().Name) }
         }
-        $action = New-ScheduledTaskAction -Execute $exe -Argument ('"' + $script + '"')
+        if ($kind -eq 'FreeFileSync') { $action = New-ScheduledTaskAction -Execute $exe -Argument ('"' + $script + '"') }
+        elseif ($script -like '*.ps1') { $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ('-NoProfile -ExecutionPolicy Bypass -File "' + $script + '"') -WorkingDirectory (Split-Path $script) }
+        else { $action = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument ('/c "' + $script + '"') -WorkingDirectory (Split-Path $script) }
         $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit $TimeLimits[[string]$cboLimit.SelectedItem] -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
         $settings.StartWhenAvailable = $chkMissed.Checked
         [void](Register-ScheduledTask -TaskPath $TaskFolder -TaskName $name -Action $action -Trigger $trigger -Settings $settings `
-            -Description 'Created by Backup Script Builder' -Force -ErrorAction Stop)
+            -Description ('Created by Backup Script Builder (' + $kind + ')') -Force -ErrorAction Stop)
         if ($editing -and $oldName -ine $name) {
             Unregister-ScheduledTask -TaskPath $TaskFolder -TaskName $oldName -Confirm:$false -ErrorAction SilentlyContinue
         }
@@ -777,6 +1079,7 @@ $btnRun.add_Click({
 
 Update-TaskList
 Update-FreqUi
+Update-TypeUi
 
-Initialize-WrtWindow $form @() 580 600
+Initialize-WrtWindow $form @($tabBuild, $tabSched) 600 600
 [void]$form.ShowDialog()

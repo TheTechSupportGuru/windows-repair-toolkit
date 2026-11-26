@@ -20,6 +20,7 @@ Windows marks downloaded files as blocked: right-click the zip > **Properties** 
 
 ## New in 1.9.2
 
+- **Backup Script Builder 1.1:** Robocopy and Xcopy scripts besides FreeFileSync, a backup-type choice when scheduling, and the folder picker shows Desktop, Documents and OneDrive again ([notes](docs/changes/BackupScriptBuilder-1.1.md)).
 - **Fewer downloads:** WinRepairTool, Collect-Logs, Monitor-Logs and ClaudeLogAnalyzer are now one zip, `IndividualTools-v1.9.2.zip`, with one shared launcher (`Run-PS-As-Admin.bat`: drag a `.ps1` onto it). `Start-ClaudeLogAnalyzer.bat` is gone. The tools themselves are unchanged ([V1.9.2](docs/changes/V1.9.2.md)).
 - **Test Center 1.0 beta 3:** a new **Backup Script Builder** tab (script, schedules and layout checks, about 2 minutes, no admin), and a passing test line that mentions "missing" no longer shows CHECK ([notes](docs/changes/TestCenter-1.0-beta.3.md)).
 - **Simpler bug and discussion forms:** WinSuperTool and its individual tools share one Tool entry, the tab / part is an optional text box, and the version list has 4 choices.
@@ -63,7 +64,7 @@ All scripts are in [`tools/`](tools/). Start each one with its launcher, or righ
 | [Collect-Logs](#collect-logs) | (right-click > Run with PowerShell) | Copies all the useful Windows logs to a folder on the Desktop |
 | [Monitor-Logs](#monitor-logs) | (right-click > Run with PowerShell) | Opens live-updating windows for chosen logs and Event Viewer channels |
 | [ClaudeLogAnalyzer](#claudeloganalyzer) | (Run-PS-As-Admin.bat) | Sends logs and screenshots to Claude or Gemini and shows the diagnosis |
-| [Backup Script Builder](#backup-script-builder) | `BackupScriptBuilder.bat` | Builds and schedules backup jobs for [FreeFileSync](https://freefilesync.org/): pick folders and a destination, set the schedule |
+| [Backup Script Builder](#backup-script-builder) | `BackupScriptBuilder.bat` | Builds and schedules backup jobs for [FreeFileSync](https://freefilesync.org/), or Robocopy / Xcopy scripts: pick folders and a destination, set the schedule |
 | Run-PS-As-Admin | `Run-PS-As-Admin.bat` | Drag any `.ps1` onto it to run it as administrator (unchanged since v1.1) |
 
 WinSuperTool contains the features of WinRepairTool, Collect-Logs, Monitor-Logs and ClaudeLogAnalyzer. The separate tools are kept for when you need only one job, and since v1.8 they have the same fixes.
@@ -144,7 +145,9 @@ WinRepairTool, Collect-Logs, Monitor-Logs and ClaudeLogAnalyzer are in `Individu
 - **Schedule Task tab:** runs a script with FreeFileSync on a schedule (once, daily, weekly, every X hours, at log on), with "run after a missed start" and a time limit. It creates, changes, runs and deletes only its own tasks, kept in the Task Scheduler folder `\BackupScriptBuilder\`.
 - A **?** next to every option explains it.
 
-Download `BackupScriptBuilder-v1.0.zip` from the [latest release](../../releases/latest) (new in v1.9.1).
+- **New in 1.1:** besides the FreeFileSync batch it can **create a Robocopy or Xcopy script** (`.ps1` or `.bat`) with log options, every relevant switch explained, and (Robocopy) one thread per source drive; the Schedule Task tab has a **backup type** drop-down; and the folder picker now lists Desktop, Documents and OneDrive, with **Quick picks** at the top ([1.1 notes](docs/changes/BackupScriptBuilder-1.1.md)).
+
+Download `BackupScriptBuilder-v1.1.zip` from the [latest release](../../releases/latest).
 
 ## What has been fixed
 
@@ -169,7 +172,6 @@ Severity: **S1** = can make the PC unbootable, lose data or act on the wrong dis
 
 ### Still open
 
-- **Backup Script Builder folder picker (known bug):** some folders are missing from the folder list, including Desktop and OneDrive. Until it is fixed, open the created `BackupScript.ffs_batch` in FreeFileSync and add the missing folder pair there. A fix is planned for the next update.
 - **K16 / S12 / R10:** a few long jobs (registry save, Store app scans, diskpart) still run on the window's thread, so the window can pause briefly.
 - **R14:** WinRepairTool keeps no permanent activity log (WinSuperTool does).
 
