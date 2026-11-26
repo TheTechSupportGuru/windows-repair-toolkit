@@ -5,11 +5,11 @@ A set of PowerShell tools for repairing and troubleshooting Windows 10/11 PCs, i
 > [!WARNING]
 > These scripts were written with AI. They have been tested on Windows 11, Windows 10 64-bit (MBR disk), and Hiren's BootCD PE 10 and 11, all in VMs. They have not been tested on many real PCs. Several tools change the boot configuration (BCD), the registry, services and network settings. **Use at your own risk.** Try them on a test machine first.
 
-**Current version: 1.9.2** (2026-11-22; the tools are those of 1.9, plus Backup Script Builder). Every version is a git tag (`v1.1` to `v1.9.2`), so `git diff v1.8.3 v1.9` shows exactly what changed. Licensed under the [GNU GPL v3.0](#license).
+**Current version: 1.9.2** (2026-11-22; the tools are those of 1.9, plus Backup Script Builder and 7z-Encryptor). Every version is a git tag (`v1.1` to `v1.9.2`), so `git diff v1.8.3 v1.9` shows exactly what changed. Licensed under the [GNU GPL v3.0](#license).
 
 ## Download
 
-Get the tools from the [latest release](../../releases/latest). The main downloads are **WinSuperTool**, **WinSuperTool-NoAI**, **WinFixKit** and **Backup Script Builder**, each its own zip with the script, its launcher, a short read-me and the license. The smaller separate tools (WinRepairTool, Collect-Logs, Monitor-Logs, ClaudeLogAnalyzer) are all in **`IndividualTools-v1.9.2.zip`**, started with its `Run-PS-As-Admin.bat`; each of them is also part of WinSuperTool. The current betas are there too. **Source code** contains everything.
+Get the tools from the [latest release](../../releases/latest). The main downloads are **WinSuperTool**, **WinSuperTool-NoAI**, **WinFixKit**, **Backup Script Builder** and **7z-Encryptor**, each its own zip with the script, its launcher, a short read-me and the license. The smaller separate tools (WinRepairTool, Collect-Logs, Monitor-Logs, ClaudeLogAnalyzer) are all in **`IndividualTools-v1.9.2.zip`**, started with its `Run-PS-As-Admin.bat`; each of them is also part of WinSuperTool. The current betas are there too. **Source code** contains everything.
 
 **Don't want AI?** `WinSuperTool-NoAI-v1.9.2.zip` is WinSuperTool without the AI Analyze tab:
 - no phone login and no network listener;
@@ -20,6 +20,7 @@ Windows marks downloaded files as blocked: right-click the zip > **Properties** 
 
 ## New in 1.9.2
 
+- **7z-Encryptor 1.0**, a new tool: encrypt files and folders with 7-Zip and a password (7z with hidden file names, or zip), from a window or by dropping them on its `.bat`; installs and updates 7-Zip with winget (see [below](#7z-encryptor), [notes](docs/changes/7z-Encryptor-1.0.md)).
 - **Backup Script Builder 1.4:** **Update 7-Zip** (winget) next to Install, and corrected help texts ([notes](docs/changes/BackupScriptBuilder-1.4.md)). 1.3: a new **Manual Backup** tab (back up now to a folder, a zip made by Windows or 7-Zip, or a 7z / self-extracting .exe, with Store / Normal / Ultra and an optional password, saved as a .bat / .ps1 if you like, and a one-click 7-Zip install), network folders and files (`\\server\share`) as source or destination, and Robocopy and Xcopy scripts can back up single files as well as folders ([notes](docs/changes/BackupScriptBuilder-1.3.md)). 1.2: the folder picker no longer lists the user folder's junctions as empty extra folders, opens at Users, hides Windows and program folders until you ask for them, and never adds a folder twice ([notes](docs/changes/BackupScriptBuilder-1.2.md)). 1.1 added Robocopy and Xcopy scripts besides FreeFileSync ([1.1 notes](docs/changes/BackupScriptBuilder-1.1.md)).
 - **Fewer downloads:** WinRepairTool, Collect-Logs, Monitor-Logs and ClaudeLogAnalyzer are now one zip, `IndividualTools-v1.9.2.zip`, with one shared launcher (`Run-PS-As-Admin.bat`: drag a `.ps1` onto it). `Start-ClaudeLogAnalyzer.bat` is gone. The tools themselves are unchanged ([V1.9.2](docs/changes/V1.9.2.md)).
 - **Test Center 1.0 beta 3:** a new **Backup Script Builder** tab (script, schedules and layout checks, about 2 minutes, no admin), and a passing test line that mentions "missing" no longer shows CHECK ([notes](docs/changes/TestCenter-1.0-beta.3.md)).
@@ -164,6 +165,7 @@ Download `BackupScriptBuilder-v1.4.zip` from the [latest release](../../releases
 - Every new file is tested with the password before it is reported as done. The originals are never changed or deleted, and an existing file is never overwritten.
 - 7-Zip is looked for at start. If it is missing, the tool asks whether to install it. **Install 7-Zip** / **Update 7-Zip** run `winget install` / `winget upgrade -e --id 7zip.7zip`.
 - Paths with `&` or `%` in their names cannot be dropped on the `.bat` (a limit of batch files). Use the main window for those.
+
 ## What has been fixed
 
 Testing and code review led to **more than 100 fixes** across 13 versions. Each version's full list, with severity and how it was verified, is in [`docs/changes/`](docs/changes/).
@@ -242,7 +244,7 @@ The other scripts in `tests/` are the admin and windowed test runs used on the V
 tools/            the current scripts and launchers (v1.9.2), incl. the generated no-AI edition
 beta/             the current beta: WinFixKit 1.9 beta-automation (WinFixKit with Automation and Registry changes tabs)
 build/            Build-NoAIEdition.ps1 (generates the no-AI edition), Promote-Beta.ps1 (makes a beta stable)
-docs/changes/     what each version fixed (V1.2 ... V1.9.2, the 1.9 betas, Test Center and Backup Script Builder)
+docs/changes/     what each version fixed (V1.2 ... V1.9.2, the 1.9 betas, Test Center, Backup Script Builder and 7z-Encryptor)
 docs/testing/     the test plan, results of each phase, and the v1.6 code review
 tests/            Pester unit tests, Test Center (TestCenter.ps1), the test harness and the VM test runs
 LICENSE           GNU General Public License v3.0
@@ -270,7 +272,7 @@ What that means in practice:
 
 ### You found the time sheet
 
-How long this project has taken, as of **1.9.1** (November 2026): the release where every beta had to be redone into one release, because the releases page sorts by commit date, not by what anyone wants. For 1.1 onwards, the AI hours are measured from the session logs, and the human hours are an honest guess, "which is the polite word for 'vibes'". The original scripts are estimated by the Claude project that wrote them, which had no stopwatch either. The 1.9 sheet is kept in [docs/timesheets/timesheet-1.9.md](docs/timesheets/timesheet-1.9.md), in case anyone wants to audit the vibes.
+How long this project has taken, as of **1.9.2** (late November 2026): the release that was supposed to be "fewer zips" and ended up with a whole new tool in it. For 1.1 onwards, the AI hours are measured from the session logs, and the human hours are an honest guess, "which is the polite word for 'vibes'". The original scripts are estimated by the Claude project that wrote them, which had no stopwatch either. The 1.9 sheet is kept in [docs/timesheets/timesheet-1.9.md](docs/timesheets/timesheet-1.9.md), in case anyone wants to audit the vibes.
 
 | | Human | AI |
 |---|---:|---:|
@@ -279,18 +281,19 @@ How long this project has taken, as of **1.9.1** (November 2026): the release wh
 | 1.9.1: Backup Script Builder, WinFixKit beta-automation 1 and 2 (66 tasks run for real, twice), Test Center beta 2 | ~4 h | ~3 h |
 | Redoing every beta into one release, because the main release must always be on top | ~2 h | ~1 h |
 | Then un-redoing it: moving the old betas back out, because one release with 19 zips is not a release, it is a yard sale | ~1 h | ~0.5 h |
-| VMs grinding through test runs while everyone else made coffee | ~0 h | ~12 h of machine time, unsupervised. The VMs have asked for a union. |
-| **Total** | **~29 h** | **~21.5 h** (plus a lot of patient VMs, and one very tired releases page) |
+| 1.9.2: Backup Script Builder 1.2 to 1.4 (single files, network paths, a Manual Backup tab with zip / 7z / self-extracting .exe), 7z-Encryptor 1.0 from nothing, and every ? button re-read against what it actually does | ~3 h | ~6 h |
+| VMs grinding through test runs while everyone else made coffee | ~0 h | ~14 h of machine time, unsupervised. The VMs have asked for a union. |
+| **Total** | **~32 h** | **~27.5 h** (plus a lot of patient VMs, and one very tired releases page) |
 
 **By the numbers**
-- 47 commits, 13 release entries, 21 tags. Five naming styles on the releases tab at one point. For one word.
-- About 10,800 lines of tool code (plus ~3,800 for the betas and build scripts), 5,800 lines of tests, and ~45,000 words of docs. More docs than some novels, fewer plot twists. Mostly.
-- 403 unit tests, 66 WinFixKit Automation tasks run for real as administrator (twice), and 19 zips in one release.
+- 75 commits, 13 release entries, 29 tags. Five naming styles on the releases tab at one point. For one word.
+- About 15,300 lines of tool code (plus the betas and build scripts), 6,300 lines of tests, and ~45,000 words of docs. More docs than some novels, fewer plot twists. Mostly.
+- 403 unit tests (plus 101 Backup Script Builder GUI checks and 42 for 7z-Encryptor, including a real file dropped on a real `.bat`), 66 WinFixKit Automation tasks run for real as administrator (twice), and 19 zips in one release.
 - More than 100 bugs fixed. One of them was a splash screen that closed the whole app. Another was a commit stuck in a cloud container, sent home by patch file, like a kid with a note from the teacher.
 - 3 operating systems, 2 monitors, 1 VM that got its display scaling changed more times than any VM should.
 - Number of times the AI mixed up which side the second monitor is on: 1. The human remembers.
 - Number of times a short PowerShell alias (`H`, `R`) secretly turned into `Get-History`: 2. PowerShell thinks this is funny.
-- Beta 5 is still not a thing, and never was. Stop asking.
+- Number of ? buttons that turned out to describe a different, older tool: 4. They have been re-educated., and never was. Stop asking.
 - Number of times the betas moved house in one day: 3. Own release pages, then all crammed into 1.9.1, then the old ones evicted to 1.9. They have stopped unpacking.
 - Zips on the latest release: 8, then 19, then 11. The download count per zip has never been lower, or more confused.
 
@@ -323,6 +326,8 @@ The "hunting for mistakes" column is not theoretical. One proofreading pass foun
 | WinSuperTool | Nothing. Still 1.9, zip renamed to 1.9.1. | Smug. |
 | WinFixKit | Grew an Automation tab in a beta, had all 66 tasks run for real twice, lost 4 bugs, and learned that an empty Recycle Bin is not an emergency. | Tired, but cleaner. |
 | Backup Script Builder | Born. Builds and schedules FreeFileSync backups, with a ? next to everything. | New, keen, asks a lot of questions. |
+| 7z-Encryptor (1.9.2) | Born from Backup Script Builder's folder picker, which it borrowed and never gave back. Asks for your password twice and believes neither until it has tested the file. | Trust issues, professionally. |
+| Backup Script Builder (1.9.2) | 1.2, 1.3 and 1.4 in a week: files, network shares, a whole Manual Backup tab, and now it installs and updates 7-Zip for you. | Going through a phase. |
 | Test Center | Beta 2: learned that betas no longer have their own release entries and went looking for their tags instead. | Mildly confused, coping. |
 | The betas | Moved out of their own release entries into collapsible sections of the main release. | Folded. Literally. |
 | The releases page | Renamed, re-sorted, then reduced to one release on top. | Finally at peace. |
