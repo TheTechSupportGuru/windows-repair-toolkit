@@ -2,8 +2,9 @@
 #   1. the 7-Zip command line, archive names and the checks before encrypting
 #   2. real encryption (needs 7-Zip): 7z full / contents only, zip standard / AES-256 - each unpacked with the password
 #      and compared with the originals, and refused with a wrong one
-#   3. both windows: layout, "?" help, which options show, where the file is saved
-#   4. the launcher: a file with spaces in its name dropped on 7z-Encryptor.bat opens the small window
+#   3. the window: layout, "?" help, which options show, where the file is saved, started empty or with dropped items
+#   4. the launcher: a file with spaces in its name dropped on 7z-Encryptor.bat opens the window
+#   5. names with & ^ % ! dropped on the launcher arrive whole; started from a console the arguments are used
 # Everything is made in a temporary folder and removed afterwards; the originals are only read.
 # Windows Repair Toolkit - Copyright (C) 2026 TheTechSupportGuru - SPDX-License-Identifier: GPL-3.0-or-later
 #   powershell -ExecutionPolicy Bypass -File .\tests\Run-7zEncryptor.ps1
@@ -58,7 +59,20 @@ Check 'check: a non-ASCII password is refused for zip but allowed for 7z' (((Tes
                 'zip-aes' { Check 'zip AES-256 uses AES-256' ($list -match 'Method = AES-256') }
             }
         }
-        $ErrorActionPreference = $eap
+        # 1.4 edge cases: odd names (& # % ! ^ ' , accents), a name starting with -, an empty file, a 7z password with
+        # spaces, accents, & ^ % ! and a trailing backslash; a trailing space in the password is kept
+        $odd = "$W\odd R&D #1 50% !^ it's, " + [char]0xE9 + [char]0x4E2D; [void][IO.Directory]::CreateDirectory($odd)
+        [IO.File]::WriteAllText("$odd\-dash & " + [char]0xFC + '.txt', 'odd'); [IO.File]::WriteAllText("$odd\empty.txt", '')
+        $opw = 'p ' + [char]0xE4 + ' &^%!x\ '
+        $r = Invoke-Encrypt @{ SevenZip = $z; Sources = @($odd); Out = "$W\out\odd.7z"; Password = $opw; Format = '7z'; HideNames = $true }
+        $xo = "$W\x-odd"; & $z x "-p$opw" "-o$xo" -y "$W\out\odd.7z" | Out-Null
+        $leaf = Split-Path $odd -Leaf
+        $back = (Test-Path -LiteralPath "$xo\$leaf\-dash & $([char]0xFC).txt") -and (Get-Content -LiteralPath "$xo\$leaf\-dash & $([char]0xFC).txt") -eq 'odd' -and (Test-Path -LiteralPath "$xo\$leaf\empty.txt") -and (Get-Item -LiteralPath "$xo\$leaf\empty.txt").Length -eq 0
+        $trimmed = (& $z t "-p$($opw.TrimEnd())" "$W\out\odd.7z" 2>&1 | Out-String) -notmatch 'Everything is Ok'
+        Check 'encrypt: odd names (& # % ! ^ accents, a leading -), an empty file and a password with & ^ % ! \ and accents unpack the same' ($r.Ok -and $back) "$($r.Message)"
+        Check 'encrypt: a trailing space is part of the password (without it the file does not open)' $trimmed
+        $r2 = Invoke-Encrypt @{ SevenZip = $z; Sources = @("$W\src\single file.txt"); Out = "$W\out\new\deeper\s.zip"; Password = 'pw'; Format = 'zip'; ZipMethod = 'AES256' }
+        Check 'encrypt: a save folder that does not exist yet is made' ($r2.Ok -and (Test-Path -LiteralPath "$W\out\new\deeper\s.zip"))        $ErrorActionPreference = $eap
         $r = Invoke-Encrypt @{ SevenZip = $null; Sources = @("$W\src"); Out = "$W\out\n.7z"; Password = 'a'; Format = '7z' }
         Check 'without 7-Zip it says so and makes nothing' (-not $r.Ok -and $r.Message -match 'not installed' -and -not (Test-Path "$W\out\n.7z"))
     }
@@ -123,27 +137,40 @@ Check 'check: a non-ASCII password is refused for zip but allowed for 7z' (((Tes
     Check 'settings: no password is ever saved' (-not ((Get-Content -LiteralPath "$env:WRT_SETTINGS_DIR\7z-Encryptor.settings.json" -Raw) -match 'abc'))
     Check 'email: Outlook and Thunderbird get the file attached, others get the file name' ((Get-MailProgramArgs 'C:\P\OUTLOOK.EXE' 'C:\a b.7z') -eq '/a "C:\a b.7z"' -and (Get-MailProgramArgs 'C:\P\thunderbird.exe' 'C:\a b.7z') -eq '-compose "attachment=''file:///C:/a%20b.7z''"' -and (Get-MailProgramArgs 'C:\P\mail.exe' 'C:\a b.7z') -eq '"C:\a b.7z"')
     Check 'email: a missing file / no program picked gives a message, nothing starts' ((Send-EncryptedFile "$W\nope.7z" 'Classic' '') -match 'not there' -and (Send-EncryptedFile "$W\src\single file.txt" 'Program' '') -match 'Pick the mail program')
-    Check 'email: Send to > Mail recipient is the MAPI call (Simple MAPI MAPISendMail with a dialog)' ([bool]('WrtMapi' -as [type]) -and $script:BsbEncSource -match 'MAPISendMail' -and $script:BsbEncSource -match 'fall back to the Windows Share window')
+    # ---- 1.4: mailto: with a typed address ----
+    $u = Get-MailtoUri 'a.b@example.com' "$W\out\my file.7z"
+    Check 'mailto: the address, the file name as subject, encoded' ($u -eq 'mailto:a.b@example.com?subject=my%20file.7z&body=Attached%3A%20my%20file.7z%20(encrypted).%20The%20password%20comes%20separately.') $u
+    Check 'mailto: several addresses (; or ,), spaces ignored; empty is allowed' ((Get-MailtoUri ' a@x.org; b@y.net ' 'f.7z') -like 'mailto:a@x.org,b@y.net?subject=f.7z&*' -and (Get-MailtoUri '' 'f.7z') -like 'mailto:?subject=f.7z&*')
+    Check 'mailto: no address / extra link parts are refused' ($null -eq (Get-MailtoUri 'not-an-address' 'f.7z') -and $null -eq (Get-MailtoUri 'a@x.org?cc=c@y.net' 'f.7z') -and $null -eq (Get-MailtoUri 'a@x.org&body=x' 'f.7z') -and $null -eq (Get-MailtoUri '"a"@x.org' 'f.7z'))
+    Check 'mailto: a bad address gives a message, nothing starts' ((Send-EncryptedFile "$W\src\single file.txt" 'Mailto' '' ([IntPtr]::Zero) 'nope') -match 'Type an email address')
+    Check 'window: a mailto: option with an address box under the other three' ($m.RbMailto.Text -eq 'mailto:' -and $m.MailTo -is [Windows.Forms.TextBox] -and $m.MailTo.Parent -eq $m.MailPanel -and $m.RbMailto.Top -gt $m.RbClassic.Bottom)
+    $m.MailTo.Text = 'a@example.com'
+    Check 'window: typing an address picks mailto: and it is remembered (with Remember settings ticked)' ($m.RbMailto.Checked -and (Get-MainEmailMode) -eq 'Mailto' -and (Get-Content -LiteralPath $sf -Raw | ConvertFrom-Json).MailTo -eq 'a@example.com' -and (Get-Content -LiteralPath $sf -Raw | ConvertFrom-Json).EmailMode -eq 'Mailto')
+    & $layout 'main window with mailto:' $m.Page 4
+    $m.RbShare.Checked = $true; Set-MainEmailMode $m.RbShare    Check 'email: Send to > Mail recipient is the MAPI call (Simple MAPI MAPISendMail with a dialog)' ([bool]('WrtMapi' -as [type]) -and $script:BsbEncSource -match 'MAPISendMail' -and $script:BsbEncSource -match 'fall back to the Windows Share window')
     $script:Settings.SaveFolder = "$W\out"; $m.OutEdited = $false; Update-MainOut
     Check 'settings: Save as uses the remembered folder of the last encrypted file' ($m.Out.Text -like "$W\out\Folder A.*")
     $script:Settings.SaveFolder = "$W\gone"; Update-MainOut
     Check 'settings: a remembered folder that is gone falls back to next to the first item' ($m.Out.Text -like "$W\src\Folder A.*")
     $script:Settings.Remove('SaveFolder')
     Check 'settings: by default the file is next to the script (portable)' ($script:BsbEncSource.Contains('else { $ScriptDir }') -and $script:BsbEncSource.Contains('Join-Path $d "$name.settings.json"'))
-    $qf = New-QuickWindow @("$W\src\single file.txt"); $q = $script:QuickUi
-    & $layout 'drop window' $qf.Controls[0] 3
-    $script:ScriptDir = "$W\tooldir"
-    Check 'drop window: saves in the 7z-Encryptor folder by default' ((Get-QuickOut) -eq "$W\tooldir\single file.txt.7z")
-    $q.Next.Checked = $true
-    Check 'drop window: ticked, it saves next to the dropped item' ((Get-QuickOut) -eq "$W\src\single file.txt.7z")
-    $qf2 = New-QuickWindow @("$W\src\single file.txt"); Check 'drop window: the save-next-to tick is remembered' ($script:QuickUi.Next.Checked -and (Get-Content -LiteralPath "$env:WRT_SETTINGS_DIR\7z-Encryptor.settings.json" -Raw | ConvertFrom-Json).QuickNextToItem); $qf2.Dispose(); $script:QuickUi = $q
-    $q.Opt.RbZip.Checked = $true
-    Check 'drop window: zip changes the name and the Saves as line' ((Get-QuickOut) -eq "$W\src\single file.txt.zip" -and $q.Where.Text -match 'single file\.txt\.zip$')
-    Check 'drop window: title names what is encrypted' ($q.What.Text -eq 'Encrypt single file.txt')
-    Check 'drop window: has the Remember settings box too, showing the same choice' ($q.Remember.Text -eq 'Remember settings' -and $q.Remember.Checked)
+    # ---- 1.4: one window for both ways of starting; dropped items are in the list and saved next to the first one ----
+    Check 'drop: the small window is gone (one window for both ways of starting)' (-not (Get-Command New-QuickWindow -ErrorAction SilentlyContinue) -and $script:BsbEncSource.Contains('try { $form = New-MainWindow $Files }'))
+    $script:Settings.SaveFolder = "$W\out"
+    $df = New-MainWindow @("$W\src\single file.txt", "$W\src\Folder A"); $d = $script:MainUi
+    Check 'drop: the dropped items are in the list, with Add / Remove and Browse... there too' ($d.List.Items.Count -eq 2 -and $d.List.Items[0] -eq "$W\src\single file.txt" -and $d.Add.Text -eq 'Add Files/Folders' -and $d.Browse.Text -eq 'Browse...')
+    Check 'drop: saved next to the first dropped item, not in the remembered folder' ($d.Out.Text -like "$W\src\Encrypted-*.7z") $d.Out.Text
+    & $layout 'window started by a drop' $d.Page 4
+    $df.Dispose(); $script:MainUi = $m; $script:Settings.Remove('SaveFolder')
+    $ScriptDir = "$W\tooldir"
+    $own = Get-DroppedItems @("`"$W\tooldir\7z-Encryptor.ps1`"", "$W\tooldir\7Z-ENCRYPTOR.BAT", '')
+    $mix = Get-DroppedItems @("$W\tooldir\7z-Encryptor.ps1", "`"$W\src\single file.txt`"")
+    Check 'drop: the script dropped on its own launcher starts it with an empty list' ($own.Count -eq 0 -and $mix.Count -eq 1 -and $mix[0] -eq "$W\src\single file.txt")
+    Remove-Variable ScriptDir
+    Check 'remember: the window has the Remember settings box, showing the same choice' ($m.Remember.Text -eq 'Remember settings' -and $m.Remember.Checked)
     $m.Remember.Checked = $false
     Check 'remember: unticking deletes the settings file' (-not (Test-Path -LiteralPath $sf) -and -not $script:Settings.Remember)
-    $script:Settings.QuickNextToItem = $true; Save-EncSettings
+    $script:Settings.EmailMode = 'Program'; Save-EncSettings
     Check 'remember: unticked, later changes are not written' (-not (Test-Path -LiteralPath $sf))
     $bad = @('{not json', '', '[1,2]', 'null', '{"Remember":"yes","SaveFolder":"C:\\x"}', '{"SaveFolder":"C:\\x","EmailMode":"Share"}')
     $n = 0; foreach ($b in $bad) { [IO.File]::WriteAllText($sf, $b); if ((Read-Settings '7z-Encryptor' $EncSettingTypes).Count -eq 0) { $n++ } }
@@ -152,11 +179,10 @@ Check 'check: a non-ASCII password is refused for zip but allowed for 7z' (((Tes
     $rs = Read-Settings '7z-Encryptor' $EncSettingTypes
     Check 'damaged file: values of the wrong type are dropped, the rest is kept' ($rs.Remember -and $rs.EmailProgram -eq 'C:\m.exe' -and -not $rs.ContainsKey('SaveFolder') -and -not $rs.ContainsKey('QuickNextToItem') -and -not $rs.ContainsKey('EmailMode'))
     [IO.File]::WriteAllText($sf, '{not json'); $keepS = $script:Settings; $script:Settings = Read-Settings '7z-Encryptor' $EncSettingTypes
-    $qf3 = New-QuickWindow @("$W\src\single file.txt")
-    Check 'damaged file: the window still opens, Remember settings off, defaults used' (-not $script:QuickUi.Remember.Checked -and -not $script:QuickUi.Next.Checked); $qf3.Dispose(); $script:QuickUi = $q; $script:Settings = $keepS
+    $qf3 = New-MainWindow @("$W\src\single file.txt")
+    Check 'damaged file: the window still opens, Remember settings off, defaults used' (-not $script:MainUi.Remember.Checked -and $script:MainUi.RbClassic.Checked); $qf3.Dispose(); $script:MainUi = $m; $script:Settings = $keepS
     Check 'start: a window that fails with the remembered settings is built again with no memory' ($script:BsbEncSource.Contains('catch { if (-not $script:Settings.Count) { throw }; $script:Settings = @{}'))
     Remove-Item -LiteralPath $sf -Force -ErrorAction SilentlyContinue
-    $qf.Dispose()
 }
 
 # load the tool, but run the tests instead of showing the window (no splash, message boxes answered "Yes")
@@ -167,7 +193,7 @@ Add-Type -TypeDefinition 'public static class FakeMsg7 { public static string La
 $code = $code.Replace('[System.Windows.Forms.MessageBox]::Show(', '[FakeMsg7]::Show(')
 try { . ([scriptblock]::Create($code)) } finally { }
 
-# ---- 4. the launcher: drop a file whose name has spaces on the .bat; the small window must open ----
+# ---- 4. the launcher: drop a file whose name has spaces on the .bat; the window must open ----
 $drop = "$W\src\single file.txt"
 Add-Type -AssemblyName UIAutomationClient
 # started on its own (not through this console) so the tool's window never holds this script's output open
@@ -183,8 +209,37 @@ if ($proc) { Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContin
 $win = [bool]$proc -and $title -match '(^|,)7z-Encryptor(,|$)'; $cmdOk = [bool]$proc
 Check 'launcher: a dropped file with spaces opens the 7z-Encryptor window with that file' ($win -and $cmdOk) "window title: '$title'"
 
+# ---- 5. names cmd would cut up: the launcher passes its own command line on (7z-Encryptor.bat 1.1) ----
+# Explorer quotes a dropped name only when it has a space, so R&D.txt or x^y.txt reach cmd bare. A copy of the
+# launcher, in a folder with & and a space, starts the tool's real start code, which writes what the window would list.
+$dd = Join-Path $W 'drop R&D'; [void][IO.Directory]::CreateDirectory($dd)
+$batText = [IO.File]::ReadAllText("$Root\tools\7z-Encryptor.bat") -replace 'start "" powershell\.exe -NoProfile -ExecutionPolicy Bypass -STA -WindowStyle Hidden -File "%~dp07z-Encryptor\.ps1"', 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0args.ps1"'
+[IO.File]::WriteAllText("$dd\7z-Encryptor.bat", $batText); [IO.File]::WriteAllText("$dd\7z-Encryptor.ps1", 'x')
+$src0 = [IO.File]::ReadAllText("$Root\tools\7z-Encryptor.ps1"); $a0 = $src0.IndexOf('# ---------- start ----------'); $b0 = $src0.IndexOf('# if the window cannot be built')
+[IO.File]::WriteAllText("$dd\args.ps1", 'param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Files); $ScriptDir = $PSScriptRoot' + "`n" + $src0.Substring($a0, $b0 - $a0) + "`n" + '[IO.File]::WriteAllText("$PSScriptRoot\got.txt", ($Files -join "`n"))')
+$cases = @(@('R&D.txt'), @('x^y.txt'), @('R&D.txt', 'two words.txt'), @('a b&c.txt'), @('50%off.txt'), @('Wow!.txt'), @('x^^&!%y%.txt', 'p q.txt'), @('(1).txt', 'a;b,c=d.txt'), @('7z-Encryptor.ps1'), @(), @('Sub Dir'))
+$badDrops = @()
+foreach ($case in $cases) {
+    Remove-Item "$dd\got.txt" -ErrorAction SilentlyContinue
+    $paths = @($case | ForEach-Object { if ($_ -eq 'Sub Dir') { [void][IO.Directory]::CreateDirectory("$dd\$_") } elseif ($_ -ne '7z-Encryptor.ps1') { [IO.File]::WriteAllText("$dd\$_", 'x') }; "$dd\$_" })
+    $argText = ($paths | ForEach-Object { if ($_ -match ' ') { "`"$_`"" } else { $_ } }) -join ' '
+    Start-Process cmd.exe -ArgumentList "/c `"`"$dd\7z-Encryptor.bat`" $argText`"" -WindowStyle Hidden -Wait
+    $got = if (Test-Path "$dd\got.txt") { (Get-Content "$dd\got.txt") -join '|' } else { '(nothing)' }
+    if ($got -ne (($paths | Where-Object { $_ -notlike '*\7z-Encryptor.ps1' }) -join '|')) { $badDrops += "$($case -join ' + ') -> $got" }
+}
+Check "launcher: dropped names with & ^ % ! ; , = ( ) and spaces arrive whole, also in a folder with & ($($cases.Count) drops)" ($badDrops.Count -eq 0) ($badDrops -join '; ')
+# started from an open console (cmd's own line is just cmd.exe): the arguments are used as before
+Remove-Item "$dd\got.txt" -ErrorAction SilentlyContinue
+$cmdIn = "`"$dd\7z-Encryptor.bat`" `"$dd\p q.txt`" `"$dd\R&D.txt`"`r`nexit`r`n"; [IO.File]::WriteAllText("$W\console-in.txt", $cmdIn)
+Start-Process cmd.exe -ArgumentList '/q' -RedirectStandardInput "$W\console-in.txt" -RedirectStandardOutput "$W\console-out.txt" -WindowStyle Hidden -Wait
+$got = if (Test-Path "$dd\got.txt") { (Get-Content "$dd\got.txt") -join '|' } else { '(nothing)' }
+Check 'launcher: started from a console with quoted names, they arrive as typed' ($got -eq "$dd\p q.txt|$dd\R&D.txt") $got
+$fn = { param($l, $b) $s = [IO.File]::ReadAllText("$Root\tools\7z-Encryptor.ps1"); $ast = [Management.Automation.Language.Parser]::ParseInput($s, [ref]$null, [ref]$null); . ([scriptblock]::Create($ast.Find({ $args[0] -is [Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -eq 'Get-LauncherItems' }, $true).Extent.Text)); Get-LauncherItems $l $b }
+Check 'launcher line: no launcher in it, or nothing at all, means "use the arguments"' ($null -eq (& $fn 'C:\WINDOWS\system32\cmd.exe' 'C:\t\7z-Encryptor.bat') -and $null -eq (& $fn '' 'C:\t\7z-Encryptor.bat'))
+Check 'launcher line: a double-click is an empty list; cmd /k and a launcher path in another case work too' ((& $fn 'C:\WINDOWS\system32\cmd.exe /c ""C:\t\7z-Encryptor.bat" "' 'C:\t\7z-Encryptor.bat').Count -eq 0 -and ((& $fn 'cmd.exe /K ""c:\T\7Z-ENCRYPTOR.BAT" C:\a&b.txt"' 'C:\t\7z-Encryptor.bat') -join '|') -eq 'C:\a&b.txt')
 $env:WRT_SETTINGS_DIR = $null
 Remove-Item $W -Recurse -Force -ErrorAction SilentlyContinue
 Write-Host ''
 Write-Host "$script:Pass passed, $script:Fail failed" -ForegroundColor $(if ($script:Fail) { 'Red' } else { 'Green' })
 if ($script:Fail) { exit 1 }
+exit 0

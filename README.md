@@ -137,7 +137,7 @@ All scripts are in [`tools/`](tools/). Start each one with its launcher, or righ
 | [Monitor-Logs](#monitor-logs) | (right-click > Run with PowerShell) | Opens live-updating windows for chosen logs and Event Viewer channels |
 | [ClaudeLogAnalyzer](#claudeloganalyzer) | (Run-PS-As-Admin.bat) | Sends logs and screenshots to Claude or Gemini and shows the diagnosis |
 | [Backup Script Builder](#backup-script-builder) | `BackupScriptBuilder.bat` | Builds and schedules backup jobs for [FreeFileSync](https://freefilesync.org/), or Robocopy / Xcopy scripts: pick folders and a destination, set the schedule |
-| [7z-Encryptor](#7z-encryptor) | `7z-Encryptor.bat` | Encrypts files and folders with 7-Zip and a password you pick: 7z (AES-256, names hidden too) or zip (standard or AES-256). Drop files on the `.bat` for a quick window. Needs [7-Zip](https://www.7-zip.org/) (it can install it with winget) |
+| [7z-Encryptor](#7z-encryptor) | `7z-Encryptor.bat` | Encrypts files and folders with 7-Zip and a password you pick: 7z (AES-256, names hidden too) or zip (standard or AES-256). Drop files on the `.bat` to start with them in the list. Needs [7-Zip](https://www.7-zip.org/) (it can install it with winget) |
 | Run-PS-As-Admin | `Run-PS-As-Admin.bat` | Drag any `.ps1` onto it to run it as administrator (unchanged since v1.1) |
 
 WinSuperTool contains the features of WinRepairTool, Collect-Logs, Monitor-Logs and ClaudeLogAnalyzer. The separate tools are kept for when you need only one job, and since v1.8 they have the same fixes.
@@ -230,14 +230,14 @@ Download `BackupScriptBuilder-v1.7.zip` from the [latest release](../../releases
 
 ### 7z-Encryptor
 
-`7z-Encryptor.ps1` + `7z-Encryptor.bat`. Encrypts files and folders into one password-protected file with [7-Zip](https://www.7-zip.org/). Version 1.3 ([notes](docs/changes/7z-Encryptor-1.3.md); [1.2](docs/changes/7z-Encryptor-1.2.md), [1.1](docs/changes/7z-Encryptor-1.1.md), [1.0](docs/changes/7z-Encryptor-1.0.md)). Download `7z-Encryptor-v1.3.zip` from the [latest release](../../releases/latest).
+`7z-Encryptor.ps1` + `7z-Encryptor.bat`. Encrypts files and folders into one password-protected file with [7-Zip](https://www.7-zip.org/). Version 1.4 ([notes](docs/changes/7z-Encryptor-1.4.md); [1.3](docs/changes/7z-Encryptor-1.3.md), [1.2](docs/changes/7z-Encryptor-1.2.md), [1.1](docs/changes/7z-Encryptor-1.1.md), [1.0](docs/changes/7z-Encryptor-1.0.md)). Download `7z-Encryptor-v1.4.zip` from the [latest release](../../releases/latest).
 
 - **Main window** (double-click `7z-Encryptor.bat`): tick files and folders in the same tree as Backup Script Builder, pick the format and a password (typed twice), and where to save. It is filled in next to the first item, or in the folder of your last encrypted file (when Remember settings is ticked).
-- **After encrypting:** **Show in folder**, and **Send by email** with Send to > Mail recipient (classic, falls back to the Windows Share window), Windows Share, or a mail program you choose. The choice is remembered when Remember settings is ticked. Send the password some other way, never in the same email.
-- **Remember settings** (off at first, in both windows): when ticked, settings are kept in `7z-Encryptor.settings.json` next to the script, so they travel with the folder. Never a password. Unticking deletes the file; a damaged file is ignored.
+- **After encrypting:** **Show in folder**, and **Send by email** with Send to > Mail recipient (classic, falls back to the Windows Share window), Windows Share, a mail program you choose, or **mailto:** with an address you type (your default mail program opens a new email to it; attach the file, which is selected in Explorer, by dragging it in). The choice and the address are remembered when Remember settings is ticked. Send the password some other way, never in the same email.
+- **Remember settings** (off at first): when ticked, settings are kept in `7z-Encryptor.settings.json` next to the script, so they travel with the folder. Never a password. Unticking deletes the file; a damaged file is ignored.
 - **7z:** AES-256. **Full encryption** (on by default) also hides the file names, so nothing can be seen without the password.
 - **zip:** **Standard** (ZipCrypto) opens in Windows Explorer with the password but is weak, and file names stay visible. **AES-256** is strong but needs 7-Zip, WinRAR or similar to open.
-- **Drag and drop:** drop files or folders on `7z-Encryptor.bat` for a small window that asks 7z or zip and the password. The file is saved in the 7z-Encryptor folder (or, ticked, next to the dropped item; the tick is remembered when Remember settings is ticked).
+- **Drag and drop:** drop files or folders on `7z-Encryptor.bat` to open the same window with them already in the list (you can still add or remove items and pick another place with Browse...). The file is saved next to the first dropped item. Dropping `7z-Encryptor.ps1` itself on the launcher just starts the tool with an empty list. Names with `&` or `^` (which Windows does not quote) arrive whole.
 - Every new file is tested with the password before it is reported as done. The originals are never changed or deleted, and an existing file is never overwritten.
 - 7-Zip is looked for at start. If it is missing, the tool asks whether to install it. **Install 7-Zip** / **Update 7-Zip** run `winget install` / `winget upgrade -e --id 7zip.7zip`.
 - Paths with `&` or `%` in their names cannot be dropped on the `.bat` (a limit of batch files). Use the main window for those.
@@ -302,7 +302,7 @@ Earlier phases also ran every WinFixKit fix and undo as admin, the network reset
 
 ### Test Center: run the tests yourself
 
-**Test Center** ([`tests/TestCenter.ps1`](tests/TestCenter.ps1)) is one window for every test that is run regularly. It has a tab per tool (Whole toolkit, WinSuperTool, WinFixKit, Backup Script Builder, Log tools, Other PCs / WinPE) with a tick box per test. Tick what you want and press **Run selected**. The tests then run one after the other.
+**Test Center** ([`tests/TestCenter.ps1`](tests/TestCenter.ps1)) is one window for every test that is run regularly. It has a tab per tool (Whole toolkit, WinSuperTool, WinFixKit, Backup Script Builder, 7z-Encryptor, Log tools, Other PCs / WinPE) with a tick box per test. Tick what you want and press **Run selected**. The tests then run one after the other.
 
 - **What to test:**
   - **Offline:** any folder with the toolkit scripts, including **your own edited build**.
@@ -311,9 +311,9 @@ Earlier phases also ran every WinFixKit fix and undo as admin, the network reset
 - **Scripted runs:** `TestCenter.ps1 -ToolsFolder <dir> -Run unit-suite,unit-toolkit -ExitWhenDone`.
 - **Greyed out:** a test that can't run on the PC or with the chosen tools, for example the two-monitor tests on one monitor. Tests that change the PC ask first.
 
-Details: [Test Center 1.0 beta 3](docs/changes/TestCenter-1.0-beta.3.md).
+Details: [Test Center 1.0 beta 4](docs/changes/TestCenter-1.0-beta.4.md) ([beta 3](docs/changes/TestCenter-1.0-beta.3.md)).
 
-Download `TestCenter-v1.0-beta.3.zip` from the [latest release](../../releases/latest) (under "Betas"), extract it and double-click `Start-TestCenter.bat`. Start it as administrator to get only one admin prompt. Test Center has its own version number and is updated only when the test procedures or the test scripts change. When a test fails, **Pack full results** makes a zip with every log for whoever fixes it. That zip contains PC details, so don't post it publicly.
+Download `TestCenter-v1.0-beta.4.zip` from the [latest release](../../releases/latest) (under "Betas"), extract it and double-click `Start-TestCenter.bat`. Start it as administrator to get only one admin prompt. Test Center has its own version number and is updated only when the test procedures or the test scripts change. When a test fails, **Pack full results** makes a zip with every log for whoever fixes it. That zip contains PC details, so don't post it publicly.
 
 To run the unit tests (they read the scripts' code and run no GUI or system changes):
 

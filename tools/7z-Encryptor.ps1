@@ -1,11 +1,11 @@
-# Version 1.3 (2026-11-26)
+# Version 1.4 (2026-11-26)
 # 7z-Encryptor - encrypts files and folders with 7-Zip: a 7z (AES-256, optionally the file names too) or a zip
-# (standard ZipCrypto or AES-256), with a password you pick. Files dropped on 7z-Encryptor.bat open a small window.
+# (standard ZipCrypto or AES-256), with a password you pick. Files dropped on 7z-Encryptor.bat open the same window, already in the list.
 # Windows Repair Toolkit - Copyright (C) 2026 TheTechSupportGuru - SPDX-License-Identifier: GPL-3.0-or-later
 # Free software under the GNU General Public License v3 or (at your option) any later version, WITHOUT ANY WARRANTY. See LICENSE
 # Needs 7-Zip (free, https://www.7-zip.org/); the window can install it with winget.
-#   7z-Encryptor.ps1                 the main window
-#   7z-Encryptor.ps1 <file> <file>   the small window for dropped items
+#   7z-Encryptor.ps1                 the window, empty
+#   7z-Encryptor.ps1 <file> <file>   the same window with these items in the list, saved next to the first one
 param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Files)
 $ScriptDir = $PSScriptRoot
 # Uses only what ships with Windows (PowerShell 5.1 + WinForms).
@@ -446,12 +446,14 @@ function Test-EncryptInput([string[]]$sources, [string]$password, [string]$passw
     if (-not @($sources | Where-Object { $_ }).Count) { return 'Add at least one file or folder.' }
     foreach ($s in $sources) { if (-not (Test-Path -LiteralPath $s)) { return "Not found: $s" } }
     if (-not $password) { return 'Type a password.' }
-    if ($password -ne $password2) { return 'The two passwords are not the same.' }
+    if ($password -cne $password2) { return 'The two passwords are not the same.' }
     if ($password -match '"') { return 'The password cannot contain a double quote (").' }
     if ($format -eq 'zip' -and $password -match '[^\x20-\x7E]') { return 'A zip password can only use English letters, digits, spaces and ordinary symbols (7-Zip refuses others in zip files). Use 7z for other characters.' }
-    if (-not $out -or $out -notmatch '^([a-zA-Z]:\\|\\\\[^\\]+\\[^\\]+)') { return 'Pick where to save the encrypted file (a full path).' }
+    if (-not $out -or $out -notmatch '^([a-zA-Z]:\\|\\\\[^\\]+\\[^\\]+\\.)') { return 'Pick where to save the encrypted file (a full path).' }
     if (Test-Path -LiteralPath $out) { return "$out already exists. Pick another name." }
     foreach ($s in $sources) { if ($out -ieq $s) { return 'The encrypted file cannot replace one of the items.' } }
+    # 1.4: not inside a folder that is being encrypted (7-Zip would pack the new file into itself)
+    foreach ($s in $sources) { $d = $s.TrimEnd('\') + '\'; if ([IO.Directory]::Exists($s) -and $out.StartsWith($d, [StringComparison]::OrdinalIgnoreCase)) { return "The encrypted file cannot be saved inside $s, which is being encrypted. Pick another place (Browse...)." } }
     return ''
 }
 # Runs 7-Zip without a window while the window stays responsive; returns the exit code
@@ -484,7 +486,7 @@ function Get-SettingsFile([string]$name) {
 }
 # 1.3: nothing is remembered unless "Remember settings" is ticked (off at first). The file is only used when it says
 # Remember = true; a damaged or odd file (bad JSON, wrong types) means no memory: the tool starts as if it had none.
-$EncSettingTypes = @{ SaveFolder = [string]; EmailMode = [string]; EmailProgram = [string]; QuickNextToItem = [bool] }
+$EncSettingTypes = @{ SaveFolder = [string]; EmailMode = [string]; EmailProgram = [string]; MailTo = [string] }
 function Read-Settings([string]$name, [hashtable]$types) {
     $s = @{}
     try {
@@ -505,20 +507,19 @@ function Save-Settings([string]$name, $s) {
 function Remove-Settings([string]$name) { try { $f = Get-SettingsFile $name; if ($f -and [IO.File]::Exists($f)) { [IO.File]::Delete($f) } } catch {} }
 $script:Settings = Read-Settings '7z-Encryptor' $EncSettingTypes
 function Save-EncSettings { if ($script:Settings.Remember) { Save-Settings '7z-Encryptor' $script:Settings } }
-# the "Remember settings" box (both windows): ticked saves what is chosen now, unticked deletes the file. The choices
+# the "Remember settings" box: ticked saves what is chosen now, unticked deletes the file. The choices
 # stay in use until the tool closes either way.
 function Set-EncRemember([bool]$on) {
     if ($on) {
         $script:Settings.Remember = $true
-        if ($script:MainUi) { $script:Settings.EmailMode = Get-MainEmailMode }
-        if ($script:QuickUi) { $script:Settings.QuickNextToItem = $script:QuickUi.Next.Checked }
+        if ($script:MainUi) { $script:Settings.EmailMode = Get-MainEmailMode; $script:Settings.MailTo = $script:MainUi.MailTo.Text.Trim() }
         Save-EncSettings
     } else { $script:Settings.Remember = $false; Remove-Settings '7z-Encryptor' }
 }
 function New-RememberBox($parent, [string]$loc) {
     $c = New-Ctl CheckBox 'Remember settings' $loc '170,24'; $c.Checked = [bool]$script:Settings.Remember
     $c.add_CheckedChanged({ Set-EncRemember $this.Checked }); $parent.Controls.Add($c)
-    $t = New-Object System.Windows.Forms.ToolTip; $t.SetToolTip($c, 'Off: nothing is saved. On: the save folder, email choice and drop-window tick are kept in 7z-Encryptor.settings.json next to the script (never a password). Untick to delete that file.')
+    $t = New-Object System.Windows.Forms.ToolTip; $t.SetToolTip($c, 'Off: nothing is saved. On: the save folder, email choice and mailto: address are kept in 7z-Encryptor.settings.json next to the script (never a password). Untick to delete that file.')
     $c
 }
 
@@ -541,7 +542,15 @@ public static class WrtMapi {
 }
 "@
 }
-$EmailModes = 'Classic', 'Share', 'Program'
+$EmailModes = 'Classic', 'Share', 'Program', 'Mailto'
+# 1.4: a mailto: link (Windows opens the default mail program with the address filled in). A mailto: link cannot
+# attach a file, so the file is also selected in Explorer to drag into the email. $null when the address is not usable.
+function Get-MailtoUri([string]$to, [string]$file) {
+    $to = ($to -replace ';', ',' -replace '\s', '' -replace ',{2,}', ',').Trim(',')
+    if ($to -and $to -notmatch '^[^@,?&#"<>%]+@[^@,?&#"<>%]+(,[^@,?&#"<>%]+@[^@,?&#"<>%]+)*$') { return $null }
+    $name = Split-Path $file -Leaf
+    return 'mailto:' + $to + '?subject=' + [Uri]::EscapeDataString($name) + '&body=' + [Uri]::EscapeDataString("Attached: $name (encrypted). The password comes separately.")
+}
 # the command line for a picked mail program: Outlook and Thunderbird attach with their own switches
 function Get-MailProgramArgs([string]$exe, [string]$file) {
     switch -regex ((Split-Path $exe -Leaf).ToLower()) {
@@ -561,9 +570,16 @@ function Invoke-ShareWindow([string]$file) {
     } catch { return $false }
 }
 # returns '' when the mail / share window opened, else a message for the user
-function Send-EncryptedFile([string]$file, [string]$mode, [string]$program, [IntPtr]$hwnd = [IntPtr]::Zero) {
+function Send-EncryptedFile([string]$file, [string]$mode, [string]$program, [IntPtr]$hwnd = [IntPtr]::Zero, [string]$mailTo = '') {
     if (-not ($file -and (Test-Path -LiteralPath $file))) { return "The encrypted file is not there any more:`r`n$file" }
     $name = Split-Path $file -Leaf
+    if ($mode -eq 'Mailto') {
+        $u = Get-MailtoUri $mailTo $file
+        if (-not $u) { return "Type an email address for mailto: (several: separate them with ; ), or leave it empty." }
+        try { Start-Process $u } catch { return "Windows has no mail program set for mailto: links.`r`n$($_.Exception.Message)" }
+        Show-InFolder $file
+        return "Your mail program opens a new email$(if ($mailTo.Trim()) { " to $($mailTo.Trim())" }).`r`n`r`nA mailto: link cannot attach files: drag $name from the Explorer window that opened into the email."
+    }
     if ($mode -eq 'Program') {
         if (-not ($program -and (Test-Path -LiteralPath $program))) { return 'Pick the mail program first (Choose program...).' }
         try { Start-Process -FilePath $program -ArgumentList (Get-MailProgramArgs $program $file); return '' } catch { return "Could not start $program`r`n$($_.Exception.Message)" }
@@ -666,13 +682,14 @@ function Request-7ZipInstall($r) {
     } else { [void][System.Windows.Forms.MessageBox]::Show("$($r.Message)`r`n$($r.Output)", '7z-Encryptor', 'OK', 'Warning') }
 }
 
-# ---------- main window: pick files and folders, encrypt them into one archive ----------
-function New-MainWindow {
+# ---------- the window: pick files and folders (or drop them on 7z-Encryptor.bat), encrypt them into one archive ----------
+# 1.4: one window for both ways of starting. Dropped items are put in the list and saved next to the first one.
+function New-MainWindow([string[]]$items = @()) {
     $f = New-Object System.Windows.Forms.Form; Set-WrtScaling $f
-    $f.Text = '7z-Encryptor'; $f.Size = New-Object System.Drawing.Size(580, 700); $f.StartPosition = 'CenterScreen'
+    $f.Text = '7z-Encryptor'; $f.Size = New-Object System.Drawing.Size(580, 732); $f.StartPosition = 'CenterScreen'
     $f.FormBorderStyle = 'FixedDialog'; $f.MaximizeBox = $false; $f.Font = New-Object System.Drawing.Font('Segoe UI', 9)
     $p = New-Object System.Windows.Forms.Panel; $p.Dock = 'Fill'; $f.Controls.Add($p)
-    $w = @{ Form = $f; Page = $p; OutEdited = $false; LastOut = '' }
+    $w = @{ Form = $f; Page = $p; OutEdited = $false; LastOut = ''; Dropped = [bool]@($items).Count }
     $bold = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
     $w.LblSrc = New-Ctl Label '1. Files and folders to encrypt' '15,10'; $w.LblSrc.Font = $bold
     $w.List = New-Ctl ListBox '' '15,33' '390,130'; $w.List.SelectionMode = 'MultiExtended'; $w.List.HorizontalScrollbar = $true
@@ -692,22 +709,25 @@ function New-MainWindow {
     $w.Mail = New-Ctl Button 'Send by email' '160,492' '135,28'; $w.Mail.Enabled = $false
     $w.LblMail = New-Ctl Label 'Email with:' '15,531' '75,20'
     # their own panel: radio buttons in one container are one group, and the 7z / zip choice is on the page itself
-    $w.MailPanel = New-Object System.Windows.Forms.Panel; $w.MailPanel.Location = '92,526'; $w.MailPanel.Size = '460,28'
+    $w.MailPanel = New-Object System.Windows.Forms.Panel; $w.MailPanel.Location = '92,526'; $w.MailPanel.Size = '460,58'
     $w.RbClassic = New-Ctl RadioButton 'Send to > Mail recipient' '0,2' '175,24'
     $w.RbShare = New-Ctl RadioButton 'Windows Share' '178,2' '115,24'
     $w.RbProgram = New-Ctl RadioButton 'Choose program...' '296,2' '160,24'
-    $w.MailPanel.Controls.AddRange(@($w.RbClassic, $w.RbShare, $w.RbProgram))
+    # 1.4: mailto: with the address typed here (typing in the box picks this option)
+    $w.RbMailto = New-Ctl RadioButton 'mailto:' '0,32' '70,24'
+    $w.MailTo = New-Ctl TextBox ([string]$script:Settings.MailTo) '72,31' '384,25'
+    $w.MailPanel.Controls.AddRange(@($w.RbClassic, $w.RbShare, $w.RbProgram, $w.RbMailto, $w.MailTo))
     $mode = [string]$script:Settings.EmailMode; if ($EmailModes -notcontains $mode) { $mode = 'Classic' }
-    switch ($mode) { 'Share' { $w.RbShare.Checked = $true } 'Program' { $w.RbProgram.Checked = $true } default { $w.RbClassic.Checked = $true } }
+    switch ($mode) { 'Share' { $w.RbShare.Checked = $true } 'Program' { $w.RbProgram.Checked = $true } 'Mailto' { $w.RbMailto.Checked = $true } default { $w.RbClassic.Checked = $true } }
     if ($mode -eq 'Program' -and $script:Settings.EmailProgram) { $w.RbProgram.Text = 'Program: ' + [IO.Path]::GetFileNameWithoutExtension([string]$script:Settings.EmailProgram) }
     $p.Controls.AddRange(@($w.ShowDir, $w.Mail, $w.LblMail, $w.MailPanel))
     $script:MainUi = $w
-    $w.Get7 = New-Get7Row $p 567 { $script:MainUi.Go.Enabled = [bool]$script:SevenZip }
-    $w.Remember = New-RememberBox $p '15,600'
+    $w.Get7 = New-Get7Row $p 599 { $script:MainUi.Go.Enabled = [bool]$script:SevenZip }
+    $w.Remember = New-RememberBox $p '15,632'
     $w.Go.Enabled = [bool]$script:SevenZip
-    Add-Help $p 245 7 'Files and folders' "Tick files and folders in the tree ('Add Files/Folders'). Everything in the list goes into ONE encrypted file; folders keep their name and everything inside them. The originals are not changed or deleted."
-    Add-Help $p 105 357 'Save as' "Where the encrypted file goes, named after the first item (or Encrypted-<date> for several items). With 'Remember settings' ticked, the folder of your last encrypted file is remembered (in 7z-Encryptor.settings.json next to the script, so it travels with the folder) and used next time; until then it goes next to the first item. 'Browse...' picks another place or name. An existing file is never overwritten."
-    Add-Help $p 305 494 'Show in folder / Send by email' ("After a file is encrypted: 'Show in folder' opens its folder with the file selected; 'Send by email' attaches it to a new email.`r`n`r`nEmail with (remembered when 'Remember settings' is ticked):`r`n- Send to > Mail recipient: the classic Windows way, the same as right-click > Send to > Mail recipient. Needs a classic mail program (Outlook classic, Thunderbird, ...). If there is none (for example only the new Outlook or webmail), the Windows Share window opens instead.`r`n- Windows Share: the Windows 10 / 11 Share window (mail apps, nearby sharing, ...).`r`n- Choose program...: a mail program you pick (Outlook and Thunderbird get the file attached; other programs are started with the file name).`r`n`r`nSend the password some other way (phone, text message), never in the same email.")
+    Add-Help $p 245 7 'Files and folders' "Tick files and folders in the tree ('Add Files/Folders'), or drop them on 7z-Encryptor.bat to start with them in the list. Everything in the list goes into ONE encrypted file; folders keep their name and everything inside them. The originals are not changed or deleted."
+    Add-Help $p 105 357 'Save as' "Where the encrypted file goes, named after the first item (or Encrypted-<date> for several items). Items dropped on 7z-Encryptor.bat are saved next to the first one. Otherwise, with 'Remember settings' ticked, the folder of your last encrypted file is remembered (in 7z-Encryptor.settings.json next to the script, so it travels with the folder) and used next time; until then it goes next to the first item. 'Browse...' picks another place or name. An existing file is never overwritten."
+    Add-Help $p 305 494 'Show in folder / Send by email' ("After a file is encrypted: 'Show in folder' opens its folder with the file selected; 'Send by email' attaches it to a new email.`r`n`r`nEmail with (remembered when 'Remember settings' is ticked):`r`n- Send to > Mail recipient: the classic Windows way, the same as right-click > Send to > Mail recipient. Needs a classic mail program (Outlook classic, Thunderbird, ...). If there is none (for example only the new Outlook or webmail), the Windows Share window opens instead.`r`n- Windows Share: the Windows 10 / 11 Share window (mail apps, nearby sharing, ...).`r`n- Choose program...: a mail program you pick (Outlook and Thunderbird get the file attached; other programs are started with the file name).`r`n- mailto: Windows' own mailto: link: your default mail program opens a new email to the address you type (several: separate them with ; ; or leave it empty). The file name is in the subject. A mailto: link cannot attach files, so the file is also selected in Explorer: drag it into the email.`r`n`r`nSend the password some other way (phone, text message), never in the same email.")
 
     $w.Add.add_Click({ $x = $script:MainUi; foreach ($q in (Show-FolderPicker $true)) { if (-not @($x.List.Items | Where-Object { $_ -ieq $q }).Count) { [void]$x.List.Items.Add($q) } }; Update-MainOut })
     $w.Remove.add_Click({ $x = $script:MainUi; foreach ($s in @($x.List.SelectedItems)) { $x.List.Items.Remove($s) }; Update-MainOut })
@@ -738,14 +758,18 @@ function New-MainWindow {
     $w.ShowDir.add_Click({ $x = $script:MainUi; if ($x.LastOut) { Show-InFolder $x.LastOut } })
     $w.Mail.add_Click({
         $x = $script:MainUi
-        $m = Send-EncryptedFile $x.LastOut (Get-MainEmailMode) ([string]$script:Settings.EmailProgram) $x.Form.Handle
+        $m = Send-EncryptedFile $x.LastOut (Get-MainEmailMode) ([string]$script:Settings.EmailProgram) $x.Form.Handle $x.MailTo.Text
         if ($m) { [void][System.Windows.Forms.MessageBox]::Show($m, '7z-Encryptor', 'OK', 'Information') }
     })
-    foreach ($rb in $w.RbClassic, $w.RbShare, $w.RbProgram) { $rb.add_Click({ Set-MainEmailMode $this }) }
+    foreach ($rb in $w.RbClassic, $w.RbShare, $w.RbProgram, $w.RbMailto) { $rb.add_Click({ Set-MainEmailMode $this }) }
+    $w.MailTo.add_TextChanged({ $x = $script:MainUi; if (-not $x.RbMailto.Checked) { $x.RbMailto.Checked = $true; Set-MainEmailMode $x.RbMailto } })
+    $w.MailTo.add_Leave({ $script:Settings.MailTo = $script:MainUi.MailTo.Text.Trim(); Save-EncSettings })
     $f.Add_Shown({ Request-7ZipInstall $script:MainUi.Get7 })
+    foreach ($i in @($items)) { if (-not @($w.List.Items | Where-Object { $_ -ieq $i }).Count) { [void]$w.List.Items.Add($i) } }
+    Update-MainOut
     return $f
 }
-function Get-MainEmailMode { $x = $script:MainUi; if ($x.RbShare.Checked) { 'Share' } elseif ($x.RbProgram.Checked) { 'Program' } else { 'Classic' } }
+function Get-MainEmailMode { $x = $script:MainUi; if ($x.RbShare.Checked) { 'Share' } elseif ($x.RbProgram.Checked) { 'Program' } elseif ($x.RbMailto.Checked) { 'Mailto' } else { 'Classic' } }
 # a click on an email option: remember it; "Choose program..." asks for the program (Cancel keeps the old choice)
 function Set-MainEmailMode($rb) {
     $x = $script:MainUi
@@ -754,10 +778,11 @@ function Set-MainEmailMode($rb) {
         if ($script:Settings.EmailProgram) { try { $ofd.InitialDirectory = Split-Path ([string]$script:Settings.EmailProgram) } catch {} } else { $ofd.InitialDirectory = ${env:ProgramFiles} }
         $ok = $ofd.ShowDialog() -eq 'OK'; if ($ok) { $script:Settings.EmailProgram = $ofd.FileName }; $ofd.Dispose()
         if (-not $ok -and -not $script:Settings.EmailProgram) {
-            if ([string]$script:Settings.EmailMode -eq 'Share') { $x.RbShare.Checked = $true } else { $x.RbClassic.Checked = $true }; return
+            switch ([string]$script:Settings.EmailMode) { 'Share' { $x.RbShare.Checked = $true } 'Mailto' { $x.RbMailto.Checked = $true } default { $x.RbClassic.Checked = $true } }; return
         }
     }
-    $script:Settings.EmailMode = Get-MainEmailMode; Save-EncSettings
+    $script:Settings.EmailMode = Get-MainEmailMode; $script:Settings.MailTo = $x.MailTo.Text.Trim(); Save-EncSettings
+    if ($rb -eq $x.RbMailto -and -not $x.MailTo.Focused) { [void]$x.MailTo.Focus() }
     $x.RbProgram.Text = if ($x.RbProgram.Checked -and $script:Settings.EmailProgram) { 'Program: ' + [IO.Path]::GetFileNameWithoutExtension([string]$script:Settings.EmailProgram) } else { 'Choose program...' }
 }
 # Fills in "Save as" from the list and the format, until the user types or browses a name of their own
@@ -765,60 +790,38 @@ function Update-MainOut {
     $x = $script:MainUi; $ext = (Get-EncryptChoice $x.Opt).Format
     if ($x.OutEdited) { if ($x.Out.Text -match '\.(7z|zip)$') { $x.Out.Text = $x.Out.Text -replace '\.(7z|zip)$', ".$ext" }; return }
     $src = @($x.List.Items | ForEach-Object { [string]$_ })
-    $x.Out.Text = if ($src.Count) { $first = $src[0].TrimEnd('\'); $dir = if ($first -match '^[A-Za-z]:$') { $first + '\' } else { Split-Path $first }; if ($script:Settings.SaveFolder -and [IO.Directory]::Exists([string]$script:Settings.SaveFolder)) { $dir = [string]$script:Settings.SaveFolder }; Get-ArchivePath $src $dir $ext } else { '' }
+    $x.Out.Text = if ($src.Count) { $first = $src[0].TrimEnd('\'); $dir = if ($first -match '^[A-Za-z]:$') { $first + '\' } else { Split-Path $first }; if (-not $x.Dropped -and $script:Settings.SaveFolder -and [IO.Directory]::Exists([string]$script:Settings.SaveFolder)) { $dir = [string]$script:Settings.SaveFolder }; Get-ArchivePath $src $dir $ext } else { '' }
 }
-
-# ---------- quick window: files dropped on 7z-Encryptor.bat ----------
-# Asks 7z or zip and a password; the encrypted file is saved in the folder this script is in (or, ticked, next to
-# the first dropped item).
-function New-QuickWindow([string[]]$items) {
-    $f = New-Object System.Windows.Forms.Form; Set-WrtScaling $f
-    $f.Text = '7z-Encryptor'; $f.Size = New-Object System.Drawing.Size(560, 470); $f.StartPosition = 'CenterScreen'
-    $f.FormBorderStyle = 'FixedDialog'; $f.MaximizeBox = $false; $f.MinimizeBox = $false; $f.TopMost = $true; $f.Font = New-Object System.Drawing.Font('Segoe UI', 9)
-    $p = New-Object System.Windows.Forms.Panel; $p.Dock = 'Fill'; $f.Controls.Add($p)
-    $q = @{ Form = $f; Items = @($items) }
-    $names = @($items | ForEach-Object { Get-ItemName $_ })
-    $q.What = New-Ctl Label ('Encrypt ' + $(if ($names.Count -eq 1) { $names[0] } else { "$($names.Count) items: " + (($names | Select-Object -First 3) -join ', ') + $(if ($names.Count -gt 3) { ', ...' }) })) '15,12' '495,20'
-    $q.What.AutoEllipsis = $true; $q.What.Font = New-Object System.Drawing.Font('Segoe UI', 9, [System.Drawing.FontStyle]::Bold)
-    $p.Controls.Add($q.What)
-    $q.Opt = New-EncryptOptions $p 40
-    $q.Next = New-Ctl CheckBox 'Save next to the dropped item instead of in the 7z-Encryptor folder' '15,195'
-    $q.Where = New-Ctl Label '' '15,222' '495,36'; $q.Where.ForeColor = [System.Drawing.Color]::DimGray
-    $q.Go = New-Ctl Button 'Encrypt' '15,265' '240,38'; $q.Go.Font = New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
-    $q.Cancel = New-Ctl Button 'Cancel' '265,265' '120,38'; $q.Cancel.DialogResult = 'Cancel'; $f.CancelButton = $q.Cancel; $f.AcceptButton = $q.Go
-    $p.Controls.AddRange(@($q.Next, $q.Where, $q.Go, $q.Cancel))
-    Add-Help $p 400 270 'Encrypt' ("Encrypts the dropped items into one file with the format and password above. It is saved in the folder 7z-Encryptor is in, named after the item (or Encrypted-<date> for several items); tick the box to save it next to the dropped item instead (the tick is remembered when 'Remember settings' is ticked). An existing file is never overwritten, the originals are not changed, and the new file is tested with the password before you are told it is done.")
-    $script:QuickUi = $q
-    $q.Get7 = New-Get7Row $p 320 { $script:QuickUi.Go.Enabled = [bool]$script:SevenZip }
-    $q.Remember = New-RememberBox $p '15,353'
-    $q.Go.Enabled = [bool]$script:SevenZip
-    $f.Add_Shown({ Request-7ZipInstall $script:QuickUi.Get7 })
-    $q.Next.Checked = [bool]$script:Settings.QuickNextToItem
-    foreach ($c in $q.Next, $q.Opt.Rb7z) { $c.add_CheckedChanged({ Update-QuickWhere }) }
-    $q.Next.add_CheckedChanged({ $script:Settings.QuickNextToItem = $script:QuickUi.Next.Checked; Save-EncSettings })
-    Update-QuickWhere
-    $q.Go.add_Click({
-        $x = $script:QuickUi; $c = Get-EncryptChoice $x.Opt; $out = Get-QuickOut
-        $bad = Test-EncryptInput $x.Items $c.Password $x.Opt.Pw2.Text $out $c.Format
-        if ($bad) { [void][System.Windows.Forms.MessageBox]::Show($bad, '7z-Encryptor', 'OK', 'Warning'); return }
-        $x.Go.Enabled = $false; $x.Form.Cursor = 'WaitCursor'; $x.Where.Text = 'Encrypting...'
-        try { $r = Invoke-Encrypt (@{ SevenZip = $script:SevenZip; Sources = $x.Items; Out = $out } + $c) } finally { $x.Go.Enabled = $true; $x.Form.Cursor = 'Default' }
-        $x.Form.TopMost = $false; Show-EncryptResult $r
-        if ($r.Ok) { $x.Form.Close() } else { Update-QuickWhere }
-    })
-    return $f
-}
-function Get-QuickOut {
-    $x = $script:QuickUi; $ext = (Get-EncryptChoice $x.Opt).Format
-    $dir = if ($x.Next.Checked) { $first = $x.Items[0].TrimEnd('\'); if ($first -match '^[A-Za-z]:$') { $first + '\' } else { Split-Path $first } } elseif ($script:ScriptDir) { $script:ScriptDir } else { (Get-Location).Path }
-    return Get-ArchivePath $x.Items $dir $ext
-}
-function Update-QuickWhere { $script:QuickUi.Where.Text = 'Saves as: ' + (Get-QuickOut) }
 
 # ---------- start ----------
-$Files = @($Files | Where-Object { $_ } | ForEach-Object { $_.Trim('"') })
+# The items dropped on the launcher. The tool's own files (7z-Encryptor.ps1 dropped on 7z-Encryptor.bat) are left
+# out, so dropping the script on its launcher just starts it.
+function Get-DroppedItems([string[]]$files) {
+    $own = @('7z-Encryptor.ps1', '7z-Encryptor.bat') | ForEach-Object { if ($ScriptDir) { Join-Path $ScriptDir $_ } }
+    $full = { param($p) try { [IO.Path]::GetFullPath($p) } catch { $p } }
+    return ,@($files | Where-Object { $_ } | ForEach-Object { $_.Trim().Trim('"') } | Where-Object { $_ } | Where-Object { $f = & $full $_; -not @($own | Where-Object { $_ -ieq $f }).Count })
+}
+# The items in cmd's own command line, as 7z-Encryptor.bat 1.1 passes it on (WRT_DROP_CMDLINE): everything after the
+# launcher's path, split like Explorer wrote it (quoted when there is a space, else up to the next space). Keeps
+# & ^ % ! in names that cmd would have cut up. $null when the launcher is not in the line.
+function Get-LauncherItems([string]$cmdline, [string]$bat) {
+    if (-not $cmdline -or -not $bat) { return $null }
+    $i = $cmdline.IndexOf($bat, [StringComparison]::OrdinalIgnoreCase); $len = $bat.Length
+    if ($i -lt 0) { $leaf = Split-Path $bat -Leaf; $i = $cmdline.IndexOf($leaf, [StringComparison]::OrdinalIgnoreCase); $len = $leaf.Length }
+    if ($i -lt 0) { return $null }
+    $rest = $cmdline.Substring($i + $len); if ($rest.StartsWith('"')) { $rest = $rest.Substring(1) }
+    # cmd /c "<whole line>": the closing quote of the outer pair
+    if ($cmdline -match '(?i)\s/[ck]\s*"' -and $rest.TrimEnd().EndsWith('"')) { $rest = $rest.TrimEnd(); $rest = $rest.Substring(0, $rest.Length - 1) }
+    return ,@([regex]::Matches($rest, '"([^"]*)"|([^\s"]+)') | ForEach-Object { if ($_.Groups[1].Success) { $_.Groups[1].Value } else { $_.Groups[2].Value } } | Where-Object { $_.Trim() })
+}
+if ($env:WRT_DROP_CMDLINE) {
+    $fromLine = Get-LauncherItems $env:WRT_DROP_CMDLINE $env:WRT_DROP_BAT
+    if ($null -ne $fromLine) { $Files = $fromLine }
+}
+$env:WRT_DROP_CMDLINE = $null; $env:WRT_DROP_BAT = $null
+$Files = Get-DroppedItems $Files
 # if the window cannot be built with the remembered settings, it is built again with no memory (1.3)
-try { $form = if ($Files.Count) { New-QuickWindow $Files } else { New-MainWindow } }
-catch { if (-not $script:Settings.Count) { throw }; $script:Settings = @{}; $form = if ($Files.Count) { New-QuickWindow $Files } else { New-MainWindow } }
+try { $form = New-MainWindow $Files }
+catch { if (-not $script:Settings.Count) { throw }; $script:Settings = @{}; $form = New-MainWindow $Files }
 Initialize-WrtWindow $form @() 480 380
 [void]$form.ShowDialog()
