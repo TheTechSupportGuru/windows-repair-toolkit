@@ -93,6 +93,8 @@ $Tests = @(
     @{ Tab = 'WinFixKit'; Id = 'wfk-beta-auto'; Name = 'Unit tests: WinFixKit beta-automation (Automation port, Registry changes)'; Kind = 'pester'; Script = 'WinFixKitAutomation.Tests.ps1'; Min = 1; Default = $true
        Desc = 'The beta in beta\: the Automation code must still match WinSuperTool''s, and the Registry changes tab (key times, scan, defaults list, a real revert on a throw-away HKCU key). Changes nothing else.' }
     # ---- Backup Script Builder
+    @{ Tab = 'Backup Script Builder'; Id = 'backup-unit'; Name = 'Unit tests: Backup Script Builder edge cases'; Kind = 'pester'; Script = 'BackupScriptBuilder.Tests.ps1'; Min = 1; Default = $true
+       Desc = 'Pair names, drive keys, log file stamps, XML escaping, ticked-folder clean-up and reading tasks back. Changes nothing.' }
     @{ Tab = 'Backup Script Builder'; Id = 'backup-builder'; Name = 'Backup Script Builder: scripts, folder picker, schedules, layout'; Kind = 'ps'; Script = 'Run-BackupScriptBuilder.ps1'; Min = 3; Default = $true
        Desc = 'Builds a FreeFileSync script and compares it line by line with a reference, checks the destination rules, runs real Robocopy / Xcopy scripts, checks the folder picker (every user folder listed, no junctions, system folders only on request, no duplicates, the real dialog), creates / reads back / deletes a scheduled task of every type (in \BackupScriptBuilder\, as you), and checks the layout and every ? help text.' }
     # ---- Log tools
