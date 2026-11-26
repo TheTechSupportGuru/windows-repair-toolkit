@@ -27,9 +27,9 @@ Describe 'B1 beta script basics' {
         $pe.Count | Should Be 0
         @([IO.File]::ReadAllBytes($BetaPath) | Where-Object { $_ -gt 127 }).Count | Should Be 0
     }
-    It 'is the stable 1.9: no BETA in its version line or window title (promoted from the beta)' {
+    It 'is a stable version (1.9 or later): no BETA in its version line or window title (promoted from the beta)' {
         $t = [IO.File]::ReadAllText($BetaPath)
-        $t | Should Match '# Version 1\.9[ .]'; $t | Should Not Match '# Version 1\.9 BETA'
+        $t | Should Match '# Version (1\.9|[2-9]\.\d+)[ .]'; $t | Should Not Match '# Version [\d.]+ BETA'
         (Get-BetaAssign 'AppName') | Should Not Match 'BETA'
     }
     It 'every Recovery tool Kind has rules, and every Logs name is a Live Monitor item' {

@@ -1,5 +1,5 @@
 #requires -Version 5.1
-# Version 1.9 (2026-11-21). What changed: docs/changes/V1.9.md
+# Version 2.0 (2026-11-26). What changed: docs/changes/V2.0.md
 # NO-AI EDITION - generated from WinSuperTool.ps1 by build/Build-NoAIEdition.ps1; do not edit by hand.
 # The AI Analyze tab, the phone QR login, the "Send key logs to AI" button and all code that talks to an AI service
 # or listens on the network are left out. Everything else is identical to WinSuperTool.ps1 of the same version.
@@ -569,7 +569,7 @@ $Collectors = [ordered]@{
             try {
                 Get-CimInstance Win32_ReliabilityRecords -ErrorAction Stop |
                     Select-Object TimeGenerated, SourceName, EventIdentifier, ProductName, Message |
-                    Export-Csv (Join-Path $d 'ReliabilityHistory.csv') -NoTypeInformation
+                    Export-Csv -LiteralPath (Join-Path $d 'ReliabilityHistory.csv') -NoTypeInformation
                 $script:ColCount++
             } catch { Say '   Reliability history unavailable' }
             $filter = @{ LogName = 'System'; Id = $ids }
@@ -580,7 +580,7 @@ $Collectors = [ordered]@{
         try {
             Get-WinEvent -FilterHashtable $filter -ErrorAction Stop |
                 Format-List TimeCreated, Id, ProviderName, Message |
-                Out-File (Join-Path $d 'Crash_Shutdown_Events.txt') -Width 250
+                Out-File -LiteralPath (Join-Path $d 'Crash_Shutdown_Events.txt') -Width 250
             $script:ColCount++
         } catch {
             if ($_.FullyQualifiedErrorId -like 'NoMatchingEventsFound*') { Say '   No crash/shutdown events found' }
@@ -621,24 +621,24 @@ $Collectors = [ordered]@{
         [void][IO.Directory]::CreateDirectory($d)
         if ($Live) {
             # count only what really worked
-            & systeminfo.exe 2>&1 | Out-File (Join-Path $d 'systeminfo.txt')
+            & systeminfo.exe 2>&1 | Out-File -LiteralPath (Join-Path $d 'systeminfo.txt')
             if ($LASTEXITCODE -eq 0) { $script:ColCount++ } else { $script:ColFail++; Say "   systeminfo failed (exit code $LASTEXITCODE)" }
-            try { Get-HotFix -ErrorAction Stop | Sort-Object InstalledOn -Descending | Format-Table -AutoSize | Out-File (Join-Path $d 'hotfixes.txt') -Width 250; $script:ColCount++ } catch { $script:ColFail++; Say "   hotfix list failed: $($_.Exception.Message)" }
+            try { Get-HotFix -ErrorAction Stop | Sort-Object InstalledOn -Descending | Format-Table -AutoSize | Out-File -LiteralPath (Join-Path $d 'hotfixes.txt') -Width 250; $script:ColCount++ } catch { $script:ColFail++; Say "   hotfix list failed: $($_.Exception.Message)" }
             try {
                 Get-WindowsPackage -Online -ErrorAction Stop | Format-Table PackageName, PackageState, InstallTime -AutoSize |
-                    Out-File (Join-Path $d 'dism_packages.txt') -Width 300
+                    Out-File -LiteralPath (Join-Path $d 'dism_packages.txt') -Width 300
                 $script:ColCount++
             } catch { $script:ColFail++; Say "   package list failed: $($_.Exception.Message)" }
         } else {
             Say '   Offline target: using DISM /image (systeminfo and the hotfix list need the running Windows).'
             foreach ($q in @(@('/get-packages', 'dism_packages.txt'), @('/get-drivers', 'dism_drivers.txt'))) {
-                & dism.exe "/image:$W\" $q[0] /format:table 2>&1 | Out-File (Join-Path $d $q[1]) -Width 300
+                & dism.exe "/image:$W\" $q[0] /format:table 2>&1 | Out-File -LiteralPath (Join-Path $d $q[1]) -Width 300
                 if ($LASTEXITCODE -eq 0) { $script:ColCount++ } else { $script:ColFail++; Say "   dism $($q[0]) failed (exit code $LASTEXITCODE) - see $($q[1])" }
             }
         }
         $v = ''
         try { $v = (Get-Item -LiteralPath "$W\Windows\System32\ntoskrnl.exe").VersionInfo.ProductVersion } catch {}
-        ("Target: $W\Windows", "Kernel version: $v", "Running Windows: $Live", "Collected: $(Get-Date)") | Out-File (Join-Path $d 'target.txt')
+        ("Target: $W\Windows", "Kernel version: $v", "Running Windows: $Live", "Collected: $(Get-Date)") | Out-File -LiteralPath (Join-Path $d 'target.txt')
     } }
 }
 
@@ -806,8 +806,8 @@ $DpAllow = '^(list (disk|partition|volume)|select (disk|partition) \d+|select vo
 function Invoke-Diskpart([string[]]$Cmds) {
     foreach ($c in $Cmds) { if ($c -notmatch $DpAllow) { throw "Blocked diskpart command: $c" } }
     $tmp = Join-Path $env:TEMP ('dp_{0}.txt' -f [guid]::NewGuid().ToString('N'))
-    Set-Content -Path $tmp -Value $Cmds -Encoding ASCII
-    try { $out = & diskpart.exe /s $tmp 2>&1 | Out-String } finally { Remove-Item $tmp -Force -ErrorAction SilentlyContinue }
+    Set-Content -LiteralPath $tmp -Value $Cmds -Encoding ASCII
+    try { $out = & diskpart.exe /s $tmp 2>&1 | Out-String } finally { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
     Log ('diskpart: ' + ($Cmds -join ' > '))
     return $out
 }
@@ -920,12 +920,12 @@ function Unmount-Letter($L) {
     }
 }
 $script:Mounts = New-Object Collections.ArrayList
-function Save-Mounts { try { Set-Content -Path $StateFile -Value (ConvertTo-Json -InputObject @($script:Mounts)) -Encoding UTF8 -ErrorAction Stop } catch { Log "WARNING: could not save the mount memory (${StateFile}): $($_.Exception.Message). These mounts will not be remembered." } }
+function Save-Mounts { try { Set-Content -LiteralPath $StateFile -Value (ConvertTo-Json -InputObject @($script:Mounts)) -Encoding UTF8 -ErrorAction Stop } catch { Log "WARNING: could not save the mount memory (${StateFile}): $($_.Exception.Message). These mounts will not be remembered." } }
 function Load-Mounts {
     $script:Mounts = New-Object Collections.ArrayList
-    if (Test-Path $StateFile) {
+    if (Test-Path -LiteralPath $StateFile) {
         try {
-            $j = Get-Content $StateFile -Raw
+            $j = Get-Content -LiteralPath $StateFile -Raw
             if ($j -and $j.Trim()) {
                 # PS 5.1 returns a JSON array as ONE object: foreach (not @(...)) enumerates it correctly.
                 $parsed = ConvertFrom-Json $j
@@ -1378,7 +1378,7 @@ $Tools = @(
             if (-not $t) { Msg 'No boot entry found for that install. Mount the EFI partition first.' 'Recovery' 'Warning'; return $null }
             if (-not $t.Store -and -not (Ask "This restores into the boot store of the RUNNING Windows with bcdedit /import.${NL}${NL}On some UEFI PCs and virtual machines (seen on VirtualBox) bcdedit /import FAILS and then closes the boot store until Windows restarts. In testing the BCD on disk stayed as it was and Windows started normally.${NL}${NL}The reliable way: run this tool from WinPE (Hiren's) - the restore is then a verified file copy.${NL}${NL}Try bcdedit /import now?" 'Restore BCD into the running Windows' 'Warning' 'Button2')) { return $null }
             $dlg = New-Object Windows.Forms.OpenFileDialog; $dlg.Title = 'Select a BCD backup file'
-            if (Test-Path $BcdBackupDir) { $dlg.InitialDirectory = $BcdBackupDir }
+            if (Test-Path -LiteralPath $BcdBackupDir) { $dlg.InitialDirectory = $BcdBackupDir }
             if ($dlg.ShowDialog() -ne 'OK') { return $null }
             $how = if ($t.Store) { "copy `"$($dlg.FileName)`" over $($t.Store) (verified)" } else { "bcdedit /import `"$($dlg.FileName)`"" }
             return @{ Summary = $how; RunArg = @{ T = $t; F = $dlg.FileName }

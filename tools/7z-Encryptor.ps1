@@ -1,4 +1,4 @@
-# Version 1.0 (2026-11-26)
+# Version 1.1 (2026-11-26)
 # 7z-Encryptor - encrypts files and folders with 7-Zip: a 7z (AES-256, optionally the file names too) or a zip
 # (standard ZipCrypto or AES-256), with a password you pick. Files dropped on 7z-Encryptor.bat open a small window.
 # Windows Repair Toolkit - Copyright (C) 2026 TheTechSupportGuru - SPDX-License-Identifier: GPL-3.0-or-later
@@ -442,12 +442,13 @@ function Get-ArchivePath([string[]]$sources, [string]$folder, [string]$ext) {
     return $p
 }
 # Checks before encrypting; returns the problem as text, or '' when it can go
-function Test-EncryptInput([string[]]$sources, [string]$password, [string]$password2, [string]$out) {
+function Test-EncryptInput([string[]]$sources, [string]$password, [string]$password2, [string]$out, [string]$format = '7z') {
     if (-not @($sources | Where-Object { $_ }).Count) { return 'Add at least one file or folder.' }
     foreach ($s in $sources) { if (-not (Test-Path -LiteralPath $s)) { return "Not found: $s" } }
     if (-not $password) { return 'Type a password.' }
     if ($password -ne $password2) { return 'The two passwords are not the same.' }
     if ($password -match '"') { return 'The password cannot contain a double quote (").' }
+    if ($format -eq 'zip' -and $password -match '[^\x20-\x7E]') { return 'A zip password can only use English letters, digits, spaces and ordinary symbols (7-Zip refuses others in zip files). Use 7z for other characters.' }
     if (-not $out -or $out -notmatch '^([a-zA-Z]:\\|\\\\[^\\]+\\[^\\]+)') { return 'Pick where to save the encrypted file (a full path).' }
     if (Test-Path -LiteralPath $out) { return "$out already exists. Pick another name." }
     foreach ($s in $sources) { if ($out -ieq $s) { return 'The encrypted file cannot replace one of the items.' } }
@@ -458,8 +459,7 @@ function Invoke-7Zip([string]$exe, [string[]]$argList) {
     $psi = New-Object Diagnostics.ProcessStartInfo $exe, ((@($argList) | ForEach-Object { ConvertTo-ProcessArg $_ }) -join ' ')
     $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true
     $p = [Diagnostics.Process]::Start($psi)
-    while (-not $p.WaitForExit(100)) { [System.Windows.Forms.Application]::DoEvents() }
-    return $p.ExitCode
+    try { while (-not $p.WaitForExit(100)) { [System.Windows.Forms.Application]::DoEvents() }; return $p.ExitCode } finally { $p.Dispose() }
 }
 # Encrypts, then tests the new archive with the password (7z t) so a broken file is never reported as done.
 # Returns @{ Ok; Message; Output }. A failed archive is deleted.
@@ -602,7 +602,7 @@ function New-MainWindow {
     $w.Go.add_Click({
         $x = $script:MainUi; $c = Get-EncryptChoice $x.Opt
         $src = @($x.List.Items | ForEach-Object { [string]$_ }); $out = $x.Out.Text.Trim().Trim('"')
-        $bad = Test-EncryptInput $src $c.Password $x.Opt.Pw2.Text $out
+        $bad = Test-EncryptInput $src $c.Password $x.Opt.Pw2.Text $out $c.Format
         if ($bad) { [void][System.Windows.Forms.MessageBox]::Show($bad, '7z-Encryptor', 'OK', 'Warning'); return }
         $x.Go.Enabled = $false; $x.Form.Cursor = 'WaitCursor'; $x.Status.Text = 'Encrypting...'
         try { $r = Invoke-Encrypt (@{ SevenZip = $script:SevenZip; Sources = $src; Out = $out } + $c) } finally { $x.Go.Enabled = $true; $x.Form.Cursor = 'Default' }
@@ -649,7 +649,7 @@ function New-QuickWindow([string[]]$items) {
     Update-QuickWhere
     $q.Go.add_Click({
         $x = $script:QuickUi; $c = Get-EncryptChoice $x.Opt; $out = Get-QuickOut
-        $bad = Test-EncryptInput $x.Items $c.Password $x.Opt.Pw2.Text $out
+        $bad = Test-EncryptInput $x.Items $c.Password $x.Opt.Pw2.Text $out $c.Format
         if ($bad) { [void][System.Windows.Forms.MessageBox]::Show($bad, '7z-Encryptor', 'OK', 'Warning'); return }
         $x.Go.Enabled = $false; $x.Form.Cursor = 'WaitCursor'; $x.Where.Text = 'Encrypting...'
         try { $r = Invoke-Encrypt (@{ SevenZip = $script:SevenZip; Sources = $x.Items; Out = $out } + $c) } finally { $x.Go.Enabled = $true; $x.Form.Cursor = 'Default' }

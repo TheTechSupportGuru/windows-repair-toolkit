@@ -50,7 +50,7 @@ Describe 'W1 WinFixKit beta-automation: the file' {
         # the Registry changes tab (beta-automation 3) is its own region too
         $outside = @([regex]::Replace($outside, '(?s)\r?\n#region REGISTRY-CHANGES.*?#endregion REGISTRY-CHANGES', '') -split '\r?\n')
         $cmp = @(Compare-Object $stable $outside | Where-Object { $_.InputObject.Trim() })
-        $allowed = '^# (Version 1\.9|BETA:|RULE:|\s+The ported code)|WinFixKit \(BETA: Automation\)|WinFixKit - Windows Troubleshooting Power Tool|^Initialize-WrtWindow \$script:Form @\((\$tpAuto(, \$tpReg)?)?\) 900 600$'
+        $allowed = '^# (Version [\d.]+ |BETA:|RULE:|\s+The ported code)|WinFixKit \(BETA: Automation\)|WinFixKit - Windows Troubleshooting Power Tool|^Initialize-WrtWindow \$script:Form @\((\$tpAuto(, \$tpReg)?)?\) 900 600$'
         # fixes to WinFixKit itself found while testing the beta: each changed line is marked "(beta-automation N fix: ...)"
         $marked = @($cmp | Where-Object { $_.SideIndicator -eq '=>' -and $_.InputObject -match '\(beta-automation \d+ fix: ' })
         $other = @($cmp | Where-Object { $_.InputObject.Trim() -notmatch $allowed -and $_.InputObject -notmatch '\(beta-automation \d+ fix: ' })

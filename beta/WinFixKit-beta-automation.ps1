@@ -1537,7 +1537,7 @@ Export installed driver list
 Runs pnputil /enum-drivers and saves the output to a text file in the Reports folder, useful to attach to a ticket or compare against a working machine. Read-only.
 '@
           Admin = $false; AutoStatus = $false
-          Run = { param($Arg); $f = Join-Path $script:ReportDir ("drivers-{0}-{1}.txt" -f $env:COMPUTERNAME, (Get-Date -Format 'yyyyMMdd-HHmmss')); pnputil /enum-drivers | Out-File $f -Encoding UTF8; "Saved: $f" } }
+          Run = { param($Arg); $f = Join-Path $script:ReportDir ("drivers-{0}-{1}.txt" -f $env:COMPUTERNAME, (Get-Date -Format 'yyyyMMdd-HHmmss')); pnputil /enum-drivers | Out-File -LiteralPath $f -Encoding UTF8; "Saved: $f" } }
    )
 },
 
@@ -1932,7 +1932,7 @@ function Write-Out([string]$Text, [string]$Color = 'LightGray') {
     $o.AppendText($Text + "`r`n")
     $o.SelectionStart = $o.TextLength
     $o.ScrollToCaret()
-    try { Add-Content -Path $script:LogFile -Value $Text -Encoding UTF8 } catch { }
+    try { Add-Content -LiteralPath $script:LogFile -Value $Text -Encoding UTF8 } catch { }
     [System.Windows.Forms.Application]::DoEvents()
 }
 
@@ -2131,7 +2131,7 @@ function Invoke-KillTick {
             $script:KillCounts[$i]++
             $n = $script:KillCounts[$i]
             $lbl.Text = "killed PID $svcPid   (total kills: $n)"
-            try { Add-Content -Path $script:LogFile -Value ("{0}  killed {1} PID {2} (kill #{3})" -f (Get-Date -Format 'HH:mm:ss'), $name, $svcPid, $n) -Encoding UTF8 } catch { }
+            try { Add-Content -LiteralPath $script:LogFile -Value ("{0}  killed {1} PID {2} (kill #{3})" -f (Get-Date -Format 'HH:mm:ss'), $name, $svcPid, $n) -Encoding UTF8 } catch { }
             if ($n -eq 1 -or ($n % 10) -eq 0) { Write-Out ("Service killer: {0} PID {1} killed (kill #{2})" -f $name, $svcPid, $n) 'Salmon' }
         }
     } finally {
@@ -3770,7 +3770,7 @@ function Add-BottomButton([string]$Text, [int]$Width, [scriptblock]$Click, [stri
 Add-BottomButton 'Run ALL status checks' 170 { Invoke-AllStatus } 'Read-only baseline of every tab, written to the session log.'
 Add-BottomButton 'Save output as report' 160 {
     $f = Join-Path $script:ReportDir ("Report-{0}-{1}.txt" -f $env:COMPUTERNAME, (Get-Date -Format 'yyyyMMdd-HHmmss'))
-    $script:Out.Text | Out-File -FilePath $f -Encoding UTF8
+    $script:Out.Text | Out-File -LiteralPath $f -Encoding UTF8
     Write-Out "Report saved: $f" 'LightGreen'
 } 'Saves what is in the output pane to a text file in the Reports folder.'
 Add-BottomButton 'Copy output' 100 { if ($script:Out.TextLength -gt 0) { [System.Windows.Forms.Clipboard]::SetText($script:Out.Text) } } 'Copies the whole output pane to the clipboard (paste into a ticket).'

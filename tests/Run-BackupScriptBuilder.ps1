@@ -352,6 +352,7 @@ $tests = {
     Check 'manual: options read from the tab' ($o.Mode -eq 'Zip' -and $o.Engine -eq 'Windows' -and $o.Level -eq 'Normal' -and $o.Sources.Count -eq 2 -and $o.Dest -eq "$mw\out" -and -not $o.Password)
     Check 'manual: refuses a destination inside a source' ((Test-ManualOptions (@{} + $o + @{}) '') -eq '' -and (Test-ManualOptions @{ Sources = @("$mw\src"); Dest = "$mw\src\b" } '') -match 'inside')
     Check 'manual: refuses two different passwords' ((Test-ManualOptions @{ Sources = @('C:\a'); Dest = 'D:\b'; Password = 'one' } 'two') -match 'not the same')
+Check 'manual: a non-ASCII password is refused for a 7-Zip zip, allowed for 7z' (((Test-ManualOptions @{ Sources = @('C:\a'); Dest = 'D:\b'; Mode = 'Zip'; Password = ('p' + [char]0xE9) } ('p' + [char]0xE9)) -match 'zip password') -and ((Test-ManualOptions @{ Sources = @('C:\a'); Dest = 'D:\b'; Mode = '7z'; Password = ('p' + [char]0xE9) } ('p' + [char]0xE9)) -eq ''))
     Check 'manual: refuses no sources and a relative destination' ((Test-ManualOptions @{ Sources = @(); Dest = 'D:\b' } '') -and (Test-ManualOptions @{ Sources = @('C:\a'); Dest = 'backups' } ''))
     function Wait-Manual { $t0 = Get-Date; while ($script:mState -and -not $script:mState.Done -and ((Get-Date) - $t0).TotalSeconds -lt 120) { Start-Sleep -Milliseconds 150 }; $mTimer.Stop(); $r = $script:mState.Result; [void]$script:mPs.EndInvoke($script:mHandle); $script:mPs.Runspace.Dispose(); $script:mPs.Dispose(); $script:mState = $null; $mStart.Enabled = $true; $r }
     foreach ($mode in 'Folder', 'Zip') {

@@ -1045,7 +1045,22 @@ Describe 'U30 launchers (V1.8)' {
     It 'WinSuperTool.bat: a pasted path with ^ is kept when %variable% expansion mangles it' {
         $bat | Should Match 'if not exist "%PSFILE%" set "PSFILE=%PSRAW%"'
     }
-    foreach ($b in 'Start-ClaudeLogAnalyzer.bat', 'Launch-WinFixKit.bat') {
+    foreach ($b in 'Run-PS-As-Admin.bat', 'Launch-WinFixKit.bat', 'BackupScriptBuilder.bat', '7z-Encryptor.bat') {
         It "$b keeps its variables local (setlocal)" { [IO.File]::ReadAllText((Resolve-SuitePath $b)) | Should Match '(?m)^setlocal' }
+    }
+}
+
+Describe 'V2.0 folders with [ ] in the name' {
+    # A toolkit extracted to e.g. "C:\Tools [2026]" broke saved mounts, logs and reports: -Path treats [ ] as a wildcard
+    foreach ($f in 'WinSuperTool.ps1', 'WinRepairTool-startup.ps1', 'WinFixKit.ps1', 'Collect-Logs.ps1', 'BackupScriptBuilder.ps1', '7z-Encryptor.ps1') {
+        It "$f writes and checks its own files with -LiteralPath" {
+            $s = [IO.File]::ReadAllText((Resolve-SuitePath $f))
+            $s | Should Not Match 'Out-File \(|Out-File -FilePath|Out-File \$|Export-Csv \(|Set-Content -Path \$|Add-Content -Path \$|Test-Path \$(StateFile|BcdBackupDir|out\b|txtDest|mDest)|Get-Content \$StateFile'
+        }
+    }
+    It 'Test-Path -LiteralPath finds a file in a [ ] folder that Test-Path -Path misses (why this matters)' {
+        $d = Join-Path $env:TEMP ('wrt [' + [guid]::NewGuid().ToString('N').Substring(0, 6) + ']'); [void][IO.Directory]::CreateDirectory($d)
+        try { [IO.File]::WriteAllText("$d\m.json", '[]'); (Test-Path "$d\m.json") | Should Be $false; (Test-Path -LiteralPath "$d\m.json") | Should Be $true }
+        finally { [IO.Directory]::Delete($d, $true) }
     }
 }

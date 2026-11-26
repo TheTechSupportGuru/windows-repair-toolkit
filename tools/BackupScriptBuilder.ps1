@@ -1,4 +1,4 @@
-# Version 1.4 (2026-11-26)
+# Version 1.5 (2026-11-26)
 # Backup Script Builder - builds a FreeFileSync batch file (BackupScript.ffs_batch), or a Robocopy / Xcopy script (.ps1 or .bat),
 # and (1.3) makes a manual backup now: to a folder, a zip (Windows or 7-Zip) or a 7z / self-extracting .exe
 # Windows Repair Toolkit - Copyright (C) 2026 TheTechSupportGuru - SPDX-License-Identifier: GPL-3.0-or-later
@@ -714,8 +714,10 @@ function Wait-BackupProcess([string]$exe, [string[]]$argList, $state) {
     $psi = New-Object Diagnostics.ProcessStartInfo $exe, ((@($argList) | ForEach-Object { ConvertTo-ProcessArg $_ }) -join ' ')
     $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true
     $p = [Diagnostics.Process]::Start($psi)
-    while (-not $p.WaitForExit(250)) { if ($state.Cancel) { try { $p.Kill() } catch {}; [void]$p.WaitForExit(5000); return -1 } }
-    return $p.ExitCode
+    try {
+        while (-not $p.WaitForExit(250)) { if ($state.Cancel) { try { $p.Kill() } catch {}; [void]$p.WaitForExit(5000); return -1 } }
+        return $p.ExitCode
+    } finally { $p.Dispose() }
 }
 # Copy to a folder with robocopy: <dest>\<folder name> per folder; picked files go to <dest>\<their folder's name>
 function Invoke-ManualCopy([string[]]$sources, [string]$dest, $state) {
@@ -964,7 +966,7 @@ $btnBrowse.add_Click({
     $fb = New-Object System.Windows.Forms.FolderBrowserDialog
     $fb.Description = 'Pick where the backup script and its folders will go'
     $fb.ShowNewFolderButton = $true
-    if ($txtDest.Text -and (Test-Path $txtDest.Text)) { $fb.SelectedPath = $txtDest.Text }
+    if ($txtDest.Text -and (Test-Path -LiteralPath $txtDest.Text)) { $fb.SelectedPath = $txtDest.Text }
     if ($fb.ShowDialog() -eq 'OK') { $script:NetMap = Get-NetworkDriveMap; $txtDest.Text = $fb.SelectedPath }
     $fb.Dispose()
 })
@@ -1025,7 +1027,7 @@ $btnBuild.add_Click({
         [void][System.Windows.Forms.MessageBox]::Show("A FreeFileSync batch backs up folders only. Remove these files from the list or create a Robocopy or Xcopy script instead:`r`n" + ($fileSrc -join "`r`n"), 'Backup Script Builder', 'OK', 'Warning'); return
     }
     $out = ($root + '\' + 'BackupScript.ffs_batch')
-    if (Test-Path $out) {
+    if (Test-Path -LiteralPath $out) {
         $a = [System.Windows.Forms.MessageBox]::Show("$out already exists.`r`nOverwrite it?", 'Backup Script Builder', 'YesNo', 'Question')
         if ($a -ne 'Yes') { return }
     }
@@ -1505,7 +1507,7 @@ $mDest = New-Object System.Windows.Forms.TextBox; $mDest.Location = '15,198'; $m
 $mBrowse = New-Object System.Windows.Forms.Button; $mBrowse.Text = 'Browse...'; $mBrowse.Location = '425,196'; $mBrowse.Size = '130,28'
 $mBrowse.add_Click({
     $fb = New-Object System.Windows.Forms.FolderBrowserDialog; $fb.Description = 'Where the backup goes (a new Backup-<date> folder or archive is created in it)'; $fb.ShowNewFolderButton = $true
-    if ($mDest.Text -and (Test-Path $mDest.Text)) { $fb.SelectedPath = $mDest.Text }
+    if ($mDest.Text -and (Test-Path -LiteralPath $mDest.Text)) { $fb.SelectedPath = $mDest.Text }
     if ($fb.ShowDialog() -eq 'OK') { $mDest.Text = ConvertTo-UncPath $fb.SelectedPath (Get-NetworkDriveMap) }
     $fb.Dispose()
 })
@@ -1592,6 +1594,7 @@ function Test-ManualOptions($o, [string]$pw2) {
     }
     if ($o.Password -and $o.Password -ne $pw2) { return 'The two passwords are not the same.' }
     if ($o.Password -match '"') { return 'The password cannot contain a double quote (").' }
+    if ($o.Mode -eq 'Zip' -and $o.Password -match '[^\x20-\x7E]') { return 'A zip password can only use English letters, digits, spaces and ordinary symbols (7-Zip refuses others in zip files). Use 7z for other characters.' }
     return ''
 }
 $mState = $null; $mPs = $null; $mHandle = $null

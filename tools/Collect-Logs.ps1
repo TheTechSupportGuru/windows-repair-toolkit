@@ -1,5 +1,5 @@
 #requires -Version 5.1
-# Version 1.9 (2026-11-21). What changed: docs/changes/V1.9.md
+# Version 2.0 (2026-11-26). What changed: docs/changes/V2.0.md
 # Windows Repair Toolkit - https://github.com/TheTechSupportGuru/windows-repair-toolkit
 # Copyright (C) 2026 TheTechSupportGuru
 # SPDX-License-Identifier: GPL-3.0-or-later
@@ -348,13 +348,13 @@ $Collectors = [ordered]@{
     try {
         Get-CimInstance Win32_ReliabilityRecords -ErrorAction Stop |
             Select-Object TimeGenerated, SourceName, EventIdentifier, ProductName, Message |
-            Export-Csv (Join-Path $d 'ReliabilityHistory.csv') -NoTypeInformation
+            Export-Csv -LiteralPath (Join-Path $d 'ReliabilityHistory.csv') -NoTypeInformation
         $script:count++
     } catch { Say '   Reliability history unavailable' }
     try {
         Get-WinEvent -FilterHashtable @{ LogName='System'; Id=41,1001,1074,1076,6005,6006,6008 } -ErrorAction Stop |
             Format-List TimeCreated, Id, ProviderName, Message |
-            Out-File (Join-Path $d 'Crash_Shutdown_Events.txt') -Width 250
+            Out-File -LiteralPath (Join-Path $d 'Crash_Shutdown_Events.txt') -Width 250
         $script:count++
     } catch {
         # "no events" is normal; anything else (access denied, broken log) is a real failure
@@ -392,13 +392,13 @@ $Collectors = [ordered]@{
     $d = Join-Path $LogRoot '6_SystemInfo'
     [void][IO.Directory]::CreateDirectory($d)
     # count only what really worked (it used to add 2 whatever happened)
-    & systeminfo.exe 2>&1 | Out-File (Join-Path $d 'systeminfo.txt')
+    & systeminfo.exe 2>&1 | Out-File -LiteralPath (Join-Path $d 'systeminfo.txt')
     if ($LASTEXITCODE -eq 0) { $script:count++ } else { $script:fail++; Say "   systeminfo failed (exit code $LASTEXITCODE)" }
-    try { Get-HotFix -ErrorAction Stop | Sort-Object InstalledOn -Descending | Format-Table -AutoSize | Out-File (Join-Path $d 'hotfixes.txt') -Width 250; $script:count++ }
+    try { Get-HotFix -ErrorAction Stop | Sort-Object InstalledOn -Descending | Format-Table -AutoSize | Out-File -LiteralPath (Join-Path $d 'hotfixes.txt') -Width 250; $script:count++ }
     catch { $script:fail++; Say "   hotfix list failed: $($_.Exception.Message)" }
     try {
         Get-WindowsPackage -Online -ErrorAction Stop | Format-Table PackageName, PackageState, InstallTime -AutoSize |
-            Out-File (Join-Path $d 'dism_packages.txt') -Width 300
+            Out-File -LiteralPath (Join-Path $d 'dism_packages.txt') -Width 300
         $script:count++
     } catch { $script:fail++; Say "   package list failed: $($_.Exception.Message)" }
 }}
@@ -478,7 +478,7 @@ $btnGo.Add_Click({
         }
         $how = if ($script:StopRequested) { 'STOPPED by you' } else { 'Done' }
         Say "`r`n$how. Files copied/exported: $($script:count)   Failed: $($script:fail)"
-        try { $txtOut.Text | Out-File (Join-Path $LogRoot '_collection_summary.txt') -ErrorAction Stop } catch { Say "   Could not write the summary file: $($_.Exception.Message)" }
+        try { $txtOut.Text | Out-File -LiteralPath (Join-Path $LogRoot '_collection_summary.txt') -ErrorAction Stop } catch { Say "   Could not write the summary file: $($_.Exception.Message)" }
         Start-Process explorer.exe $LogRoot
     } catch {
         Say "ERROR: $($_.Exception.Message)"

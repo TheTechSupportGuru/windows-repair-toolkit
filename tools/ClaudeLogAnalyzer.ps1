@@ -1,5 +1,5 @@
 #requires -Version 5.1
-# Version 1.9 (2026-11-21). What changed: docs/changes/V1.9.md
+# Version 2.0 (2026-11-26). What changed: docs/changes/V2.0.md
 # Windows Repair Toolkit - https://github.com/TheTechSupportGuru/windows-repair-toolkit
 # Copyright (C) 2026 TheTechSupportGuru
 # SPDX-License-Identifier: GPL-3.0-or-later

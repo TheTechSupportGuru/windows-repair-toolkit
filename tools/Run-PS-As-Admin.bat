@@ -1,5 +1,5 @@
 @echo off
-rem Version 1.8.1 (2026-11-20). What changed: docs/changes/V1.8.1.md
+rem Version 2.0 (2026-11-26). What changed: docs/changes/V2.0.md
 rem Windows Repair Toolkit - Copyright (C) 2026 TheTechSupportGuru - SPDX-License-Identifier: GPL-3.0-or-later
 rem Free software under the GNU General Public License v3 or (at your option) any later version, WITHOUT ANY WARRANTY. See LICENSE
 setlocal EnableExtensions

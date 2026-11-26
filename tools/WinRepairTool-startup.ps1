@@ -1,4 +1,4 @@
-# Version 1.9 (2026-11-21). What changed: docs/changes/V1.9.md
+# Version 2.0 (2026-11-26). What changed: docs/changes/V2.0.md
 # Windows Repair Toolkit - https://github.com/TheTechSupportGuru/windows-repair-toolkit
 # Copyright (C) 2026 TheTechSupportGuru
 # SPDX-License-Identifier: GPL-3.0-or-later
@@ -193,7 +193,7 @@ $StateDir = $env:TEMP
 if ($PSScriptRoot) {
     try {
         $probe = Join-Path $PSScriptRoot '.w'
-        [IO.File]::WriteAllText($probe, ''); Remove-Item $probe -Force
+        [IO.File]::WriteAllText($probe, ''); Remove-Item -LiteralPath $probe -Force
         $StateDir = $PSScriptRoot
     } catch {}
 }
@@ -237,8 +237,8 @@ $DpAllow = '^(list (disk|partition|volume)|select (disk|partition) \d+|select vo
 function Invoke-Diskpart([string[]]$Cmds) {
     foreach ($c in $Cmds) { if ($c -notmatch $DpAllow) { throw "Blocked diskpart command: $c" } }
     $tmp = Join-Path $env:TEMP ("dp_{0}.txt" -f [guid]::NewGuid().ToString('N'))
-    Set-Content -Path $tmp -Value $Cmds -Encoding ASCII
-    try { $out = & diskpart.exe /s $tmp 2>&1 | Out-String } finally { Remove-Item $tmp -Force -ErrorAction SilentlyContinue }
+    Set-Content -LiteralPath $tmp -Value $Cmds -Encoding ASCII
+    try { $out = & diskpart.exe /s $tmp 2>&1 | Out-String } finally { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
     Log ('diskpart: ' + ($Cmds -join ' > '))
     return $out
 }
@@ -351,12 +351,12 @@ function Unmount-Letter($L) {
     }
 }
 
-function Save-Mounts { try { Set-Content -Path $StateFile -Value (ConvertTo-Json -InputObject @($script:Mounts)) -Encoding UTF8 -ErrorAction Stop } catch { Log "WARNING: could not save the mount memory (${StateFile}): $($_.Exception.Message). These mounts will not be remembered." } }
+function Save-Mounts { try { Set-Content -LiteralPath $StateFile -Value (ConvertTo-Json -InputObject @($script:Mounts)) -Encoding UTF8 -ErrorAction Stop } catch { Log "WARNING: could not save the mount memory (${StateFile}): $($_.Exception.Message). These mounts will not be remembered." } }
 function Load-Mounts {
     $script:Mounts = New-Object Collections.ArrayList
-    if (Test-Path $StateFile) {
+    if (Test-Path -LiteralPath $StateFile) {
         try {
-            $j = Get-Content $StateFile -Raw
+            $j = Get-Content -LiteralPath $StateFile -Raw
             if ($j -and $j.Trim()) {
                 # PS 5.1 returns a JSON array as ONE object: foreach (not @(...)) enumerates it correctly.
                 $parsed = ConvertFrom-Json $j
@@ -861,7 +861,7 @@ $Tools = @(
             if (-not $t) { Msg 'No boot entry found for that install. Mount the EFI partition first.' 'Recovery' 'Warning'; return $null }
             if (-not $t.Store -and -not (Ask "This restores into the boot store of the RUNNING Windows with bcdedit /import.${NL}${NL}On some UEFI PCs and virtual machines (seen on VirtualBox) bcdedit /import FAILS and then closes the boot store until Windows restarts. In testing the BCD on disk stayed as it was and Windows started normally.${NL}${NL}The reliable way: run this tool from WinPE (Hiren's) - the restore is then a verified file copy.${NL}${NL}Try bcdedit /import now?" 'Restore BCD into the running Windows' 'Warning' 'Button2')) { return $null }
             $dlg = New-Object Windows.Forms.OpenFileDialog; $dlg.Title = 'Select a BCD backup file'
-            if (Test-Path $BcdBackupDir) { $dlg.InitialDirectory = $BcdBackupDir }
+            if (Test-Path -LiteralPath $BcdBackupDir) { $dlg.InitialDirectory = $BcdBackupDir }
             if ($dlg.ShowDialog() -ne 'OK') { return $null }
             $how = if ($t.Store) { "copy `"$($dlg.FileName)`" over $($t.Store) (verified)" } else { "bcdedit /import `"$($dlg.FileName)`"" }
             return @{ Summary = $how; RunArg = @{ T = $t; F = $dlg.FileName }

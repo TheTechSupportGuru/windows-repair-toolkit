@@ -4,7 +4,7 @@
 #
 # Build-ReleaseZips.ps1 - builds the release zips of one version from its git tag (the exact committed bytes).
 # Since 1.9.2 the separate tools are ONE zip, IndividualTools-v<x>.zip, started with its shared Run-PS-As-Admin.bat.
-#   powershell -ExecutionPolicy Bypass -File .\build\Build-ReleaseZips.ps1 -Tag v1.9.2 -OutDir C:\temp\zips
+#   powershell -ExecutionPolicy Bypass -File .\build\Build-ReleaseZips.ps1 -Tag v2.0 -OutDir C:\temp\zips
 param([Parameter(Mandatory)][string]$Tag, [Parameter(Mandatory)][string]$OutDir)
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path $PSScriptRoot -Parent
@@ -36,7 +36,9 @@ $zips = [ordered]@{
                                    Start = "The separate tools, each also part of WinSuperTool: WinRepairTool, Collect-Logs, Monitor-Logs, ClaudeLogAnalyzer.`r`nStart any of them with Run-PS-As-Admin.bat: drag the .ps1 onto it." }
 }
 $bsb = Get-TagBytes 'tools/BackupScriptBuilder.ps1'
-if ([Text.Encoding]::ASCII.GetString($bsb) -match '# Version ([\d.]+)') { $zips["BackupScriptBuilder-v$($Matches[1])"] = @{ Files = 'tools/BackupScriptBuilder.ps1', 'tools/BackupScriptBuilder.bat'; Start = 'Start BackupScriptBuilder.bat. Needs FreeFileSync: https://freefilesync.org/' } }
+if ([Text.Encoding]::ASCII.GetString($bsb) -match '# Version ([\d.]+)') { $zips["BackupScriptBuilder-v$($Matches[1])"] = @{ Files = 'tools/BackupScriptBuilder.ps1', 'tools/BackupScriptBuilder.bat'; Start = 'Start BackupScriptBuilder.bat. FreeFileSync jobs need FreeFileSync (https://freefilesync.org/); Robocopy / Xcopy scripts and Manual Backup to a folder or Windows zip need nothing extra; 7z, password and self-extracting backups need 7-Zip.' } }
+$enc7 = Get-TagBytes 'tools/7z-Encryptor.ps1'
+if ([Text.Encoding]::ASCII.GetString($enc7) -match '# Version ([\d.]+)') { $zips["7z-Encryptor-v$($Matches[1])"] = @{ Files = 'tools/7z-Encryptor.ps1', 'tools/7z-Encryptor.bat'; Start = 'Start 7z-Encryptor.bat, or drop files and folders on it. Needs 7-Zip (https://www.7-zip.org/); it offers to install it with winget.' } }
 foreach ($name in $zips.Keys) {
     $z = $zips[$name]; $path = Join-Path $OutDir "$name.zip"; if (Test-Path $path) { Remove-Item $path }
     $folder = $name -replace '-v[\d.]+$', ''

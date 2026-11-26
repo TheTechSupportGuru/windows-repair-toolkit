@@ -34,6 +34,7 @@ $tests = {
     Check 'check: no items / no password / passwords differ' ((Test-EncryptInput @() 'a' 'a' "$W\o.7z") -match 'Add' -and (Test-EncryptInput @("$W\src") '' '' "$W\o.7z") -match 'Type' -and (Test-EncryptInput @("$W\src") 'a' 'b' "$W\o.7z") -match 'not the same')
     Check 'check: missing item / relative or existing output / quote in password' ((Test-EncryptInput @("$W\nope") 'a' 'a' "$W\o.7z") -match 'Not found' -and (Test-EncryptInput @("$W\src") 'a' 'a' 'o.7z') -match 'full path' -and (Test-EncryptInput @("$W\src") 'a' 'a' "$W\out\taken.txt.7z") -match 'already exists' -and (Test-EncryptInput @("$W\src") 'a"b' 'a"b' "$W\o.7z") -match 'quote')
     Check 'check: all good gives no message' ((Test-EncryptInput @("$W\src") 'p w' 'p w' "$W\o.7z") -eq '')
+Check 'check: a non-ASCII password is refused for zip but allowed for 7z' (((Test-EncryptInput @("$W\src") ('p' + [char]0xE9) ('p' + [char]0xE9) "$W\o.zip" 'zip') -match 'zip password') -and ((Test-EncryptInput @("$W\src") ('p' + [char]0xE9) ('p' + [char]0xE9) "$W\o.7z" '7z') -eq ''))
 
     # ---- 2. real encryption ----
     if (-not $script:SevenZip) { Check '7-Zip is installed (needed for the encryption tests)' $false 'install it: winget install -e --id 7zip.7zip' }
