@@ -371,6 +371,26 @@ $tests = {
     $o = Get-ManualOptions; $o.Sources = @("$mw\big"); $o.Stamp = 't-cancel'
     Start-ManualBackup $o; $t0 = Get-Date; while ($script:mState.Status -notmatch 'Zipping' -and ((Get-Date) - $t0).TotalSeconds -lt 30) { Start-Sleep -Milliseconds 20 }; $script:mState.Cancel = $true; $r = Wait-Manual
     Check 'manual: Cancel stops the zip and removes the half-made file' ($r.Message -eq 'Cancelled.' -and -not (Test-Path "$mw\out\Backup-t-cancel.zip")) "$($r.Message)"
+    # 7-Zip, when installed: zip with a password, 7z with hidden names, self-extracting .exe - made in the background like the button does
+    $script:SevenZip = Find-7Zip; Update-ManualUi
+    Check 'manual: Get 7-Zip shows the winget command; Install is off once 7-Zip is found' ($mWingetBox.Text -eq 'winget install -e --id 7zip.7zip' -and ($mInstall7.Enabled -ne [bool]$script:SevenZip))
+    if ($script:SevenZip) {
+        $eap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'   # 7-Zip writes 'Wrong password' to stderr on purpose here
+        foreach ($c in @(@{ N = 'zip7pw'; Mode = 'Zip'; Engine = '7zip'; Password = 'pw 1'; Ext = '.zip' }, @{ N = '7zpw'; Mode = '7z'; Password = 'pw 1'; EncryptNames = $true; Ext = '.7z' }, @{ N = 'sfx'; Mode = '7z'; Sfx = 'Windowed'; Ext = '.exe' })) {
+            $o = Get-ManualOptions; foreach ($k in $c.Keys) { $o[$k] = $c[$k] }; $o.Sources = @("$mw\src\Docs", "$mw\src\Pics\p.txt"); $o.Stamp = "t-$($c.N)"
+            Start-ManualBackup $o; $r = Wait-Manual
+            $out = "$mw\out\Backup-t-$($c.N)$($c.Ext)"
+            $plain = & $script:SevenZip l -p $out 2>&1 | Out-String
+            $withPw = & $script:SevenZip t "-p$($c.Password)" $out 2>&1 | Out-String
+            $ok = $r.Ok -and (Test-Path $out) -and ($withPw -match 'Everything is Ok')
+            if ($c.N -eq '7zpw') { $ok = $ok -and ($plain -notmatch 'd\.txt') }       # names hidden without the password
+            if ($c.N -eq 'zip7pw') { $ok = $ok -and ((& $script:SevenZip t -pWRONG $out 2>&1 | Out-String) -notmatch 'Everything is Ok') }
+            Check "manual: 7-Zip $($c.N) made in the background, opens (only) with its password" $ok "$($r.Message)"
+        }
+        $ErrorActionPreference = $eap
+    }
+    $mRbFolder.Checked = $true
+    Check 'manual: Save as Script writes a script for the current choice' ((New-ManualScript (Get-ManualOptions) 'bat') -match 'robocopy' -and $mSave.Text -match 'Save as Script')
     Remove-Item $mw -Recurse -Force -ErrorAction SilentlyContinue
 }
 

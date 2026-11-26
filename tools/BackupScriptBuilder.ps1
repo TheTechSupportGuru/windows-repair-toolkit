@@ -812,6 +812,74 @@ function Invoke-ManualBackup($o, $state) {
     return @{ Ok = $true; Message = 'Archive created.'; Output = $out; Failed = @() }
 }
 
+# The same manual backup as a script to keep or schedule (.bat or .ps1). Each run makes a new Backup-<date>_<time>.
+# A zip "made by Windows" uses tar.exe (in Windows 10 1803 and later). A password is never written into the script:
+# 7-Zip asks for it each time the script runs (-p with no value).
+function New-ManualScript($o, [string]$format) {
+    $OUT = '@@OUT@@'
+    $cmds = New-Object System.Collections.ArrayList
+    if ($o.Mode -eq 'Folder') {
+        $used = @{}; $pairs = [ordered]@{}
+        foreach ($s in $o.Sources) {
+            if ([IO.File]::Exists($s)) {
+                $par = [IO.Path]::GetDirectoryName($s); $k = '|' + $par.ToLower()
+                if (-not $pairs.Contains($k)) { $pairs[$k] = @{ Src = $par; Dst = "$OUT\" + (Get-PairName $par $used); Files = @() } }
+                $pairs[$k].Files += [IO.Path]::GetFileName($s)
+            } else { $pairs[$s.ToLower()] = @{ Src = $s.TrimEnd('\'); Dst = "$OUT\" + (Get-PairName $s $used); Files = @() } }
+        }
+        $base = @('/COPY:DAT', '/DCOPY:T', '/R:1', '/W:1', '/XJ', '/NP', '/XD', '$RECYCLE.BIN', 'System Volume Information')
+        foreach ($p in $pairs.Values) {
+            $src = if ($p.Src -match '^[A-Za-z]:$') { $p.Src + '\.' } else { $p.Src }
+            [void]$cmds.Add(@{ Exe = 'robocopy'; FailAt = 8; Args = @($src, $p.Dst) + @($p.Files) + $(if ($p.Files.Count) { $base } else { @('/E') + $base }) })
+        }
+        $target = $OUT
+    } else {
+        $use7 = ($o.Mode -eq '7z') -or ($o.Engine -eq '7zip') -or $o.Sfx
+        $fmt = if ($o.Mode -eq 'Zip' -and -not $o.Sfx) { 'zip' } else { '7z' }
+        $target = $OUT + $(if ($o.Sfx) { '.exe' } elseif ($fmt -eq 'zip') { '.zip' } else { '.7z' })
+        if ($use7) {
+            $exe = if ($o.SevenZip) { $o.SevenZip } else { '7z.exe' }
+            $sfxMod = if ($o.Sfx) { Join-Path (Split-Path $exe) $(if ($o.Sfx -eq 'Console') { '7zCon.sfx' } else { '7z.sfx' }) } else { '' }
+            $a = New-7ZipArgs $target $o.Sources $fmt $o.Level $(if ($o.Password) { '@@ASK@@' } else { '' }) $sfxMod ($o.EncryptNames -ne $false)
+            [void]$cmds.Add(@{ Exe = $exe; FailAt = 2; Args = @($a | ForEach-Object { if ($_ -eq '-p@@ASK@@') { '-p' } else { $_ } }) })
+        } else {
+            $a = @('-a', '-c', '-f', $target)
+            if ($o.Level -eq 'Store') { $a += '--options', 'zip:compression=store' } elseif ($o.Level -eq 'Ultra') { $a += '--options', 'zip:compression-level=9' }
+            foreach ($s in $o.Sources) {
+                $t = $s.TrimEnd('\')
+                if ([IO.File]::Exists($s)) { $par = [IO.Path]::GetDirectoryName($t); $a += '-C', [IO.Path]::GetDirectoryName($par), ((Split-Path $par -Leaf) + '/' + [IO.Path]::GetFileName($t)) }
+                elseif ($t -match '^[A-Za-z]:$|^\\\\[^\\]+\\[^\\]+$') { $a += '-C', ($t + '\'), '.' }
+                else { $a += '-C', [IO.Path]::GetDirectoryName($t), (Split-Path $t -Leaf) }
+            }
+            [void]$cmds.Add(@{ Exe = 'tar'; FailAt = 1; Args = $a })
+        }
+    }
+    $what = switch ($o.Mode) { 'Folder' { 'copy to a folder (robocopy)' } 'Zip' { if ($o.Engine -eq '7zip') { "zip by 7-Zip, $($o.Level)" } else { "zip by Windows (tar), $($o.Level)" } } default { "7z, $($o.Level)" + $(if ($o.Sfx) { ", self-extracting ($($o.Sfx))" }) } }
+    $notes = @("Manual backup script made by Backup Script Builder 1.3 on $(Get-Date -Format 'yyyy-MM-dd HH:mm'): $what", 'Windows Repair Toolkit - https://github.com/TheTechSupportGuru/windows-repair-toolkit', 'Every run makes a new Backup-<date>_<time> in the destination.')
+    if ($o.Password) { $notes += '7-Zip asks for the password each time it runs (it is not stored in this script), so run it by hand, not as a scheduled task.' }
+    $dest = $o.Dest.TrimEnd('\'); $nl = "`r`n"; $sb = New-Object System.Text.StringBuilder
+    if ($format -eq 'bat') {
+        $arg = { param($x) if ($x.Contains($OUT)) { '"' + ($x -replace '%', '%%').Replace($OUT, '%OUT%') + '"' } else { (ConvertTo-ProcessArg $x) -replace '%', '%%' } }
+        [void]$sb.Append("@echo off$nl" + (($notes | ForEach-Object { "rem $_" }) -join $nl) + "${nl}setlocal$nl")
+        [void]$sb.Append("for /f %%a in ('powershell -NoProfile -Command ""Get-Date -Format yyyy-MM-dd_HHmmss""') do set ""STAMP=%%a""$nl")
+        [void]$sb.Append("set ""OUT=$($dest -replace '%', '%%')\Backup-%STAMP%""${nl}if not exist ""$(($dest -replace '%', '%%'))"" mkdir ""$(($dest -replace '%', '%%'))""${nl}set BAD=0$nl")
+        foreach ($c in $cmds) {
+            $exe = if ($c.Exe -match '[\\ ]') { '"' + $c.Exe + '"' } else { $c.Exe }
+            [void]$sb.Append($exe + ' ' + (($c.Args | ForEach-Object { & $arg $_ }) -join ' ') + "${nl}if %ERRORLEVEL% GEQ $($c.FailAt) set BAD=1$nl")
+        }
+        [void]$sb.Append("if %BAD%==1 (echo Backup finished WITH ERRORS. & exit /b 1)${nl}echo Backup finished: $(& $arg $target)${nl}exit /b 0$nl")
+    } else {
+        $arg = { param($x) if ($x.StartsWith($OUT)) { "(`$Out + '" + $x.Substring($OUT.Length).Replace("'", "''") + "')" } else { "'" + $x.Replace("'", "''") + "'" } }
+        [void]$sb.Append((($notes | ForEach-Object { "# $_" }) -join $nl) + $nl)
+        [void]$sb.Append("`$Out = Join-Path '$($dest.Replace("'", "''"))' ('Backup-' + (Get-Date -Format 'yyyy-MM-dd_HHmmss'))${nl}[void][IO.Directory]::CreateDirectory((Split-Path `$Out))${nl}`$Bad = `$false$nl")
+        foreach ($c in $cmds) {
+            [void]$sb.Append("& '$($c.Exe.Replace("'", "''"))' " + (($c.Args | ForEach-Object { & $arg $_ }) -join ' ') + "${nl}if (`$LASTEXITCODE -ge $($c.FailAt)) { `$Bad = `$true }$nl")
+        }
+        [void]$sb.Append("if (`$Bad) { Write-Host 'Backup finished WITH ERRORS.' -ForegroundColor Red; exit 1 }${nl}Write-Host ('Backup finished: ' + $(& $arg $target)) -ForegroundColor Green${nl}exit 0$nl")
+    }
+    return $sb.ToString()
+}
+
 # ---------- main window ----------
 $form = New-Object System.Windows.Forms.Form; Set-WrtScaling $form
 $form.Text = 'Backup Script Builder'
@@ -1472,6 +1540,7 @@ $mSfx = New-Object System.Windows.Forms.ComboBox; $mSfx.DropDownStyle = 'DropDow
 
 $m7Status = New-Object System.Windows.Forms.LinkLabel; $m7Status.Location = '15,525'; $m7Status.Size = '540,22'; $m7Status.AutoEllipsis = $true
 function Update-7ZipStatus {
+    $mInstall7.Enabled = -not $script:SevenZip -and -not $script:WingetProc; $mInstall7.Text = $(if ($script:SevenZip) { 'Installed' } else { 'Install 7-Zip' })
     if ($script:SevenZip) { $m7Status.Text = '7-Zip found: ' + $script:SevenZip; $m7Status.LinkArea = New-Object System.Windows.Forms.LinkArea(0, 0) }
     else { $m7Status.Text = '7-Zip is not installed - get it free at https://www.7-zip.org/'; $m7Status.LinkArea = New-Object System.Windows.Forms.LinkArea($m7Status.Text.IndexOf('https'), 'https://www.7-zip.org/'.Length) }
 }
@@ -1481,7 +1550,7 @@ $mStart = New-Object System.Windows.Forms.Button; $mStart.Text = '4. Start Backu
 $mStart.Font = New-Object System.Drawing.Font('Segoe UI', 11, [System.Drawing.FontStyle]::Bold)
 $mCancel = New-Object System.Windows.Forms.Button; $mCancel.Text = 'Cancel'; $mCancel.Location = '425,560'; $mCancel.Size = '130,45'; $mCancel.Enabled = $false
 $mProgress = New-Object System.Windows.Forms.ProgressBar; $mProgress.Location = '15,615'; $mProgress.Size = '540,18'; $mProgress.Style = 'Marquee'; $mProgress.Visible = $false
-$mStatus = New-Object System.Windows.Forms.Label; $mStatus.Location = '15,640'; $mStatus.Size = '540,60'; $mStatus.ForeColor = [System.Drawing.Color]::DimGray
+$mStatus = New-Object System.Windows.Forms.Label; $mStatus.Location = '15,640'; $mStatus.Size = '540,58'; $mStatus.ForeColor = [System.Drawing.Color]::DimGray
 
 # What can be picked depends on the type: the zip engine only for zip; password only when 7-Zip makes the archive;
 # self-extracting only for 7z (it always makes a 7z inside the .exe); anything 7-Zip only when it is installed
@@ -1560,8 +1629,48 @@ $mStart.add_Click({
 $mCancel.add_Click({ if ($script:mState) { $script:mState.Cancel = $true; $mStatus.Text = 'Stopping...' } })
 $form.add_FormClosing({ if ($script:mState -and -not $script:mState.Done) { $script:mState.Cancel = $true } })
 
+# Save the backup above as a script (to keep, run again or schedule on the Schedule Task tab)
+$mSave = New-Object System.Windows.Forms.Button; $mSave.Text = 'Save as Script (.bat / .ps1)...'; $mSave.Location = '15,705'; $mSave.Size = '260,32'
+$mSave.add_Click({
+    $o = Get-ManualOptions
+    $bad = Test-ManualOptions $o $mPw2.Text
+    if ($bad) { [void][System.Windows.Forms.MessageBox]::Show($bad, 'Manual Backup', 'OK', 'Warning'); return }
+    $sd = New-Object System.Windows.Forms.SaveFileDialog
+    $sd.Filter = 'Batch file (*.bat)|*.bat|PowerShell script (*.ps1)|*.ps1'; $sd.FileName = 'ManualBackup'
+    if ($o.Dest -and [IO.Directory]::Exists($o.Dest)) { $sd.InitialDirectory = $o.Dest }
+    if ($sd.ShowDialog() -eq 'OK') {
+        $fmt = if ($sd.FileName -like '*.ps1') { 'ps1' } else { 'bat' }
+        try {
+            $text = New-ManualScript $o $fmt
+            # a .bat in the console's code page; a .ps1 with a BOM so PowerShell 5.1 reads it right (as the Build Script tab does)
+            if ($fmt -eq 'bat') { [IO.File]::WriteAllText($sd.FileName, $text, [Text.Encoding]::Default) } else { [IO.File]::WriteAllText($sd.FileName, $text, (New-Object System.Text.UTF8Encoding $true)) }
+            Add-ScriptChoice $sd.FileName
+            $mStatus.Text = 'Script saved: ' + $sd.FileName + $(if ($o.Password) { ' (it asks for the password when it runs)' })
+        } catch { [void][System.Windows.Forms.MessageBox]::Show("Could not save the script:`r`n" + $_.Exception.Message, 'Manual Backup', 'OK', 'Error') }
+    }
+    $sd.Dispose()
+})
+
+# Get 7-Zip: installs it with winget in a console window, then looks for it again
+$WingetCmd = 'winget install -e --id 7zip.7zip'
+$mLbl7Get = & $mlbl 'Get 7-Zip (free):' '15,752'
+$mWingetBox = New-Object System.Windows.Forms.TextBox; $mWingetBox.Location = '170,749'; $mWingetBox.Size = '245,25'; $mWingetBox.ReadOnly = $true; $mWingetBox.Text = $WingetCmd
+$mInstall7 = New-Object System.Windows.Forms.Button; $mInstall7.Text = 'Install 7-Zip'; $mInstall7.Location = '425,747'; $mInstall7.Size = '130,28'
+$mRecheck7 = New-Object System.Windows.Forms.Button; $mRecheck7.Text = 'Check again'; $mRecheck7.Location = '425,781'; $mRecheck7.Size = '130,28'
+$script:WingetProc = $null
+$mWingetTimer = New-Object System.Windows.Forms.Timer; $mWingetTimer.Interval = 1000
+$mWingetTimer.add_Tick({ if ($script:WingetProc -and $script:WingetProc.HasExited) { $mWingetTimer.Stop(); $script:WingetProc = $null; $script:SevenZip = Find-7Zip; Update-ManualUi } })
+$mInstall7.add_Click({
+    if (-not (Get-Command winget.exe -ErrorAction SilentlyContinue)) {
+        [void][System.Windows.Forms.MessageBox]::Show("winget (App Installer) is not on this PC. Download 7-Zip from https://www.7-zip.org/ instead.", 'Get 7-Zip', 'OK', 'Information'); return
+    }
+    $script:WingetProc = Start-Process cmd.exe -ArgumentList '/c', "$WingetCmd & echo. & pause" -PassThru
+    $mInstall7.Enabled = $false; $m7Status.Text = 'Installing 7-Zip... (finish in the console window)'; $mWingetTimer.Start()
+})
+$mRecheck7.add_Click({ $script:SevenZip = Find-7Zip; Update-ManualUi })
+
 $tabManual.Controls.AddRange(@($mLblSrc, $mLst, $mAdd, $mNet, $mRemove, $mLblDst, $mDest, $mBrowse, $mLblType, $mRbFolder, $mRbZip, $mRb7z, $mGrpEngine,
-        $mLblLevel, $mLevel, $mLblPw, $mPw, $mLblPw2, $mPw2, $mShowPw, $mEncNames, $mLblSfx, $mSfx, $m7Status, $mStart, $mCancel, $mProgress, $mStatus))
+        $mLblLevel, $mLevel, $mLblPw, $mPw, $mLblPw2, $mPw2, $mShowPw, $mEncNames, $mLblSfx, $mSfx, $m7Status, $mStart, $mCancel, $mProgress, $mStatus, $mSave, $mLbl7Get, $mWingetBox, $mInstall7, $mRecheck7))
 Update-ManualUi
 Add-Help $tabManual 330 8 'What to back up' ("Folders and single files to back up right now. 'Add Files/Folders' opens the same tree as on the Build Script tab (files are listed too). 'Add Network Path' takes \\server\share\folder or a file on another PC or NAS.`r`n`r`nEach folder keeps its name in the backup; files picked from one folder go into a folder with that folder's name. Empty folders are kept.")
 Add-Help $tabManual 105 173 'Save to' ("Where the backup goes: an external drive, a second drive or a network share (\\server\share\Backups). A new Backup-<date and time> folder, .zip, .7z or .exe is created there each time, so older backups are never overwritten.")
@@ -1570,6 +1679,9 @@ Add-Help $tabManual 135 238 'Back up to' ("A folder: a plain copy (robocopy) you
     "Compression: Store = no compression (fastest, for photos and videos that do not shrink), Normal = the usual setting, Ultra = the smallest file (slowest). Windows' own zip has no stronger setting than Normal, so Ultra is the same as Normal there - use 7-Zip for a real Ultra.")
 Add-Help $tabManual 430 489 'Self-extracting .exe' ("Makes the 7z backup into a program: double-click it on any Windows PC to unpack it, no 7-Zip needed there. 'Windowed' asks where to unpack; 'console' unpacks into the folder it is in.`r`n`r`n" +
     "Password: with a password the backup cannot be opened without it - there is no way to recover a lost password. 'Also hide the file names' (7z) means even the list of files needs the password. The password is given to 7-Zip on its command line while the backup runs.")
+Add-Help $tabManual 285 711 'Save as Script' ("Saves the backup set up above as a .bat or .ps1 file instead of running it now, to run again later or schedule on the Schedule Task tab. Every run makes a new Backup-<date>_<time>.`r`n`r`n" +
+    "A zip made by Windows uses tar.exe (in Windows 10 and 11). The password is never saved in the script: 7-Zip asks for it each time the script runs, so a script with a password is for running by hand, not as a scheduled task.")
+Add-Help $tabManual 140 750 'Get 7-Zip' ("7-Zip is free and open source. 'Install 7-Zip' runs`r`n  winget install -e --id 7zip.7zip`r`nin a console window (you may be asked to allow it). When it finishes the tool finds 7-Zip by itself; 'Check again' looks again after installing it another way. The tool looks for 7-Zip when it starts.")
 $tabs.TabPages.Add($tabManual)
 
 Update-TaskList

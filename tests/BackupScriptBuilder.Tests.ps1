@@ -4,7 +4,7 @@
 #   Invoke-Pester .\tests\BackupScriptBuilder.Tests.ps1
 $bsbFile = Join-Path (Split-Path $PSScriptRoot -Parent) 'tools\BackupScriptBuilder.ps1'
 $bsbAst = [Management.Automation.Language.Parser]::ParseFile($bsbFile, [ref]$null, [ref]$null)
-foreach ($fn in $bsbAst.FindAll({ $args[0] -is [Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -in 'ConvertTo-XmlText', 'Get-PairName', 'Get-DriveKey', 'Get-LogStampFormat', 'Get-UniqueFolders', 'Get-ScriptFromAction', 'Get-ScriptType', 'New-CopyScript', 'Get-PickerFiles', 'Get-SubFolders', 'Test-SkipFolder', 'Test-SystemFolder', 'ConvertTo-UncPath', 'ConvertTo-ProcessArg', 'New-7ZipArgs', 'Invoke-BuiltinZip', 'Invoke-ManualBackup', 'Invoke-ManualCopy', 'Wait-BackupProcess' }, $true)) { . ([scriptblock]::Create($fn.Extent.Text)) }
+foreach ($fn in $bsbAst.FindAll({ $args[0] -is [Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -in 'ConvertTo-XmlText', 'Get-PairName', 'Get-DriveKey', 'Get-LogStampFormat', 'Get-UniqueFolders', 'Get-ScriptFromAction', 'Get-ScriptType', 'New-CopyScript', 'Get-PickerFiles', 'Get-SubFolders', 'Test-SkipFolder', 'Test-SystemFolder', 'ConvertTo-UncPath', 'ConvertTo-ProcessArg', 'New-7ZipArgs', 'Invoke-BuiltinZip', 'Invoke-ManualBackup', 'Invoke-ManualCopy', 'Wait-BackupProcess', 'New-ManualScript', 'Find-7Zip' }, $true)) { . ([scriptblock]::Create($fn.Extent.Text)) }
 function Join-Out($r) { @($r) -join '|' }
 
 Describe 'Pair names, drive keys, log stamps, XML' {
@@ -148,5 +148,46 @@ Describe 'Manual backup: Windows zip and checks (1.3)' {
             $o.Sources = @("$src\B"); $o.Dest = "$TestDrive\no7"; $o.SevenZip = $null; $o.Level = 'Normal'
             (Invoke-ManualBackup $o @{ Cancel = $false }).Message | Should Match '7-Zip is not installed'
         }
+    }
+}
+Describe 'Manual backup: saved scripts really run (1.3), only into $TestDrive' {
+    $src = Join-Path $TestDrive 'ssrc'; New-Item -ItemType Directory "$src\Docs\Empty", "$src\Pics" -Force | Out-Null
+    [IO.File]::WriteAllText("$src\Docs\d.txt", ('hello ' * 20000)); 'p' | Set-Content "$src\Pics\p.txt"; 'x' | Set-Content "$src\Pics\x.txt"
+    $z7 = Find-7Zip
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $cases = @(
+        @{ N = 'folder'; Mode = 'Folder' }, @{ N = 'winzip-store'; Mode = 'Zip'; Engine = 'Windows'; Level = 'Store' }, @{ N = 'winzip-ultra'; Mode = 'Zip'; Engine = 'Windows'; Level = 'Ultra' },
+        @{ N = 'zip7'; Mode = 'Zip'; Engine = '7zip'; Level = 'Normal'; Need7 = $true }, @{ N = '7z'; Mode = '7z'; Level = 'Ultra'; Need7 = $true }, @{ N = 'sfx'; Mode = '7z'; Level = 'Normal'; Sfx = 'Console'; Need7 = $true })
+    foreach ($c in $cases) { foreach ($fmt in 'bat', 'ps1') {
+        It "$($c.N) as .$fmt makes a backup with the folder, the empty folder and only the picked file" -Skip:($c.Need7 -and -not $z7) {
+            $dest = Join-Path $TestDrive "sout-$($c.N)-$fmt"
+            $o = @{} + $c; $o.Sources = @("$src\Docs", "$src\Pics\p.txt"); $o.Dest = $dest; $o.SevenZip = $z7
+            $file = Join-Path $TestDrive "s-$($c.N).$fmt"; [IO.File]::WriteAllText($file, (New-ManualScript $o $fmt))
+            if ($fmt -eq 'ps1') { & powershell -NoProfile -ExecutionPolicy Bypass -File $file | Out-Null } else { & cmd /c "`"$file`"" | Out-Null }
+            $LASTEXITCODE | Should Be 0
+            $made = @(Get-ChildItem $dest -Filter 'Backup-*'); $made.Count | Should Be 1
+            $m = $made[0].FullName
+            if ($c.Mode -eq 'Folder') { $names = @(Get-ChildItem $m -Recurse | ForEach-Object { $_.FullName.Substring($m.Length + 1).Replace('\', '/') }) }
+            elseif ($c.Engine -eq 'Windows') { $zz = [IO.Compression.ZipFile]::OpenRead($m); $names = @($zz.Entries | ForEach-Object { $_.FullName.TrimEnd('/') }); $zz.Dispose() }
+            else { $names = @([regex]::Matches((& $z7 l -slt $m | Out-String), '(?m)^Path = (.+)$') | Select-Object -Skip 1 | ForEach-Object { $_.Groups[1].Value.Trim().Replace('\', '/') }) }
+            ($names -contains 'Docs/d.txt') | Should Be $true
+            ($names -contains 'Docs/Empty') | Should Be $true
+            (@($names | Where-Object { $_ -match 'p\.txt$' }).Count) | Should Be 1
+            (@($names | Where-Object { $_ -match 'x\.txt$' }).Count) | Should Be 0
+            if ($c.N -eq 'sfx') { $m | Should Match '\.exe$' }
+            if ($c.N -eq 'winzip-store') { (Get-Item $m).Length | Should BeGreaterThan 100000 }
+            if ($c.N -eq 'winzip-ultra') { (Get-Item $m).Length | Should BeLessThan 5000 }
+        }
+    } }
+    It 'a password is never written into the script; 7-Zip asks for it (-p)' {
+        foreach ($fmt in 'bat', 'ps1') {
+            $s = New-ManualScript @{ Mode = '7z'; Level = 'Normal'; Password = 'Secret#42'; Sources = @('C:\a'); Dest = 'D:\b'; SevenZip = 'C:\7-Zip\7z.exe' } $fmt
+            $s | Should Not Match 'Secret#42'; $s | Should Match "(^| |')-p('| |$)"; $s | Should Match 'asks for the password'
+        }
+    }
+    It 'a % in a path is doubled in a .bat, a quote doubled in a .ps1' {
+        $o = @{ Mode = 'Folder'; Sources = @("C:\100% done"); Dest = "D:\Bob's"; SevenZip = $null }
+        New-ManualScript $o 'bat' | Should Match 'C:\\100%% done'
+        New-ManualScript $o 'ps1' | Should Match "D:\\Bob''s"
     }
 }
