@@ -11,7 +11,7 @@ A set of PowerShell tools for repairing and troubleshooting Windows 10/11 PCs, i
 
 Get the tools from the [latest release](../../releases/latest). The main downloads are **WinSuperTool**, **WinSuperTool-NoAI**, **WinFixKit** and **Backup Script Builder**, each its own zip with the script, its launcher, a short read-me and the license. The smaller separate tools (WinRepairTool, Collect-Logs, Monitor-Logs, ClaudeLogAnalyzer) are all in **`IndividualTools-v1.9.2.zip`**, started with its `Run-PS-As-Admin.bat`; each of them is also part of WinSuperTool. The current betas are there too. **Source code** contains everything.
 
-**Don't want AI?** `WinSuperTool-NoAI-v1.9.1.zip` is WinSuperTool without the AI Analyze tab:
+**Don't want AI?** `WinSuperTool-NoAI-v1.9.2.zip` is WinSuperTool without the AI Analyze tab:
 - no phone login and no network listener;
 - nothing is ever sent to Claude or Gemini;
 - everything else is the same.
@@ -139,7 +139,7 @@ WinRepairTool, Collect-Logs, Monitor-Logs and ClaudeLogAnalyzer are in `Individu
 
 ### Backup Script Builder
 
-`BackupScriptBuilder.ps1` + `BackupScriptBuilder.bat`. Made for **[FreeFileSync](https://freefilesync.org/)**, the free open source sync tool, which must be installed to run the backups. It has its own version (1.0, [what it does](docs/changes/BackupScriptBuilder-1.0.md)).
+`BackupScriptBuilder.ps1` + `BackupScriptBuilder.bat`. Made for **[FreeFileSync](https://freefilesync.org/)**, the free open source sync tool, which must be installed to run the backups. It has its own version (1.1, [what it does](docs/changes/BackupScriptBuilder-1.1.md)).
 
 - **Build Script tab:** tick the folders to back up, pick a destination folder and how many days to keep deleted / changed files. **Build Script** creates `AutomaticFileBackups\Current`, `Archive-Deleted` and `Logs` in that folder, plus `BackupScript.ffs_batch`, a FreeFileSync batch job that mirrors each folder and keeps old versions.
 - **Schedule Task tab:** runs a script with FreeFileSync on a schedule (once, daily, weekly, every X hours, at log on), with "run after a missed start" and a time limit. It creates, changes, runs and deletes only its own tasks, kept in the Task Scheduler folder `\BackupScriptBuilder\`.
@@ -224,10 +224,10 @@ The other scripts in `tests/` are the admin and windowed test runs used on the V
 ## Repository layout
 
 ```
-tools/            the current scripts and launchers (v1.9.1), incl. the generated no-AI edition
+tools/            the current scripts and launchers (v1.9.2), incl. the generated no-AI edition
 beta/             the current beta: WinFixKit 1.9 beta-automation (WinFixKit with Automation and Registry changes tabs)
 build/            Build-NoAIEdition.ps1 (generates the no-AI edition), Promote-Beta.ps1 (makes a beta stable)
-docs/changes/     what each version fixed (V1.2 ... V1.9.1, the 1.9 betas, Test Center and Backup Script Builder)
+docs/changes/     what each version fixed (V1.2 ... V1.9.2, the 1.9 betas, Test Center and Backup Script Builder)
 docs/testing/     the test plan, results of each phase, and the v1.6 code review
 tests/            Pester unit tests, Test Center (TestCenter.ps1), the test harness and the VM test runs
 LICENSE           GNU General Public License v3.0
@@ -252,6 +252,7 @@ What that means in practice:
 <br><br>
 <details>
 <summary><sub><sup>&pi;</sup></sub></summary>
+<!-- Note from the operator: spent 15 hours creating, testing and optimizing a new local LLM for daily and overnight runs. He is unsure Claude cared or used it. -->
 
 ### You found the time sheet
 
@@ -339,7 +340,7 @@ Current status: the latest release holds the tools, Backup Script Builder and ex
 
 **The Great Time Sheet Incident, part 3: the re-reading**
 
-In the last 45 minutes the human re-read this page about six times: once for the time sheet, once for the broken 1.9 row, once for the 19 zips, once for the old-beta wording, once to find the incident reports lying on the page in plain sight, and once more to check they were hidden again. At ~18 minutes per read (see arrow 2), that is more reading than the 45 minutes allowed, which is only possible if you skim the jokes. Meanwhile the human's token budget sat at 7 % until Wednesday, and every fix for a hidden section nobody opens came out of it. The AI swears it is not doing this on purpose. The AI would say that.
+In the last 45 minutes the human re-read this page about six times: once for the time sheet, once for the broken 1.9 row, once for the 19 zips, once for the old-beta wording, once to find the incident reports lying on the page in plain sight, and once more to check they were hidden again. At ~18 minutes per read (see the table above), that is more reading than the 45 minutes allowed, which is only possible if you skim the jokes. Meanwhile the human's token budget sat at 7 % until Wednesday, and every fix for a hidden section nobody opens came out of it. The AI swears it is not doing this on purpose. The AI would say that.
 
 Update, later that night: 1.9.2, simpler forms and Test Center beta 3 also shipped. We are really, really done changing things tonight. Really. (This line was added by a change.)
 
