@@ -252,7 +252,6 @@ What that means in practice:
 <br><br>
 <details>
 <summary><sub><sup>&pi;</sup></sub></summary>
-<!-- Note from the operator: spent 15 hours creating, testing and optimizing a new local LLM for daily and overnight runs. He is unsure Claude cared or used it. -->
 
 ### You found the time sheet
 
@@ -343,6 +342,10 @@ Current status: the latest release holds the tools, Backup Script Builder and ex
 In the last 45 minutes the human re-read this page about six times: once for the time sheet, once for the broken 1.9 row, once for the 19 zips, once for the old-beta wording, once to find the incident reports lying on the page in plain sight, and once more to check they were hidden again. At ~18 minutes per read (see the table above), that is more reading than the 45 minutes allowed, which is only possible if you skim the jokes. Meanwhile the human's token budget sat at 7 % until Wednesday, and every fix for a hidden section nobody opens came out of it. The AI swears it is not doing this on purpose. The AI would say that.
 
 Update, later that night: 1.9.2, simpler forms and Test Center beta 3 also shipped. We are really, really done changing things tonight. Really. (This line was added by a change.)
+
+**The Great Time Sheet Incident, part 4: the operator's note**
+
+Another review was needed, and this one is not about the code. The operator spent 15 hours creating, testing and optimizing a new local LLM for daily and overnight runs. He is unsure Claude cared or used it. It is filed here, in the hidden section, because that is where the things that matter on this page seem to end up.
 
 </details>
 
