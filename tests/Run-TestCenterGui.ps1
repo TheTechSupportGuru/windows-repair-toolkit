@@ -68,8 +68,8 @@ Add-Check 'window opens' ($p.MainWindowHandle -ne 0) $p.MainWindowTitle
 $toolsDefault = (Resolve-Path (Join-Path (Split-Path $Tc) '..\tools')).Path
 
 # --- tabs: each tab shows its own tests
-$expect = @('Unit tests: every tool', 'Full regression', 'Check status: every section (no admin)', 'Log collection', 'Field test')
-for ($i = 0; $i -lt 5; $i++) {
+$expect = @('Unit tests: every tool', 'Full regression', 'Check status: every section (no admin)', 'Backup Script Builder: scripts, folder picker', 'Log collection', 'Field test')
+for ($i = 0; $i -lt $expect.Count; $i++) {
     Select-Tab $i
     $vis = @(Get-Boxes | Where-Object { [W]::IsWindowVisible($_) } | ForEach-Object { [W]::Text($_) })
     Add-Check "tab $($i + 1) shows its tests" (($vis -join '|') -match [regex]::Escape($expect[$i])) ("{0} tests: {1}" -f $vis.Count, ($vis[0] -replace '\s+\[.*', ''))

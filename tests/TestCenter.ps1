@@ -16,7 +16,7 @@
 #   Scripted (e.g. your own build):  ... TestCenter.ps1 -ToolsFolder D:\my-build\tools -Run unit-suite,unit-toolkit,sizes -ExitWhenDone
 #   (test ids: the Id values in $Tests below; -Run all = every test that can run here)
 param([string]$ToolsFolder, [string[]]$Run, [switch]$ExitWhenDone)
-$TestCenterVersion = '1.0 beta 3'
+$TestCenterVersion = '1.0 beta 4'
 $ErrorActionPreference = 'Continue'
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 [Windows.Forms.Application]::EnableVisualStyles()
@@ -41,6 +41,8 @@ $Tests = @(
        Desc = 'Identical window helpers in every tool, licence headers, pure-ASCII scripts, launchers, no-AI edition in step.' }
     @{ Tab = 'Whole toolkit'; Id = 'unit-features'; Name = 'Unit tests: 1.9 features'; Kind = 'pester'; Script = 'Beta.Tests.ps1'; Min = 1; Default = $true
        Desc = 'System Info, Automation, Recovery summaries and the HTML report of WinSuperTool.' }
+    @{ Tab = 'Whole toolkit'; Id = 'unit-testcenter'; Name = 'Unit tests: Test Center''s result reader'; Kind = 'pester'; Script = 'TestCenterParser.Tests.ps1'; Min = 1; Default = $true
+       Desc = 'Which summary file Test Center reads for a test, which lines count as failures, and the status it shows. Changes nothing.' }
     @{ Tab = 'Whole toolkit'; Id = 'sizes'; Name = 'Window sizes (resize audit)'; Kind = 'ps'; Script = 'Run-ResizeAudit.ps1'; Min = 15; Default = $true
        Args = [ordered]@{ OutDir = '{out}'; Parallel = $true }
        Desc = 'Opens every GUI tool at several sizes, visits every tab, reports overlapping or cut-off controls. Do not use the mouse.' }
@@ -88,9 +90,11 @@ $Tests = @(
        Results = '%TEMP%\suite-phase3'
        Warn = 'This test REALLY CHANGES this PC (registry, services, firewall, sharing) and undoes every change with WinFixKit''s own backups. Only run it on a TEST virtual machine AFTER taking a snapshot. Is the snapshot taken?'
        Desc = 'Applies each fix for real and undoes it with WinFixKit''s backups. Take a VM snapshot first.' }
+    @{ Tab = 'WinFixKit'; Id = 'wfk-beta-auto'; Name = 'Unit tests: WinFixKit beta-automation (Automation port, Registry changes)'; Kind = 'pester'; Script = 'WinFixKitAutomation.Tests.ps1'; Min = 1; Default = $true
+       Desc = 'The beta in beta\: the Automation code must still match WinSuperTool''s, and the Registry changes tab (key times, scan, defaults list, a real revert on a throw-away HKCU key). Changes nothing else.' }
     # ---- Backup Script Builder
-    @{ Tab = 'Backup Script Builder'; Id = 'backup-builder'; Name = 'Backup Script Builder: script, schedules, layout'; Kind = 'ps'; Script = 'Run-BackupScriptBuilder.ps1'; Min = 2; Default = $true
-       Desc = 'Builds a FreeFileSync script and compares it line by line with a reference, checks the destination rules, creates / reads back / deletes a scheduled task of every type (in \BackupScriptBuilder\, as you), and checks the layout and every ? help text.' }
+    @{ Tab = 'Backup Script Builder'; Id = 'backup-builder'; Name = 'Backup Script Builder: scripts, folder picker, schedules, layout'; Kind = 'ps'; Script = 'Run-BackupScriptBuilder.ps1'; Min = 3; Default = $true
+       Desc = 'Builds a FreeFileSync script and compares it line by line with a reference, checks the destination rules, runs real Robocopy / Xcopy scripts, checks the folder picker (every user folder listed, no junctions, system folders only on request, no duplicates, the real dialog), creates / reads back / deletes a scheduled task of every type (in \BackupScriptBuilder\, as you), and checks the layout and every ? help text.' }
     # ---- Log tools
     @{ Tab = 'Log tools'; Id = 'logs'; Name = 'Log collection + AI log readers'; Kind = 'ps'; Script = 'Run-LogGen.ps1'; Min = 15; Admin = $true
        Results = '%TEMP%\suite-logs'
@@ -236,40 +240,59 @@ $ExpectedById = @{
 function Get-FileLines([string]$p) { @(Get-Content -LiteralPath $p -ErrorAction SilentlyContinue | Where-Object { $_.Trim() }) }
 # the summary a test left: summary.txt, else progress.txt, else <name>-summary.txt, else the CSV results, else what it printed
 function Get-TestSummary($t, [string]$out) {
-    $dirs = @($out); if ($t.Results) { $dirs += [Environment]::ExpandEnvironmentVariables($t.Results) }
+    $dirs = @($out)
+    if ($t.Results) { $dirs += [Environment]::ExpandEnvironmentVariables($t.Results) }
     foreach ($d in $dirs) {
-        foreach ($n in 'summary.txt', 'progress.txt') { $p = Join-Path $d $n; if (Test-Path -LiteralPath $p) { return @{ File = $p; Lines = (Get-FileLines $p) } } }
+        foreach ($n in 'summary.txt', 'progress.txt') {
+            $p = Join-Path $d $n
+            if (Test-Path -LiteralPath $p) { return @{ File = $p; Lines = (Get-FileLines $p) } }
+        }
         $p = Get-ChildItem -LiteralPath $d -Filter '*summary*.txt' -File -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
         if ($p) { return @{ File = $p.FullName; Lines = (Get-FileLines $p.FullName) } }
     }
     # System Info buttons: results.csv (Kind, Button, Result, Detail)
     $csv = Join-Path $out 'results.csv'
     if (Test-Path -LiteralPath $csv) {
-        $rows = @(Import-Csv -LiteralPath $csv); $l = @(); $res = $rows | ForEach-Object { $_.PSObject.Properties.Value[2] }
-        $l += 'Buttons: ' + (($res | Group-Object | ForEach-Object { "$($_.Name) $($_.Count)" }) -join ', ')
-        $l += @($rows | Where-Object { $_.PSObject.Properties.Value[2] -ne 'PASS' } | ForEach-Object { 'NOT OK: ' + ($_.PSObject.Properties.Value[1]) + ' - ' + ($_.PSObject.Properties.Value[3]) })
-        return @{ File = $csv; Lines = $l }
+        $rows = @(Import-Csv -LiteralPath $csv)
+        $res = New-Object 'System.Collections.Generic.List[string]'
+        $notOk = New-Object 'System.Collections.Generic.List[string]'
+        foreach ($row in $rows) {
+            $v = $row.PSObject.Properties.Value
+            $res.Add($v[2])
+            if ($v[2] -ne 'PASS') { $notOk.Add('NOT OK: ' + $v[1] + ' - ' + $v[3]) }
+        }
+        $l = New-Object 'System.Collections.Generic.List[string]'
+        $l.Add('Buttons: ' + (($res | Group-Object | ForEach-Object { "$($_.Name) $($_.Count)" }) -join ', '))
+        foreach ($s in $notOk) { $l.Add($s) }
+        return @{ File = $csv; Lines = $l.ToArray() }
     }
     # WinFixKit status checks: status-summary-<user|admin>.csv + the snapshot line it printed
     $csv = Get-ChildItem -LiteralPath $out -Filter 'status-summary-*.csv' -File -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($csv) {
-        $rows = @(Import-Csv -LiteralPath $csv.FullName); $l = @("Sections checked: $($rows.Count)")
+        $rows = @(Import-Csv -LiteralPath $csv.FullName)
+        $l = New-Object 'System.Collections.Generic.List[string]'
+        $l.Add("Sections checked: $($rows.Count)")
         $snap = @(Get-FileLines (Join-Path $out 'console.txt') | Where-Object { $_ -match '^SNAPSHOT CHANGED' }) | Select-Object -Last 1
-        if ($snap) { $l += $snap } else { $l += 'NO RESULT: the read-only snapshot line is missing' }
-        $l += @($rows | Where-Object { $_.FirstError -match 'UNCAUGHT' } | ForEach-Object { "UNCAUGHT in section $($_.Section): $($_.FirstError)" })
-        $l += @($rows | Where-Object { [int]$_.ErrorLines -gt 0 } | ForEach-Object { "Section $($_.Section): $($_.ErrorLines) line(s) from Windows' own logs about this PC (see status-*.txt) - information, not a tool fault" })
-        return @{ File = $csv.FullName; Lines = $l }
+        if ($snap) { $l.Add($snap) } else { $l.Add('NO RESULT: the read-only snapshot line is missing') }
+        foreach ($row in $rows) {
+            if ($row.FirstError -match 'UNCAUGHT') { $l.Add("UNCAUGHT in section $($row.Section): $($row.FirstError)") }
+        }
+        foreach ($row in $rows) {
+            if ([int]$row.ErrorLines -gt 0) { $l.Add("Section $($row.Section): $($row.ErrorLines) line(s) from Windows' own logs about this PC (see status-*.txt) - information, not a tool fault") }
+        }
+        return @{ File = $csv.FullName; Lines = $l.ToArray() }
     }
     # nothing: the last lines it printed, without the transcript's header and its record of handled errors
     $tx = Get-FileLines (Join-Path $out 'console.txt')
     if (-not $tx) { return @{ File = $null; Lines = @() } }
-    $body = @(); $inHead = $false
+    $body = New-Object 'System.Collections.Generic.List[string]'
+    $inHead = $false
     foreach ($l in $tx) {
         if ($l -match '^\*{10,}') { $inHead = -not $inHead; continue }
         if ($inHead -or $l -match '^(Transcript started|Windows PowerShell transcript|PS>TerminatingError|>> TerminatingError)' -or $l -match '^\s*(At line:|At .+:\d+ char:|\+ |CategoryInfo|FullyQualifiedErrorId|~+$)') { continue }
-        $body += $l
+        $body.Add($l)
     }
-    @{ File = $null; Lines = @($body | Select-Object -Last 15) }
+    @{ File = $null; Lines = @($body.ToArray() | Select-Object -Last 15) }
 }
 function Get-ResultStatus($t, $code, [string[]]$lines) {
     if ($t.Kind -eq 'pester') { if ($code -eq 0) { return 'PASSED' } else { return 'FAILED' } }
@@ -277,13 +300,17 @@ function Get-ResultStatus($t, $code, [string[]]$lines) {
     if (@(Get-FlaggedLines $t $lines).Count) { 'CHECK' } else { 'OK' }
 }
 # the summary lines that need a look (failure words, not "0 failed", not a heading, not an expected line of this test)
+$script:FlaggedLineMatchRegex = [regex]::new('\b(fail(ed|s|ures?)?|errors?|NO RESULT|UNCAUGHT|not ok|wrong|missing|problem)\b', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+$script:FlaggedLineNotMatchRegex = [regex]::new('^\s*=====|^\s*PASS\b|:\s*$|launcher said|Transcript: |information, not a tool fault', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+$script:FlaggedLineZeroNotMatchRegex = [regex]::new('\b0\s+(fail|error)|(fail\w*|errors?)[^\d\r\n]{0,30}\b0\b(?![.,]\d)|no (failures|errors|issues|problems)|nothing \(read-only confirmed\)', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+
 function Get-FlaggedLines($t, [string[]]$lines) {
     $exp = @($ExpectedById[$t.Id])
     @($lines | Where-Object {
         $l = $_
-        $l -match '(?i)\b(fail(ed|s|ures?)?|errors?|NO RESULT|UNCAUGHT|not ok|wrong|missing|problem)\b' -and
-        $l -notmatch '^\s*=====|^\s*PASS\b|:\s*$|launcher said|Transcript: |information, not a tool fault' -and
-        $l -notmatch '(?i)\b0\s+(fail|error)|(fail\w*|errors?)[^\d\r\n]{0,30}\b0\b(?![.,]\d)|no (failures|errors|issues|problems)|nothing \(read-only confirmed\)' -and
+        $script:FlaggedLineMatchRegex.IsMatch($l) -and
+        -not $script:FlaggedLineNotMatchRegex.IsMatch($l) -and
+        -not $script:FlaggedLineZeroNotMatchRegex.IsMatch($l) -and
         -not ($exp | Where-Object { $_ -and $l -match $_ })
     })
 }
