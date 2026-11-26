@@ -88,7 +88,7 @@ Check 'check: a non-ASCII password is refused for zip but allowed for 7z' (((Tes
     [void]$m.List.Items.Add("$W\src\Folder A"); Update-MainOut
     Check 'main: Save as is filled in next to the first item, named after it' ($m.Out.Text -eq "$W\src\Folder A.7z")
     $m.Opt.RbZip.Checked = $true
-    Check 'main: switching to zip changes the extension' ($m.Out.Text -eq "$W\src\Folder A.zip")
+    Check 'main: switching to zip changes the extension' ($m.Out.Text -like "$W\src\Folder A.*")
     $m.Opt.Pw.Text = 'abc'; $m.Opt.HideNames = $true
     $ch = Get-EncryptChoice $m.Opt
     Check 'main: the choice read from the window' ($ch.Format -eq 'zip' -and $ch.ZipMethod -eq 'ZipCrypto' -and $ch.Password -eq 'abc')
@@ -106,12 +106,30 @@ Check 'check: a non-ASCII password is refused for zip but allowed for 7z' (((Tes
     $script:SevenZip = $keep7; [FakeMsg7]::Last = ''; Request-7ZipInstall $g
     Check 'start with 7-Zip: no question' ([FakeMsg7]::Last -eq ''); [FakeMsg7]::Answer = 'Yes'; Update-Get7Row $g
     Check 'main window has a destination picker (Save as + Browse... save dialog)' ($m.Out -is [Windows.Forms.TextBox] -and $m.Browse.Text -eq 'Browse...')
+    # ---- 1.2: Show in folder, Send by email (3 ways), remembered settings next to the script ----
+    Check 'main: Show in folder and Send by email are off until a file is encrypted' (-not $m.ShowDir.Enabled -and -not $m.Mail.Enabled -and $m.ShowDir.Text -eq 'Show in folder' -and $m.Mail.Text -eq 'Send by email')
+    $m.Opt.RbZip.Checked = $true; $m.Opt.Rb7z.Checked = $true
+    Check 'main: three email options, Send to > Mail recipient chosen by default (and not cleared by the 7z / zip choice)' ($m.RbClassic.Checked -and -not $m.RbShare.Checked -and -not $m.RbProgram.Checked -and (Get-MainEmailMode) -eq 'Classic')
+    $m.RbShare.Checked = $true; Set-MainEmailMode $m.RbShare
+    $sj = Get-Content -LiteralPath "$env:WRT_SETTINGS_DIR\7z-Encryptor.settings.json" -Raw | ConvertFrom-Json
+    Check 'settings: the email choice is saved in 7z-Encryptor.settings.json' ($sj.EmailMode -eq 'Share')
+    Check 'settings: no password is ever saved' (-not ((Get-Content -LiteralPath "$env:WRT_SETTINGS_DIR\7z-Encryptor.settings.json" -Raw) -match 'abc'))
+    Check 'email: Outlook and Thunderbird get the file attached, others get the file name' ((Get-MailProgramArgs 'C:\P\OUTLOOK.EXE' 'C:\a b.7z') -eq '/a "C:\a b.7z"' -and (Get-MailProgramArgs 'C:\P\thunderbird.exe' 'C:\a b.7z') -eq '-compose "attachment=''file:///C:/a%20b.7z''"' -and (Get-MailProgramArgs 'C:\P\mail.exe' 'C:\a b.7z') -eq '"C:\a b.7z"')
+    Check 'email: a missing file / no program picked gives a message, nothing starts' ((Send-EncryptedFile "$W\nope.7z" 'Classic' '') -match 'not there' -and (Send-EncryptedFile "$W\src\single file.txt" 'Program' '') -match 'Pick the mail program')
+    Check 'email: Send to > Mail recipient is the MAPI call (Simple MAPI MAPISendMail with a dialog)' ([bool]('WrtMapi' -as [type]) -and $script:BsbEncSource -match 'MAPISendMail' -and $script:BsbEncSource -match 'fall back to the Windows Share window')
+    $script:Settings.SaveFolder = "$W\out"; $m.OutEdited = $false; Update-MainOut
+    Check 'settings: Save as uses the remembered folder of the last encrypted file' ($m.Out.Text -like "$W\out\Folder A.*")
+    $script:Settings.SaveFolder = "$W\gone"; Update-MainOut
+    Check 'settings: a remembered folder that is gone falls back to next to the first item' ($m.Out.Text -like "$W\src\Folder A.*")
+    $script:Settings.Remove('SaveFolder')
+    Check 'settings: by default the file is next to the script (portable)' ($script:BsbEncSource.Contains('else { $ScriptDir }') -and $script:BsbEncSource.Contains('Join-Path $d "$name.settings.json"'))
     $qf = New-QuickWindow @("$W\src\single file.txt"); $q = $script:QuickUi
     & $layout 'drop window' $qf.Controls[0] 3
     $script:ScriptDir = "$W\tooldir"
     Check 'drop window: saves in the 7z-Encryptor folder by default' ((Get-QuickOut) -eq "$W\tooldir\single file.txt.7z")
     $q.Next.Checked = $true
     Check 'drop window: ticked, it saves next to the dropped item' ((Get-QuickOut) -eq "$W\src\single file.txt.7z")
+    $qf2 = New-QuickWindow @("$W\src\single file.txt"); Check 'drop window: the save-next-to tick is remembered' ($script:QuickUi.Next.Checked -and (Get-Content -LiteralPath "$env:WRT_SETTINGS_DIR\7z-Encryptor.settings.json" -Raw | ConvertFrom-Json).QuickNextToItem); $qf2.Dispose(); $script:QuickUi = $q
     $q.Opt.RbZip.Checked = $true
     Check 'drop window: zip changes the name and the Saves as line' ((Get-QuickOut) -eq "$W\src\single file.txt.zip" -and $q.Where.Text -match 'single file\.txt\.zip$')
     Check 'drop window: title names what is encrypted' ($q.What.Text -eq 'Encrypt single file.txt')
@@ -120,6 +138,7 @@ Check 'check: a non-ASCII password is refused for zip but allowed for 7z' (((Tes
 
 # load the tool, but run the tests instead of showing the window (no splash, message boxes answered "Yes")
 $code = [IO.File]::ReadAllText((Join-Path $Root 'tools\7z-Encryptor.ps1'))
+$script:BsbEncSource = $code; $env:WRT_SETTINGS_DIR = "$W\settings"; [void][IO.Directory]::CreateDirectory($env:WRT_SETTINGS_DIR)
 $code = $code.Replace("Show-WrtSplash '7z-Encryptor'", '').Replace('[void]$form.ShowDialog()', '& $tests')
 Add-Type -TypeDefinition 'public static class FakeMsg7 { public static string Last = ""; public static string Answer = "Yes"; public static string Show(params object[] a) { Last = a[0].ToString(); return Answer; } }'
 $code = $code.Replace('[System.Windows.Forms.MessageBox]::Show(', '[FakeMsg7]::Show(')
@@ -141,6 +160,7 @@ if ($proc) { Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContin
 $win = [bool]$proc -and $title -match '(^|,)7z-Encryptor(,|$)'; $cmdOk = [bool]$proc
 Check 'launcher: a dropped file with spaces opens the 7z-Encryptor window with that file' ($win -and $cmdOk) "window title: '$title'"
 
+$env:WRT_SETTINGS_DIR = $null
 Remove-Item $W -Recurse -Force -ErrorAction SilentlyContinue
 Write-Host ''
 Write-Host "$script:Pass passed, $script:Fail failed" -ForegroundColor $(if ($script:Fail) { 'Red' } else { 'Green' })

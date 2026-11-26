@@ -397,6 +397,17 @@ Check 'manual: a non-ASCII password is refused for a 7-Zip zip, allowed for 7z' 
     $mRbFolder.Checked = $true
     Check 'manual: Save as Script writes a script for the current choice' ((New-ManualScript (Get-ManualOptions) 'bat') -match 'robocopy' -and $mSave.Text -match 'Save as Script')
     Remove-Item $mw -Recurse -Force -ErrorAction SilentlyContinue
+    # ---- 1.6: both destination folders are remembered, in a settings file in the tool's own folder ----
+    Check 'settings: no file yet, the destination boxes start empty' (-not (Test-Path "$env:WRT_SETTINGS_DIR\BackupScriptBuilder.settings.json"))
+    $txtDest.Text = 'H:\Backups [PC1]'; $mDest.Text = '\\nas\share\Manual'
+    Save-BsbSettings
+    $sj = Get-Content -LiteralPath "$env:WRT_SETTINGS_DIR\BackupScriptBuilder.settings.json" -Raw | ConvertFrom-Json
+    Check 'settings: closing saves both destination folders' ($sj.BuildDest -eq 'H:\Backups [PC1]' -and $sj.ManualDest -eq '\\nas\share\Manual')
+    $txtDest.Text = ''; Save-BsbSettings
+    Check 'settings: an empty box does not wipe the remembered folder' ((Read-BsbSettings).BuildDest -eq 'H:\Backups [PC1]')
+    $sv = $env:WRT_SETTINGS_DIR; $env:WRT_SETTINGS_DIR = ''
+    Check 'settings: by default the file is next to the script (portable)' ($script:BsbToolSource.Contains('else { $PSScriptRoot }; if ($d) { Join-Path $d ''BackupScriptBuilder.settings.json'' }'))
+    $env:WRT_SETTINGS_DIR = $sv
 }
 
 # load the tool, but run the tests instead of showing the window (and with no splash screen)
@@ -405,8 +416,11 @@ $code = $code.Replace("Show-WrtSplash 'Backup Script Builder'", '').Replace('[vo
 # message boxes are answered "Yes" (and remembered) instead of waiting for a click
 Add-Type -TypeDefinition 'public static class FakeMsg { public static string Last = ""; public static string Show(params object[] a) { Last = a[0].ToString(); return "Yes"; } }'
 $code = $code.Replace('[System.Windows.Forms.MessageBox]::Show(', '[FakeMsg]::Show(')
+$env:WRT_SETTINGS_DIR = Join-Path $env:TEMP ('bsb-settings-' + [guid]::NewGuid().ToString('N').Substring(0, 8)); [void][IO.Directory]::CreateDirectory($env:WRT_SETTINGS_DIR)
+$script:BsbToolSource = $code
 [void]$form   # (keeps PSScriptAnalyzer quiet about $form being set in the loaded code)
 . ([scriptblock]::Create($code))
+Remove-Item $env:WRT_SETTINGS_DIR -Recurse -Force -ErrorAction SilentlyContinue; $env:WRT_SETTINGS_DIR = $null
 Write-Host ''
 Write-Host "$script:Pass passed, $script:Fail failed" -ForegroundColor $(if ($script:Fail) { 'Red' } else { 'Green' })
 if ($script:Fail) { exit 1 }
