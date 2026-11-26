@@ -4,7 +4,7 @@
 #   Invoke-Pester .\tests\BackupScriptBuilder.Tests.ps1
 $bsbFile = Join-Path (Split-Path $PSScriptRoot -Parent) 'tools\BackupScriptBuilder.ps1'
 $bsbAst = [Management.Automation.Language.Parser]::ParseFile($bsbFile, [ref]$null, [ref]$null)
-foreach ($fn in $bsbAst.FindAll({ $args[0] -is [Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -in 'ConvertTo-XmlText', 'Get-PairName', 'Get-DriveKey', 'Get-LogStampFormat', 'Get-UniqueFolders', 'Get-ScriptFromAction', 'Get-ScriptType' }, $true)) { . ([scriptblock]::Create($fn.Extent.Text)) }
+foreach ($fn in $bsbAst.FindAll({ $args[0] -is [Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -in 'ConvertTo-XmlText', 'Get-PairName', 'Get-DriveKey', 'Get-LogStampFormat', 'Get-UniqueFolders', 'Get-ScriptFromAction', 'Get-ScriptType', 'New-CopyScript', 'Get-PickerFiles', 'Get-SubFolders', 'Test-SkipFolder', 'Test-SystemFolder' }, $true)) { . ([scriptblock]::Create($fn.Extent.Text)) }
 function Join-Out($r) { @($r) -join '|' }
 
 Describe 'Pair names, drive keys, log stamps, XML' {
@@ -41,4 +41,36 @@ Describe 'Reading tasks back' {
     It 'Get-ScriptType: a path containing robocopy is Robocopy' { Get-ScriptType 'powershell.exe' 'C:\x\robocopy-backup.ps1' | Should Be 'Robocopy' }
     It 'Get-ScriptType: an unreadable script falls back to Robocopy' { Get-ScriptType 'cmd.exe' 'C:\nope\missing.bat' | Should Be 'Robocopy' }
     It 'Get-ScriptFromAction: empty arguments give an empty string' { Get-ScriptFromAction ([pscustomobject]@{ Arguments = $null }) | Should Be '' }
+}
+Describe 'Files and empty folders (1.3): scripts really run, only into $TestDrive' {
+    $src = Join-Path $TestDrive 'src'; New-Item -ItemType Directory "$src\Docs\Empty", "$src\Docs\Sub", "$src\Loose\Sub" -Force | Out-Null
+    'a' | Set-Content "$src\Docs\a.txt"; 'b' | Set-Content "$src\Docs\Sub\b.txt"
+    'k' | Set-Content "$src\Loose\keep.txt"; 'k2' | Set-Content "$src\Loose\Sub\keep.txt"; 'x' | Set-Content "$src\Loose\skip.txt"; 'm' | Set-Content "$src\Loose\me & you.txt"
+    $sources = @("$src\Docs", "$src\Loose\keep.txt", "$src\Loose\me & you.txt")
+    $log = @{ Enabled = $false }
+    foreach ($case in @(@('Robocopy', 'ps1', @('/E', '/R:0', '/W:0', '/NP')), @('Robocopy', 'bat', @('/E', '/R:0', '/W:0')), @('Xcopy', 'ps1', @('/E', '/I', '/Y', '/Q')), @('Xcopy', 'bat', @('/E', '/I', '/Y', '/Q')))) {
+        $tool, $fmt, $sw = $case
+        It "$tool $fmt copies the empty folder and only the picked files" {
+            $root = Join-Path $TestDrive "out-$tool-$fmt"
+            $r = New-CopyScript $tool $fmt $sources $root $sw $log
+            foreach ($d in $r.Dirs) { [void][IO.Directory]::CreateDirectory($d) }
+            [IO.File]::WriteAllText($r.File, $r.Text)
+            if ($fmt -eq 'ps1') { & powershell -NoProfile -ExecutionPolicy Bypass -File $r.File | Out-Null } else { & cmd /c "`"$($r.File)`"" | Out-Null }
+            $LASTEXITCODE | Should Be 0
+            Test-Path "$root\Current\Docs\Empty" -PathType Container | Should Be $true
+            Test-Path "$root\Current\Docs\Sub\b.txt" | Should Be $true
+            Test-Path "$root\Current\Loose\keep.txt" | Should Be $true
+            Test-Path "$root\Current\Loose\me & you.txt" | Should Be $true
+            Test-Path "$root\Current\Loose\skip.txt" | Should Be $false
+            Test-Path "$root\Current\Loose\Sub" | Should Be $false
+        }
+    }
+    It 'files of one folder share one pair' { $r = New-CopyScript 'Robocopy' 'bat' $sources (Join-Path $TestDrive 'o2') @('/E') $log; ([regex]::Matches($r.Text, '(?m)^robocopy ')).Count | Should Be 2 }
+    It 'the picker lists an empty folder (it can be ticked) and lists files without desktop.ini' {
+        $d = Join-Path $TestDrive 'pick'; New-Item -ItemType Directory "$d\EmptyOne" -Force | Out-Null; 'f' | Set-Content "$d\f.txt"
+        'i' | Set-Content "$d\desktop.ini"; (Get-Item "$d\desktop.ini").Attributes = 'Hidden, System'
+        @(Get-SubFolders $d).Name | Should Be 'EmptyOne'
+        @(Get-PickerFiles $d).Name | Should Be 'f.txt'
+        (Get-PickerFiles (Join-Path $TestDrive 'nope')).Count | Should Be 0
+    }
 }

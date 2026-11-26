@@ -1,4 +1,4 @@
-# Version 1.2 (2026-11-26)
+# Version 1.3 (2026-11-26)
 # Backup Script Builder - builds a FreeFileSync batch file (BackupScript.ffs_batch), or a Robocopy / Xcopy script (.ps1 or .bat)
 # Windows Repair Toolkit - Copyright (C) 2026 TheTechSupportGuru - SPDX-License-Identifier: GPL-3.0-or-later
 # Free software under the GNU General Public License v3 or (at your option) any later version, WITHOUT ANY WARRANTY. See LICENSE
@@ -303,11 +303,21 @@ function Get-LogStampFormat($log) {
 function New-CopyScript([string]$tool, [string]$format, [string[]]$sources, [string]$root, [string[]]$switches, $log, [bool]$parallel = $false, [int]$mt = 0) {
     $current = $root + '\Current'
     $used = @{}; $pairs = @()
-    foreach ($s in $sources) { $pairs += , @($s.TrimEnd('\'), ($current + '\' + (Get-PairName $s $used))) }
+    # 1.3: a picked FILE goes into a pair for its folder: @(folder, dest, 'name1*name2'); files of one folder share a pair
+    $fileIdx = @{}
+    foreach ($s in $sources) {
+        if ([IO.File]::Exists($s)) {
+            $par = [IO.Path]::GetDirectoryName($s); $k = $par.ToLower()
+            if (-not $fileIdx.ContainsKey($k)) { $fileIdx[$k] = $pairs.Count; $pairs += , @($par.TrimEnd('\'), ($current + '\' + (Get-PairName $par $used)), '') }
+            $fp = $pairs[$fileIdx[$k]]; $fp[2] = (@($fp[2] -split '\*' | Where-Object { $_ }) + [IO.Path]::GetFileName($s)) -join '*'
+        } else { $pairs += , @($s.TrimEnd('\'), ($current + '\' + (Get-PairName $s $used))) }
+    }
     if ($pairs.Count) { foreach ($p in $pairs) { if ($p[0] -match '^[A-Za-z]:$') { $p[0] = $p[0] + '\.' } } }
     $isRobo = $tool -eq 'Robocopy'
     $sw = @($switches)
     if ($isRobo -and $mt -gt 0) { $sw += "/MT:$mt" }
+    # with a file list these would also copy same-named files from subfolders (or purge the folder): left out for files
+    $fileSw = @($sw | Where-Object { $_ -notin '/E', '/S', '/MIR', '/T' })
     $failAt = if ($isRobo) { 8 } else { 2 }     # robocopy: 0-7 = success; xcopy: 0-1 = success
     $logOn = [bool]$log.Enabled
     $logDir = if ($log.Folder) { $log.Folder.TrimEnd('\') } else { $root + '\Logs' }
@@ -317,7 +327,7 @@ function New-CopyScript([string]$tool, [string]$format, [string[]]$sources, [str
     foreach ($p in $pairs) { $k = Get-DriveKey $p[0]; if (-not $groups.Contains($k)) { $groups[$k] = @() }; $groups[$k] += , $p }
     $useParallel = $isRobo -and $parallel -and $groups.Count -gt 1
     $nl = "`r`n"; $sb = New-Object System.Text.StringBuilder
-    $head = "Backup script created by Backup Script Builder 1.2 ($tool, $(if ($useParallel) { 'one thread per source drive' } else { 'one copy at a time' })) on $(Get-Date -Format 'yyyy-MM-dd HH:mm')"
+    $head = "Backup script created by Backup Script Builder 1.3 ($tool, $(if ($useParallel) { 'one thread per source drive' } else { 'one copy at a time' })) on $(Get-Date -Format 'yyyy-MM-dd HH:mm')"
     if ($format -eq 'ps1') {
         $q = { param($t) "'" + ($t -replace "'", "''") + "'" }
         [void]$sb.Append("# $head${nl}# Windows Repair Toolkit - https://github.com/TheTechSupportGuru/windows-repair-toolkit${nl}")
@@ -331,24 +341,28 @@ function New-CopyScript([string]$tool, [string]$format, [string[]]$sources, [str
             if ($log.Mode -eq 'New' -and -not $stampFmt) { [void]$sb.Append("Remove-Item -LiteralPath `$Log -ErrorAction SilentlyContinue${nl}") }
         } else { [void]$sb.Append("`$Log = `$null${nl}") }
         # one function runs a list of pairs; the parallel version runs it once per drive in a background job
-        $fn = "function Invoke-Pairs(`$Pairs, `$Switches, `$Log) {${nl}    `$worst = 0${nl}    foreach (`$p in `$Pairs) {${nl}        `$src, `$dst = `$p -split '\|', 2${nl}"
-        if ($isRobo) { $fn += "        `$a = @(`$src, `$dst) + `$Switches${nl}        if (`$Log) { `$a += '/LOG+:' + `$Log }${nl}        & robocopy.exe @a${nl}" }
+        $fn = "function Invoke-Pairs(`$Pairs, `$Switches, `$Log) {${nl}    `$worst = 0${nl}    foreach (`$p in `$Pairs) {${nl}        `$src, `$dst, `$files = `$p -split '\|', 3${nl}"
+        $fn += "        `$names = @(`"`$files`" -split '\*' | Where-Object { `$_ })${nl}"
+        $fn += "        `$sw = if (`$names.Count) { @(`$Switches | Where-Object { `$_ -notin '/E', '/S', '/MIR', '/T' }) } else { `$Switches }${nl}"
+        if ($isRobo) { $fn += "        `$a = @(`$src, `$dst) + `$names + `$sw${nl}        if (`$Log) { `$a += '/LOG+:' + `$Log }${nl}        & robocopy.exe @a${nl}        if (`$LASTEXITCODE -gt `$worst) { `$worst = `$LASTEXITCODE }${nl}" }
         else {
-            $fn += "        `$a = @(`$src, (`$dst + '\')) + `$Switches${nl}"
-            $fn += "        if (`$Log) { & xcopy.exe @a 2>&1 | Tee-Object -FilePath `$Log -Append } else { & xcopy.exe @a }${nl}"
+            $fn += "        `$items = if (`$names.Count) { @(`$names | ForEach-Object { `$src + '\' + `$_ }) } else { @(`$src) }${nl}"
+            $fn += "        foreach (`$it in `$items) {${nl}            `$a = @(`$it, (`$dst + '\')) + `$sw${nl}"
+            $fn += "            if (`$Log) { & xcopy.exe @a 2>&1 | Tee-Object -FilePath `$Log -Append } else { & xcopy.exe @a }${nl}"
+            $fn += "            if (`$LASTEXITCODE -gt `$worst) { `$worst = `$LASTEXITCODE }${nl}        }${nl}"
         }
-        $fn += "        if (`$LASTEXITCODE -gt `$worst) { `$worst = `$LASTEXITCODE }${nl}    }${nl}    `$worst${nl}}${nl}"
+        $fn += "    }${nl}    `$worst${nl}}${nl}"
         [void]$sb.Append($fn)
         if ($useParallel) {
             [void]$sb.Append("`$Groups = [ordered]@{${nl}")
-            foreach ($k in $groups.Keys) { [void]$sb.Append("    $(& $q $k) = @(" + (($groups[$k] | ForEach-Object { & $q ($_[0] + '|' + $_[1]) }) -join ', ') + ")${nl}") }
+            foreach ($k in $groups.Keys) { [void]$sb.Append("    $(& $q $k) = @(" + (($groups[$k] | ForEach-Object { & $q ($_[0] + '|' + $_[1] + $(if ($_[2]) { '|' + $_[2] })) }) -join ', ') + ")${nl}") }
             [void]$sb.Append("}${nl}`$fnText = `${function:Invoke-Pairs}.ToString()${nl}`$jobs = foreach (`$k in `$Groups.Keys) {${nl}")
             [void]$sb.Append("    `$gl = if (`$Log) { `$Log -replace '\.log`$', ('-' + (`$k -replace '[\\:]', '') + '.log') } else { `$null }${nl}")
             [void]$sb.Append("    Start-Job -Name ('Backup ' + `$k) -ArgumentList `$fnText, @(`$Groups[`$k]), `$Switches, `$gl -ScriptBlock { param(`$f, `$Pairs, `$Switches, `$Log) . ([scriptblock]::Create('function Invoke-Pairs {' + `$f + '}')); Invoke-Pairs `$Pairs `$Switches `$Log | Select-Object -Last 1 }${nl}}${nl}")
             [void]$sb.Append("Write-Host ('Copying ' + @(`$jobs).Count + ' drives at the same time...')${nl}`$codes = @(`$jobs | Wait-Job | Receive-Job)${nl}`$jobs | Remove-Job${nl}")
             [void]$sb.Append("`$Worst = (`$codes | Measure-Object -Maximum).Maximum${nl}")
         } else {
-            [void]$sb.Append("`$Pairs = @(${nl}" + (($pairs | ForEach-Object { '    ' + (& $q ($_[0] + '|' + $_[1])) }) -join ",${nl}") + "${nl})${nl}")
+            [void]$sb.Append("`$Pairs = @(${nl}" + (($pairs | ForEach-Object { '    ' + (& $q ($_[0] + '|' + $_[1] + $(if ($_[2]) { '|' + $_[2] }))) }) -join ",${nl}") + "${nl})${nl}")
             [void]$sb.Append("`$Worst = Invoke-Pairs `$Pairs `$Switches `$Log | Select-Object -Last 1${nl}")
         }
         [void]$sb.Append("if ([int]`$Worst -ge $failAt) { Write-Host ""Backup finished WITH ERRORS (exit code `$Worst) - see the log."" -ForegroundColor Red; exit 1 }${nl}")
@@ -366,9 +380,19 @@ function New-CopyScript([string]$tool, [string]$format, [string[]]$sources, [str
         }
         $line = {
             param($p, $logVar)
-            if ($isRobo) { $l = "robocopy ""$(& $b $p[0])"" ""$(& $b $p[1])"" $swLine"; if ($logOn) { $l += " /LOG+:""%$logVar%""" } }
-            else { $l = "xcopy ""$(& $b $p[0])"" ""$(& $b $p[1])\"" $swLine"; if ($logOn) { $l += " >> ""%$logVar%"" 2>&1" } }
-            $l + "${nl}" + "if %ERRORLEVEL% GTR %WORST% set WORST=%ERRORLEVEL%${nl}"
+            $names = @([string]$p[2] -split '\*' | Where-Object { $_ })
+            $swl = if ($names.Count) { $fileSw -join ' ' } else { $swLine }
+            $chk = "if %ERRORLEVEL% GTR %WORST% set WORST=%ERRORLEVEL%${nl}"
+            if ($isRobo) {
+                $fl = ($names | ForEach-Object { " ""$(& $b $_)""" }) -join ''
+                $l = "robocopy ""$(& $b $p[0])"" ""$(& $b $p[1])""$fl $swl"; if ($logOn) { $l += " /LOG+:""%$logVar%""" }
+                return $l + $nl + $chk
+            }
+            $items = if ($names.Count) { @($names | ForEach-Object { $p[0] + '\' + $_ }) } else { @($p[0]) }
+            ($items | ForEach-Object {
+                $l = "xcopy ""$(& $b $_)"" ""$(& $b $p[1])\"" $swl"; if ($logOn) { $l += " >> ""%$logVar%"" 2>&1" }
+                $l + $nl + $chk
+            }) -join ''
         }
         if ($useParallel) {
             [void]$sb.Append("set ""RUN=%RANDOM%%RANDOM%""${nl}echo Copying $($groups.Count) drives at the same time...${nl}")
@@ -497,8 +521,22 @@ function Expand-FolderNode($node) {
             if ($c.Name -eq 'sys' -and -not $script:ShowSystem) { continue }
             [void]$node.Nodes.Add($c)
         }
+        # 1.3: Robocopy / Xcopy can also back up single files: list them after the folders
+        if ($script:PickerFiles) { foreach ($fi in (Get-PickerFiles ([string]$node.Tag))) { [void]$node.Nodes.Add((New-FileNode $fi)) } }
     } finally { if ($tv) { $tv.EndUpdate() } }
 }
+# The files in one folder, sorted, without hidden system files (desktop.ini, thumbs.db ...); empty when it cannot be read
+function Get-PickerFiles([string]$path) {
+    try { $all = (New-Object System.IO.DirectoryInfo $path).GetFiles() } catch { return ,@() }
+    $keep = @($all | Where-Object { -not (($_.Attributes -band [IO.FileAttributes]::Hidden) -and ($_.Attributes -band [IO.FileAttributes]::System)) })
+    return ,@($keep | Sort-Object Name)
+}
+function New-FileNode([System.IO.FileInfo]$fi) {
+    $n = New-Object System.Windows.Forms.TreeNode $fi.Name
+    $n.Tag = $fi.FullName; $n.Name = 'file'; $n.ForeColor = [System.Drawing.Color]::DarkBlue
+    return $n
+}
+$script:PickerFiles = $false
 # Show or hide the Windows / program folders in every folder that is already open (ticks elsewhere are kept)
 function Update-SystemNodes($nodes) {
     foreach ($n in @($nodes)) {
@@ -544,9 +582,10 @@ function Get-UniqueFolders([string[]]$paths) {
     return ,$out
 }
 
-function Show-FolderPicker {
+function Show-FolderPicker([bool]$Files = $false) {
+    $script:PickerFiles = $Files
     $dlg = New-Object System.Windows.Forms.Form; Set-WrtScaling $dlg
-    $dlg.Text = 'Check the folders to back up'
+    $dlg.Text = $(if ($Files) { 'Check the folders and files to back up' } else { 'Check the folders to back up' })
     $dlg.Size = New-Object System.Drawing.Size(520, 600)
     $dlg.StartPosition = 'CenterParent'
     $dlg.MinimizeBox = $false
@@ -652,15 +691,15 @@ $lstSrc.SelectionMode = 'MultiExtended'
 $lstSrc.HorizontalScrollbar = $true
 
 $btnAdd = New-Object System.Windows.Forms.Button
-$btnAdd.Text = 'Add Folders...'; $btnAdd.Location = '425,83'; $btnAdd.Size = '110,30'
+$btnAdd.Text = 'Add Folders...'; $btnAdd.Location = '425,83'; $btnAdd.Size = '130,30'
 $btnAdd.add_Click({
-    foreach ($p in (Show-FolderPicker)) {
+    foreach ($p in (Show-FolderPicker (-not $rbFfs.Checked))) {
         if (-not @($lstSrc.Items | Where-Object { $_ -ieq $p }).Count) { [void]$lstSrc.Items.Add($p) }
     }
 })
 
 $btnRemove = New-Object System.Windows.Forms.Button
-$btnRemove.Text = 'Remove'; $btnRemove.Location = '425,120'; $btnRemove.Size = '110,30'
+$btnRemove.Text = 'Remove'; $btnRemove.Location = '425,120'; $btnRemove.Size = '130,30'
 $btnRemove.add_Click({
     $sel = @($lstSrc.SelectedItems)
     foreach ($s in $sel) { $lstSrc.Items.Remove($s) }
@@ -735,6 +774,10 @@ $btnBuild.add_Click({
         }
     }
     if (-not $rbFfs.Checked) { Invoke-BuildCopyScript $sources $root; return }
+    $fileSrc = @($sources | Where-Object { [IO.File]::Exists($_) })
+    if ($fileSrc.Count) {
+        [void][System.Windows.Forms.MessageBox]::Show("A FreeFileSync batch backs up folders only. Remove these files from the list or create a Robocopy or Xcopy script instead:`r`n" + ($fileSrc -join "`r`n"), 'Backup Script Builder', 'OK', 'Warning'); return
+    }
     $out = ($root + '\' + 'BackupScript.ffs_batch')
     if (Test-Path $out) {
         $a = [System.Windows.Forms.MessageBox]::Show("$out already exists.`r`nOverwrite it?", 'Backup Script Builder', 'YesNo', 'Question')
@@ -821,6 +864,7 @@ $typeChanged = {
     $t = Get-BuildType
     $pnlFfs.Visible = $t -eq 'FreeFileSync'; $pnlRobo.Visible = $t -eq 'Robocopy'; $pnlXcopy.Visible = $t -eq 'Xcopy'
     $btnBuild.Text = '4. Build ' + $(if ($t -eq 'FreeFileSync') { 'FreeFileSync batch' } else { "$t script" })
+    $btnAdd.Text = $(if ($t -eq 'FreeFileSync') { 'Add Folders...' } else { 'Add Files/Folders' })
     $r = Get-DestRoot
     if ($r) { $lblPreview.Text = 'Creates ' + $r + '\  ' + $(if ($t -eq 'FreeFileSync') { '(Current, Archive-Deleted, Logs)' } else { "(Current, Logs, BackupScript-$t)" }) }
 }
@@ -864,7 +908,7 @@ $lnkFfs.add_LinkClicked({ Start-Process 'https://freefilesync.org/' })
 $form.Controls.Add($lnkFfs)
 $tabs.BringToFront()
 
-Add-Help $tabBuild 140 57 'Source folders' ("The folders you want backed up. Click 'Add Folders...' and tick as many folders as you like in the tree (it opens at C:\Users). Quick picks lists your own folders, OneDrive and the other users' profiles. Windows and program folders (Windows, Program Files, ProgramData ...) are left out of the tree until you tick 'Show Windows and program folders'. A folder inside another ticked folder is only added once.`r`n`r`n" +
+Add-Help $tabBuild 140 57 'Source folders' ("The folders you want backed up. Click 'Add Folders...' and tick as many folders as you like in the tree (it opens at C:\Users). Quick picks lists your own folders, OneDrive and the other users' profiles. Windows and program folders (Windows, Program Files, ProgramData ...) are left out of the tree until you tick 'Show Windows and program folders'. A folder inside another ticked folder is only added once. Empty folders can be ticked too.`r`n`r`nRobocopy and Xcopy scripts can also back up single files: the tree then lists the files in each folder as well (a FreeFileSync batch takes folders only).`r`n`r`n" +
     "Each folder becomes one folder pair in the FreeFileSync script: the folder (left side) is mirrored to Current\<folder name> (right side).`r`n`r`n" +
     "Two folders with the same name (for example two users' Documents) get -2, -3 ... so they do not overwrite each other. 'Remove' takes the selected folders off the list.")
 Add-Help $tabBuild 165 242 'Destination folder' ("Where the backup lives. Usually a folder on an external or second drive, for example H:\.`r`n`r`n" +

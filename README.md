@@ -20,7 +20,7 @@ Windows marks downloaded files as blocked: right-click the zip > **Properties** 
 
 ## New in 1.9.2
 
-- **Backup Script Builder 1.2:** the folder picker no longer lists the user folder's junctions as empty extra folders, opens at Users, hides Windows and program folders until you ask for them, and never adds a folder twice ([notes](docs/changes/BackupScriptBuilder-1.2.md)). 1.1 added Robocopy and Xcopy scripts besides FreeFileSync ([1.1 notes](docs/changes/BackupScriptBuilder-1.1.md)).
+- **Backup Script Builder 1.3:** Robocopy and Xcopy scripts can back up single files as well as folders ([notes](docs/changes/BackupScriptBuilder-1.3.md)). 1.2: the folder picker no longer lists the user folder's junctions as empty extra folders, opens at Users, hides Windows and program folders until you ask for them, and never adds a folder twice ([notes](docs/changes/BackupScriptBuilder-1.2.md)). 1.1 added Robocopy and Xcopy scripts besides FreeFileSync ([1.1 notes](docs/changes/BackupScriptBuilder-1.1.md)).
 - **Fewer downloads:** WinRepairTool, Collect-Logs, Monitor-Logs and ClaudeLogAnalyzer are now one zip, `IndividualTools-v1.9.2.zip`, with one shared launcher (`Run-PS-As-Admin.bat`: drag a `.ps1` onto it). `Start-ClaudeLogAnalyzer.bat` is gone. The tools themselves are unchanged ([V1.9.2](docs/changes/V1.9.2.md)).
 - **Test Center 1.0 beta 3:** a new **Backup Script Builder** tab (script, schedules and layout checks, about 2 minutes, no admin), and a passing test line that mentions "missing" no longer shows CHECK ([notes](docs/changes/TestCenter-1.0-beta.3.md)).
 - **Simpler bug and discussion forms:** WinSuperTool and its individual tools share one Tool entry, the tab / part is an optional text box, and the version list has 4 choices.
@@ -139,16 +139,17 @@ WinRepairTool, Collect-Logs, Monitor-Logs and ClaudeLogAnalyzer are in `Individu
 
 ### Backup Script Builder
 
-`BackupScriptBuilder.ps1` + `BackupScriptBuilder.bat`. Builds and schedules backups in three forms: a **[FreeFileSync](https://freefilesync.org/)** batch job (FreeFileSync, the free open source sync tool, must be installed to run it), or a **Robocopy** or **Xcopy** script, which needs nothing but Windows. It has its own version (1.2, [what's new](docs/changes/BackupScriptBuilder-1.2.md)).
+`BackupScriptBuilder.ps1` + `BackupScriptBuilder.bat`. Builds and schedules backups in three forms: a **[FreeFileSync](https://freefilesync.org/)** batch job (FreeFileSync, the free open source sync tool, must be installed to run it), or a **Robocopy** or **Xcopy** script, which needs nothing but Windows. It has its own version (1.3, [what's new](docs/changes/BackupScriptBuilder-1.3.md)).
 
 - **Build Script tab:** tick the folders to back up, pick a destination folder and how many days to keep deleted / changed files, then choose what to create: **Create FreeFileSync batch** (`BackupScript.ffs_batch`, mirrors each folder and keeps old versions), **Create Robocopy batch** or **Create Xcopy batch** (a `.ps1` or `.bat` script with log options and every switch explained). **Build Script** creates `AutomaticFileBackups\Current`, `Archive-Deleted` and `Logs` in that folder.
 - **Schedule Task tab:** runs the backup on a schedule (once, daily, weekly, every X hours, at log on), with "run after a missed start" and a time limit. A **backup type** drop-down picks **FreeFileSync**, **Robocopy** or **Xcopy**. It creates, changes, runs and deletes only its own tasks, kept in the Task Scheduler folder `\BackupScriptBuilder\`.
 - A **?** next to every option explains it.
 
 - **New in 1.1:** besides the FreeFileSync batch it can **create a Robocopy or Xcopy script** (`.ps1` or `.bat`) with log options, every relevant switch explained, and (Robocopy) one thread per source drive; the Schedule Task tab has a **backup type** drop-down; and the folder picker now lists Desktop, Documents and OneDrive, with **Quick picks** at the top ([1.1 notes](docs/changes/BackupScriptBuilder-1.1.md)).
+- **New in 1.3:** Robocopy and Xcopy scripts can back up single files: the picker lists files too ([1.3 notes](docs/changes/BackupScriptBuilder-1.3.md)).
 - **New in 1.2:** a folder picker fix pass: no more empty `My Documents` / `Application Data` junction folders, Windows and program folders hidden until you tick **Show Windows and program folders**, Quick picks for Favorites, Saved Games, Contacts and other users, and a folder inside another ticked folder is added only once ([1.2 notes](docs/changes/BackupScriptBuilder-1.2.md)).
 
-Download `BackupScriptBuilder-v1.2.zip` from the [latest release](../../releases/latest).
+Download `BackupScriptBuilder-v1.3.zip` from the [latest release](../../releases/latest).
 
 ## What has been fixed
 
