@@ -389,7 +389,7 @@ What that means in practice:
 ### You found the time sheet
 
 
-How long this project has taken, as of **2.0** (November 26, 2026): the version that was a joke at the bottom of this very section until it wasn't. For 1.1 onwards, the AI hours are measured from the session logs, and the human hours are an honest guess, "which is the polite word for 'vibes'". The original scripts are estimated by the Claude project that wrote them, which had no stopwatch either. The 1.9 sheet is kept in [docs/timesheets/timesheet-1.9.md](docs/timesheets/timesheet-1.9.md), in case anyone wants to audit the vibes.
+How long this project has taken, as of **2.4** (November 26, 2026): the version that was a joke at the bottom of this very section until it wasn't. For 1.1 onwards, the AI hours are measured from the session logs, and the human hours are an honest guess, "which is the polite word for 'vibes'". The original scripts are estimated by the Claude project that wrote them, which had no stopwatch either. The 1.9 sheet is kept in [docs/timesheets/timesheet-1.9.md](docs/timesheets/timesheet-1.9.md), in case anyone wants to audit the vibes.
 
 | | Human | AI |
 |---|---:|---:|
@@ -513,6 +513,8 @@ The note used to sit at the top of this page, where it did not belong. It is mov
 **2.0. The day we thought would never come.** For a while, "Please don't tell them about 2.0" was the last line of a hidden time sheet on this page. Then someone told them. The test VMs, asked for comment, rebooted. When they came back, one changed its own display scaling to 175 % and has refused to discuss it. The other has filed a formal objection, in Event Viewer, as Event ID 41: *"The system has rebooted without cleanly shutting down first."* Accurate. The local AI on the GPU next door reviewed the 2.0 code and reported, with total confidence, that 7-Zip is started through `cmd.exe`. It isn't, and never was. Asked whether 2.0 left it confused or appalled, it thought for 2,000 tokens and answered "yes". Asked to review Backup Script Builder, it concluded "If the path contains `&`, it is escaped. This is correct." and then, to be sure, concluded it a few hundred more times. It was, however, entirely right to be appalled by one thing in 2.0: a PowerShell parameter called `-Path` that treats `[ ]` in a folder name as a wildcard. That one is fixed.
 
 **Gobble gobble.** 2.3 shipped with a Remember settings box that is off until you tick it, and the bug forms finally list 2.3. Nobody has explained the turkey. The VMs were asked for a comment and replied only with a sound.
+
+**Gobble gobble gobble.** 2.4 shipped with a 7z-Encryptor that opens one window for both ways of starting, and the turkey still has not been explained. The VMs were asked for a second comment and gobbled back.
 
 </details>
 
