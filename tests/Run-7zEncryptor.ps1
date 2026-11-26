@@ -78,11 +78,11 @@ $tests = {
         Check "$name : ? buttons with help text" ($help.Count -ge $minHelp -and -not @($help | Where-Object { -not $_.Tag[1] }).Count) "$($help.Count)"
     }
     $m = $script:MainUi
-    & $layout 'main window' $m.Page 3
+    & $layout 'main window' $m.Page 4
     $m.Opt.Rb7z.Checked = $true; $hide7 = (Test-Shown $m.Opt.Hide) -and -not (Test-Shown $m.Opt.ZipPanel)
     $m.Opt.RbZip.Checked = $true; $zipShown = (Test-Shown $m.Opt.ZipPanel) -and -not (Test-Shown $m.Opt.Hide) -and $m.Opt.RbCrypto.Checked
     Check 'main: 7z shows "hide the file names", zip shows Standard / AES-256 (Standard first)' ($hide7 -and $zipShown)
-    & $layout 'main window with zip' $m.Page 3
+    & $layout 'main window with zip' $m.Page 4
     $m.Opt.Rb7z.Checked = $true
     [void]$m.List.Items.Add("$W\src\Folder A"); Update-MainOut
     Check 'main: Save as is filled in next to the first item, named after it' ($m.Out.Text -eq "$W\src\Folder A.7z")
@@ -93,8 +93,20 @@ $tests = {
     Check 'main: the choice read from the window' ($ch.Format -eq 'zip' -and $ch.ZipMethod -eq 'ZipCrypto' -and $ch.Password -eq 'abc')
     Check 'main: Encrypt is on only when 7-Zip is found; Get 7-Zip shows the winget command' ($m.Go.Enabled -eq [bool]$script:SevenZip -and $m.Get7.Box.Text -eq 'winget install -e --id 7zip.7zip' -and ($m.Get7.Btn.Enabled -ne [bool]$script:SevenZip))
     $script:ScriptDir = "$W\tooldir"
+    $g = $m.Get7
+    if ($script:SevenZip) { Check '7-Zip row: shows the version, Install off, Update on' ($g.Lbl.Text -match '^7-Zip [\d.]+ installed$' -and -not $g.Btn.Enabled -and $g.BtnUp.Enabled) $g.Lbl.Text }
+    $help7 = @($m.Page.Controls | Where-Object { $_.Text -eq '?' -and $_.Tag[0] -eq '7-Zip' })
+    Check '7-Zip help names both winget commands' ($help7.Count -eq 1 -and $help7[0].Tag[1] -match 'winget install -e --id 7zip\.7zip' -and $help7[0].Tag[1] -match 'winget upgrade -e --id 7zip\.7zip')
+    $keep7 = $script:SevenZip; $script:SevenZip = $null; Update-Get7Row $g
+    Check '7-Zip row without 7-Zip: Install on, Update off, says it is needed' ($g.Btn.Enabled -and -not $g.BtnUp.Enabled -and $g.Lbl.Text -match 'needed')
+    [FakeMsg7]::Answer = 'No'; [FakeMsg7]::Last = ''
+    Request-7ZipInstall $g
+    Check 'start without 7-Zip: asks to install it with winget (answered No: nothing runs)' ([FakeMsg7]::Last -match 'not installed' -and [FakeMsg7]::Last -match 'winget install -e --id 7zip\.7zip' -and -not $g.Proc)
+    $script:SevenZip = $keep7; [FakeMsg7]::Last = ''; Request-7ZipInstall $g
+    Check 'start with 7-Zip: no question' ([FakeMsg7]::Last -eq ''); [FakeMsg7]::Answer = 'Yes'; Update-Get7Row $g
+    Check 'main window has a destination picker (Save as + Browse... save dialog)' ($m.Out -is [Windows.Forms.TextBox] -and $m.Browse.Text -eq 'Browse...')
     $qf = New-QuickWindow @("$W\src\single file.txt"); $q = $script:QuickUi
-    & $layout 'drop window' $qf.Controls[0] 1
+    & $layout 'drop window' $qf.Controls[0] 3
     $script:ScriptDir = "$W\tooldir"
     Check 'drop window: saves in the 7z-Encryptor folder by default' ((Get-QuickOut) -eq "$W\tooldir\single file.txt.7z")
     $q.Next.Checked = $true
@@ -108,7 +120,7 @@ $tests = {
 # load the tool, but run the tests instead of showing the window (no splash, message boxes answered "Yes")
 $code = [IO.File]::ReadAllText((Join-Path $Root 'tools\7z-Encryptor.ps1'))
 $code = $code.Replace("Show-WrtSplash '7z-Encryptor'", '').Replace('[void]$form.ShowDialog()', '& $tests')
-Add-Type -TypeDefinition 'public static class FakeMsg7 { public static string Last = ""; public static string Show(params object[] a) { Last = a[0].ToString(); return "Yes"; } }'
+Add-Type -TypeDefinition 'public static class FakeMsg7 { public static string Last = ""; public static string Answer = "Yes"; public static string Show(params object[] a) { Last = a[0].ToString(); return Answer; } }'
 $code = $code.Replace('[System.Windows.Forms.MessageBox]::Show(', '[FakeMsg7]::Show(')
 try { . ([scriptblock]::Create($code)) } finally { }
 

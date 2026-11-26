@@ -517,32 +517,45 @@ function New-EncryptOptions($parent, [int]$y) {
 function Get-EncryptChoice($u) {
     return @{ Format = $(if ($u.RbZip.Checked) { 'zip' } else { '7z' }); HideNames = $u.Hide.Checked; ZipMethod = $(if ($u.RbAes.Checked) { 'AES256' } else { 'ZipCrypto' }); Password = $u.Pw.Text }
 }
-# The "Get 7-Zip" row: shows the winget command, installs it in a console window, then looks for 7-Zip again
+# The 7-Zip row: shows the winget command, installs or updates 7-Zip in a console window, then looks for it again
+$WingetUpdateCmd = 'winget upgrade -e --id 7zip.7zip'
+function Get-7ZipVersion { if ($script:SevenZip) { try { return [Diagnostics.FileVersionInfo]::GetVersionInfo($script:SevenZip).ProductVersion.Trim() } catch {} }; return '' }
 function New-Get7Row($parent, [int]$y, $onFound) {
     $r = @{}
-    $r.Lbl = New-Ctl Label '' "15,$($y + 4)" '150,20'
-    $r.Box = New-Ctl TextBox $WingetCmd "170,$y" '230,25'; $r.Box.ReadOnly = $true
-    $r.Btn = New-Ctl Button 'Install 7-Zip' "410,$($y - 2)" '110,28'
+    $r.Lbl = New-Ctl Label '' "15,$($y + 4)" '150,20'; $r.Lbl.AutoEllipsis = $true
+    $r.Box = New-Ctl TextBox $WingetCmd "200,$y" '320,25'; $r.Box.ReadOnly = $true
+    $r.Btn = New-Ctl Button 'Install 7-Zip' "200,$($y + 31)" '155,28'
+    $r.BtnUp = New-Ctl Button 'Update 7-Zip' "365,$($y + 31)" '155,28'
     $r.OnFound = $onFound; $r.Proc = $null
     $r.Timer = New-Object System.Windows.Forms.Timer; $r.Timer.Interval = 1000; $r.Timer.Tag = $r
     $r.Timer.add_Tick({ $x = $this.Tag; if ($x.Proc -and $x.Proc.HasExited) { $this.Stop(); $x.Proc = $null; $script:SevenZip = Find-7Zip; Update-Get7Row $x; & $x.OnFound } })
-    $r.Btn.Tag = $r
-    $r.Btn.add_Click({
-        $x = $this.Tag
-        if ($script:SevenZip) { $script:SevenZip = Find-7Zip; Update-Get7Row $x; & $x.OnFound; return }
-        if (-not (Get-Command winget.exe -ErrorAction SilentlyContinue)) { [void][System.Windows.Forms.MessageBox]::Show('winget (App Installer) is not on this PC. Download 7-Zip from https://www.7-zip.org/ instead.', 'Get 7-Zip', 'OK', 'Information'); return }
-        $x.Proc = Start-Process cmd.exe -ArgumentList '/c', "$WingetCmd & echo. & pause" -PassThru
-        $this.Enabled = $false; $x.Lbl.Text = 'Installing...'; $x.Timer.Start()
-    })
-    $parent.Controls.AddRange(@($r.Lbl, $r.Box, $r.Btn))
+    $r.Btn.Tag = $r; $r.BtnUp.Tag = $r
+    $r.Btn.add_Click({ Start-7ZipWinget $this.Tag 'install' })
+    $r.BtnUp.add_Click({ Start-7ZipWinget $this.Tag 'upgrade' })
+    $parent.Controls.AddRange(@($r.Lbl, $r.Box, $r.Btn, $r.BtnUp))
+    Add-Help $parent 170 ($y + 1) '7-Zip' ("7-Zip (free, open source) does the encrypting. The tool looks for it when it starts and offers to install it when it is missing.`r`n`r`n" +
+        "'Install 7-Zip' runs  $WingetCmd`r`n'Update 7-Zip' runs  $WingetUpdateCmd`r`nin a console window (you may be asked to allow it). When winget finishes, the tool finds 7-Zip again by itself.")
     Update-Get7Row $r
     return $r
 }
-function Update-Get7Row($r) {
-    if ($script:SevenZip) { $r.Lbl.Text = '7-Zip is installed'; $r.Lbl.ForeColor = [System.Drawing.Color]::DarkGreen; $r.Btn.Enabled = $false; $r.Btn.Text = 'Installed' }
-    else { $r.Lbl.Text = 'Get 7-Zip (needed):'; $r.Lbl.ForeColor = [System.Drawing.Color]::DarkRed; $r.Btn.Enabled = -not $r.Proc; $r.Btn.Text = 'Install 7-Zip' }
+# Runs winget (install or upgrade) in its own console window; the row's timer picks 7-Zip up when it is done
+function Start-7ZipWinget($r, [string]$what) {
+    if (-not (Get-Command winget.exe -ErrorAction SilentlyContinue)) { [void][System.Windows.Forms.MessageBox]::Show('winget (App Installer) is not on this PC. Download 7-Zip from https://www.7-zip.org/ instead.', '7-Zip', 'OK', 'Information'); return }
+    $cmd = if ($what -eq 'upgrade') { $WingetUpdateCmd } else { $WingetCmd }
+    $r.Box.Text = $cmd
+    $r.Proc = Start-Process cmd.exe -ArgumentList '/c', "$cmd & echo. & pause" -PassThru
+    $r.Btn.Enabled = $false; $r.BtnUp.Enabled = $false; $r.Lbl.Text = $(if ($what -eq 'upgrade') { 'Updating...' } else { 'Installing...' }); $r.Timer.Start()
 }
-function Show-EncryptResult($r) {
+function Update-Get7Row($r) {
+    $busy = [bool]$r.Proc
+    if ($script:SevenZip) { $v = Get-7ZipVersion; $r.Lbl.Text = '7-Zip ' + $(if ($v) { "$v " }) + 'installed'; $r.Lbl.ForeColor = [System.Drawing.Color]::DarkGreen; $r.Btn.Enabled = $false; $r.Btn.Text = 'Installed'; $r.BtnUp.Enabled = -not $busy }
+    else { $r.Lbl.Text = '7-Zip is needed:'; $r.Lbl.ForeColor = [System.Drawing.Color]::DarkRed; $r.Btn.Enabled = -not $busy; $r.Btn.Text = 'Install 7-Zip'; $r.BtnUp.Enabled = $false }
+}
+# On start: when 7-Zip is missing, ask once whether to install it now
+function Request-7ZipInstall($r) {
+    if ($script:SevenZip) { return }
+    if ([System.Windows.Forms.MessageBox]::Show("7-Zip is not installed. 7z-Encryptor needs it to encrypt.`r`n`r`nInstall it now with winget?`r`n  $WingetCmd", '7z-Encryptor', 'YesNo', 'Question') -eq 'Yes') { Start-7ZipWinget $r 'install' }
+}function Show-EncryptResult($r) {
     if ($r.Ok) {
         if ([System.Windows.Forms.MessageBox]::Show("$($r.Message)`r`n$($r.Output)`r`n`r`nShow it in its folder?", '7z-Encryptor', 'YesNo', 'Information') -eq 'Yes') { Start-Process explorer.exe "/select,`"$($r.Output)`"" }
     } else { [void][System.Windows.Forms.MessageBox]::Show("$($r.Message)`r`n$($r.Output)", '7z-Encryptor', 'OK', 'Warning') }
@@ -551,7 +564,7 @@ function Show-EncryptResult($r) {
 # ---------- main window: pick files and folders, encrypt them into one archive ----------
 function New-MainWindow {
     $f = New-Object System.Windows.Forms.Form; Set-WrtScaling $f
-    $f.Text = '7z-Encryptor'; $f.Size = New-Object System.Drawing.Size(580, 585); $f.StartPosition = 'CenterScreen'
+    $f.Text = '7z-Encryptor'; $f.Size = New-Object System.Drawing.Size(580, 625); $f.StartPosition = 'CenterScreen'
     $f.FormBorderStyle = 'FixedDialog'; $f.MaximizeBox = $false; $f.Font = New-Object System.Drawing.Font('Segoe UI', 9)
     $p = New-Object System.Windows.Forms.Panel; $p.Dock = 'Fill'; $f.Controls.Add($p)
     $w = @{ Form = $f; Page = $p; OutEdited = $false }
@@ -597,6 +610,7 @@ function New-MainWindow {
         if ($r.Ok) { $x.OutEdited = $false; Update-MainOut }
         Show-EncryptResult $r
     })
+    $f.Add_Shown({ Request-7ZipInstall $script:MainUi.Get7 })
     return $f
 }
 # Fills in "Save as" from the list and the format, until the user types or browses a name of their own
@@ -612,7 +626,7 @@ function Update-MainOut {
 # the first dropped item).
 function New-QuickWindow([string[]]$items) {
     $f = New-Object System.Windows.Forms.Form; Set-WrtScaling $f
-    $f.Text = '7z-Encryptor'; $f.Size = New-Object System.Drawing.Size(540, 440); $f.StartPosition = 'CenterScreen'
+    $f.Text = '7z-Encryptor'; $f.Size = New-Object System.Drawing.Size(560, 470); $f.StartPosition = 'CenterScreen'
     $f.FormBorderStyle = 'FixedDialog'; $f.MaximizeBox = $false; $f.MinimizeBox = $false; $f.TopMost = $true; $f.Font = New-Object System.Drawing.Font('Segoe UI', 9)
     $p = New-Object System.Windows.Forms.Panel; $p.Dock = 'Fill'; $f.Controls.Add($p)
     $q = @{ Form = $f; Items = @($items) }
@@ -626,9 +640,11 @@ function New-QuickWindow([string[]]$items) {
     $q.Go = New-Ctl Button 'Encrypt' '15,265' '240,38'; $q.Go.Font = New-Object System.Drawing.Font('Segoe UI', 10, [System.Drawing.FontStyle]::Bold)
     $q.Cancel = New-Ctl Button 'Cancel' '265,265' '120,38'; $q.Cancel.DialogResult = 'Cancel'; $f.CancelButton = $q.Cancel; $f.AcceptButton = $q.Go
     $p.Controls.AddRange(@($q.Next, $q.Where, $q.Go, $q.Cancel))
+    Add-Help $p 400 270 'Encrypt' ("Encrypts the dropped items into one file with the format and password above. It is saved in the folder 7z-Encryptor is in, named after the item (or Encrypted-<date> for several items); tick the box to save it next to the dropped item instead. An existing file is never overwritten, the originals are not changed, and the new file is tested with the password before you are told it is done.")
     $script:QuickUi = $q
     $q.Get7 = New-Get7Row $p 320 { $script:QuickUi.Go.Enabled = [bool]$script:SevenZip }
     $q.Go.Enabled = [bool]$script:SevenZip
+    $f.Add_Shown({ Request-7ZipInstall $script:QuickUi.Get7 })
     foreach ($c in $q.Next, $q.Opt.Rb7z) { $c.add_CheckedChanged({ Update-QuickWhere }) }
     Update-QuickWhere
     $q.Go.add_Click({

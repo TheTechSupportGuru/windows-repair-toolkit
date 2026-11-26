@@ -1,4 +1,4 @@
-# Version 1.3 (2026-11-26)
+# Version 1.4 (2026-11-26)
 # Backup Script Builder - builds a FreeFileSync batch file (BackupScript.ffs_batch), or a Robocopy / Xcopy script (.ps1 or .bat),
 # and (1.3) makes a manual backup now: to a folder, a zip (Windows or 7-Zip) or a 7z / self-extracting .exe
 # Windows Repair Toolkit - Copyright (C) 2026 TheTechSupportGuru - SPDX-License-Identifier: GPL-3.0-or-later
@@ -346,7 +346,7 @@ function New-CopyScript([string]$tool, [string]$format, [string[]]$sources, [str
     foreach ($p in $pairs) { $k = Get-DriveKey $p[0]; if (-not $groups.Contains($k)) { $groups[$k] = @() }; $groups[$k] += , $p }
     $useParallel = $isRobo -and $parallel -and $groups.Count -gt 1
     $nl = "`r`n"; $sb = New-Object System.Text.StringBuilder
-    $head = "Backup script created by Backup Script Builder 1.3 ($tool, $(if ($useParallel) { 'one thread per source drive' } else { 'one copy at a time' })) on $(Get-Date -Format 'yyyy-MM-dd HH:mm')"
+    $head = "Backup script created by Backup Script Builder 1.4 ($tool, $(if ($useParallel) { 'one thread per source drive' } else { 'one copy at a time' })) on $(Get-Date -Format 'yyyy-MM-dd HH:mm')"
     if ($format -eq 'ps1') {
         $q = { param($t) "'" + ($t -replace "'", "''") + "'" }
         [void]$sb.Append("# $head${nl}# Windows Repair Toolkit - https://github.com/TheTechSupportGuru/windows-repair-toolkit${nl}")
@@ -855,7 +855,7 @@ function New-ManualScript($o, [string]$format) {
         }
     }
     $what = switch ($o.Mode) { 'Folder' { 'copy to a folder (robocopy)' } 'Zip' { if ($o.Engine -eq '7zip') { "zip by 7-Zip, $($o.Level)" } else { "zip by Windows (tar), $($o.Level)" } } default { "7z, $($o.Level)" + $(if ($o.Sfx) { ", self-extracting ($($o.Sfx))" }) } }
-    $notes = @("Manual backup script made by Backup Script Builder 1.3 on $(Get-Date -Format 'yyyy-MM-dd HH:mm'): $what", 'Windows Repair Toolkit - https://github.com/TheTechSupportGuru/windows-repair-toolkit', 'Every run makes a new Backup-<date>_<time> in the destination.')
+    $notes = @("Manual backup script made by Backup Script Builder 1.4 on $(Get-Date -Format 'yyyy-MM-dd HH:mm'): $what", 'Windows Repair Toolkit - https://github.com/TheTechSupportGuru/windows-repair-toolkit', 'Every run makes a new Backup-<date>_<time> in the destination.')
     if ($o.Password) { $notes += '7-Zip asks for the password each time it runs (it is not stored in this script), so run it by hand, not as a scheduled task.' }
     $dest = $o.Dest.TrimEnd('\'); $nl = "`r`n"; $sb = New-Object System.Text.StringBuilder
     if ($format -eq 'bat') {
@@ -1154,18 +1154,18 @@ $lnkFfs.add_LinkClicked({ Start-Process 'https://freefilesync.org/' })
 $form.Controls.Add($lnkFfs)
 $tabs.BringToFront()
 
-Add-Help $tabBuild 140 57 'Source folders' ("The folders you want backed up. Click 'Add Folders...' and tick as many folders as you like in the tree (it opens at C:\Users). Quick picks lists your own folders, OneDrive and the other users' profiles. Windows and program folders (Windows, Program Files, ProgramData ...) are left out of the tree until you tick 'Show Windows and program folders'. A folder inside another ticked folder is only added once. Empty folders can be ticked too.`r`n`r`nRobocopy and Xcopy scripts can also back up single files: the tree then lists the files in each folder as well (a FreeFileSync batch takes folders only).`r`n`r`n" +
+Add-Help $tabBuild 140 57 'Source folders' ("The folders you want backed up. Click 'Add Folders...' ('Add Files/Folders' for Robocopy and Xcopy) and tick as many folders as you like in the tree (it opens at C:\Users). Quick picks lists your own folders, OneDrive and the other users' profiles. Windows and program folders (Windows, Program Files, ProgramData ...) are left out of the tree until you tick 'Show Windows and program folders'. A folder inside another ticked folder is only added once. Empty folders can be ticked too.`r`n`r`nRobocopy and Xcopy scripts can also back up single files: the tree then lists the files in each folder as well (a FreeFileSync batch takes folders only).`r`n`r`n" +
     "'Add Network Path' adds a folder (or, for Robocopy and Xcopy, a file) on another PC or NAS: type it as \\server\share\folder. Folders on a mapped drive (Z:) are saved as their \\server\share path, because a scheduled task often cannot see mapped drives. The task runs as you, so you need access to the share.`r`n`r`n" +
     "Each folder becomes one folder pair in the FreeFileSync script: the folder (left side) is mirrored to Current\<folder name> (right side).`r`n`r`n" +
     "Two folders with the same name (for example two users' Documents) get -2, -3 ... so they do not overwrite each other. 'Remove' takes the selected folders off the list.")
 Add-Help $tabBuild 165 242 'Destination folder' ("Where the backup lives. Usually a folder on an external or second drive, for example H:\, or a network share typed as \\server\share\Backups (a mapped drive is saved as its \\server\share path).`r`n`r`n" +
     "The tool creates AutomaticFileBackups inside it (or uses the folder itself when it is already called AutomaticFileBackups) with:`r`n" +
     "  Current - the latest copy of every source folder`r`n  Archive-Deleted - files that were deleted or changed, in time-stamped folders`r`n  Logs - FreeFileSync's log of every run`r`n" +
-    "and saves BackupScript.ffs_batch there.`r`n`r`nThe destination cannot be inside one of the source folders.")
+    "and saves BackupScript.ffs_batch there.`r`n`r`nFor a Robocopy or Xcopy script it creates Current (a copy of every source folder) and Logs, and saves BackupScript-Robocopy / BackupScript-Xcopy (.ps1 or .bat) there; nothing is archived.`r`n`r`nThe destination cannot be inside one of the source folders.")
 Add-Help $pnlFfs 290 5 'Keep days' ("How many days FreeFileSync keeps files in Archive-Deleted. When a file is deleted or changed in a source folder, the old copy is moved there instead of being thrown away.`r`n`r`n" +
     "Older archived copies are removed after this many days (the script's MaxAge). 365 = one year.")
-Add-Help $tabBuild 510 788 'Build Script' ("Creates the folders and writes BackupScript.ffs_batch, a FreeFileSync batch job with your folders, destination and keep days.`r`n`r`n" +
-    "Run it by double-clicking it (with FreeFileSync installed) or schedule it on the Schedule Task tab. An existing script is only overwritten after you confirm.")
+Add-Help $tabBuild 510 788 'Build Script' ("Creates the folders and writes the script for the type picked at the top:`r`n  FreeFileSync - BackupScript.ffs_batch, a batch job with your folders, destination and keep days`r`n  Robocopy / Xcopy - BackupScript-Robocopy or -Xcopy (.ps1 or .bat) with the switches and log options below`r`n`r`n" +
+    "Run it by double-clicking it (a FreeFileSync batch needs FreeFileSync installed) or schedule it on the Schedule Task tab. An existing script is only overwritten after you confirm.")
 # =====================================================================
 # Tab 2: Scheduled task
 # Every task this tool makes lives in the Task Scheduler folder
@@ -1280,7 +1280,7 @@ Add-Help $tabSched 390 12 'Task' ("Pick <New task> to make a new scheduled backu
     "The tool keeps its tasks in their own Task Scheduler folder, \BackupScriptBuilder\, so it only ever lists and changes its own tasks. 'Delete Task' removes only the task, never the script or the backups.")
 Add-Help $tabSched 390 86 'Backup type' ("Which kind of backup script the task runs:`r`n  FreeFileSync - starts FreeFileSync.exe with the .ffs_batch file`r`n  Robocopy / Xcopy - runs the script built on the first tab: a .ps1 with PowerShell, a .bat with cmd`r`n`r`nThe list of scripts shows the ones of this type.")
 Add-Help $tabSched 425 49 'Task name' ("A name you will recognise, for example 'Nightly backup to H'. It is the task's name in Task Scheduler (folder \BackupScriptBuilder\).`r`n`r`nRenaming a task and saving replaces the old one.")
-Add-Help $tabSched 390 123 'Backup script' ("The FreeFileSync batch file (.ffs_batch) the task runs. The script you built on the first tab is already in the list, as are the scripts your existing tasks use. 'Browse...' picks any other .ffs_batch file.")
+Add-Help $tabSched 390 123 'Backup script' ("The script the task runs: a FreeFileSync batch (.ffs_batch), or a Robocopy / Xcopy / manual backup script (.ps1 or .bat). The scripts you built or saved in this tool are already in the list, as are the scripts your existing tasks use. 'Browse...' picks any other script file.")
 Add-Help $tabSched 390 160 'FreeFileSync.exe' ("The task starts this program with the backup script as its argument. FreeFileSync is normally installed at C:\Program Files\FreeFileSync\FreeFileSync.exe.`r`n`r`nGet it free from https://freefilesync.org/ if it is not installed.")
 Add-Help $tabSched 270 204 'Schedule' ("When the backup runs:`r`n  Once - one time, at the start date and time`r`n  Daily - every N days at that time`r`n  Weekly - on the ticked days, every N weeks`r`n" +
     "  Every X hours - from the start time, repeating every N hours`r`n  At log on - each time you sign in to Windows")
@@ -1541,7 +1541,9 @@ $mSfx = New-Object System.Windows.Forms.ComboBox; $mSfx.DropDownStyle = 'DropDow
 $m7Status = New-Object System.Windows.Forms.LinkLabel; $m7Status.Location = '15,525'; $m7Status.Size = '540,22'; $m7Status.AutoEllipsis = $true
 function Update-7ZipStatus {
     $mInstall7.Enabled = -not $script:SevenZip -and -not $script:WingetProc; $mInstall7.Text = $(if ($script:SevenZip) { 'Installed' } else { 'Install 7-Zip' })
-    if ($script:SevenZip) { $m7Status.Text = '7-Zip found: ' + $script:SevenZip; $m7Status.LinkArea = New-Object System.Windows.Forms.LinkArea(0, 0) }
+    $mUpdate7.Enabled = [bool]$script:SevenZip -and -not $script:WingetProc
+    $ver = ''; if ($script:SevenZip) { try { $ver = ' (version ' + [Diagnostics.FileVersionInfo]::GetVersionInfo($script:SevenZip).ProductVersion.Trim() + ')' } catch {} }
+    if ($script:SevenZip) { $m7Status.Text = '7-Zip found: ' + $script:SevenZip + $ver; $m7Status.LinkArea = New-Object System.Windows.Forms.LinkArea(0, 0) }
     else { $m7Status.Text = '7-Zip is not installed - get it free at https://www.7-zip.org/'; $m7Status.LinkArea = New-Object System.Windows.Forms.LinkArea($m7Status.Text.IndexOf('https'), 'https://www.7-zip.org/'.Length) }
 }
 $m7Status.add_LinkClicked({ Start-Process 'https://www.7-zip.org/' })
@@ -1653,10 +1655,12 @@ $mSave.add_Click({
 
 # Get 7-Zip: installs it with winget in a console window, then looks for it again
 $WingetCmd = 'winget install -e --id 7zip.7zip'
+$WingetUpdateCmd = 'winget upgrade -e --id 7zip.7zip'
 $mLbl7Get = & $mlbl 'Get 7-Zip (free):' '15,752'
-$mWingetBox = New-Object System.Windows.Forms.TextBox; $mWingetBox.Location = '170,749'; $mWingetBox.Size = '245,25'; $mWingetBox.ReadOnly = $true; $mWingetBox.Text = $WingetCmd
-$mInstall7 = New-Object System.Windows.Forms.Button; $mInstall7.Text = 'Install 7-Zip'; $mInstall7.Location = '425,747'; $mInstall7.Size = '130,28'
-$mRecheck7 = New-Object System.Windows.Forms.Button; $mRecheck7.Text = 'Check again'; $mRecheck7.Location = '425,781'; $mRecheck7.Size = '130,28'
+$mWingetBox = New-Object System.Windows.Forms.TextBox; $mWingetBox.Location = '170,749'; $mWingetBox.Size = '385,25'; $mWingetBox.ReadOnly = $true; $mWingetBox.Text = $WingetCmd
+$mInstall7 = New-Object System.Windows.Forms.Button; $mInstall7.Text = 'Install 7-Zip'; $mInstall7.Location = '170,781'; $mInstall7.Size = '125,28'
+$mUpdate7 = New-Object System.Windows.Forms.Button; $mUpdate7.Text = 'Update 7-Zip'; $mUpdate7.Location = '300,781'; $mUpdate7.Size = '125,28'
+$mRecheck7 = New-Object System.Windows.Forms.Button; $mRecheck7.Text = 'Check again'; $mRecheck7.Location = '430,781'; $mRecheck7.Size = '125,28'
 $script:WingetProc = $null
 $mWingetTimer = New-Object System.Windows.Forms.Timer; $mWingetTimer.Interval = 1000
 $mWingetTimer.add_Tick({ if ($script:WingetProc -and $script:WingetProc.HasExited) { $mWingetTimer.Stop(); $script:WingetProc = $null; $script:SevenZip = Find-7Zip; Update-ManualUi } })
@@ -1664,13 +1668,22 @@ $mInstall7.add_Click({
     if (-not (Get-Command winget.exe -ErrorAction SilentlyContinue)) {
         [void][System.Windows.Forms.MessageBox]::Show("winget (App Installer) is not on this PC. Download 7-Zip from https://www.7-zip.org/ instead.", 'Get 7-Zip', 'OK', 'Information'); return
     }
-    $script:WingetProc = Start-Process cmd.exe -ArgumentList '/c', "$WingetCmd & echo. & pause" -PassThru
-    $mInstall7.Enabled = $false; $m7Status.Text = 'Installing 7-Zip... (finish in the console window)'; $mWingetTimer.Start()
+    Start-7ZipWinget 'install'
 })
+$mUpdate7.add_Click({ Start-7ZipWinget 'upgrade' })
+# Runs winget (install or upgrade) in its own console window; the timer finds 7-Zip again when it is done
+function Start-7ZipWinget([string]$what) {
+    if (-not (Get-Command winget.exe -ErrorAction SilentlyContinue)) { [void][System.Windows.Forms.MessageBox]::Show('winget (App Installer) is not on this PC. Download 7-Zip from https://www.7-zip.org/ instead.', 'Get 7-Zip', 'OK', 'Information'); return }
+    $cmd = if ($what -eq 'upgrade') { $WingetUpdateCmd } else { $WingetCmd }
+    $mWingetBox.Text = $cmd
+    $script:WingetProc = Start-Process cmd.exe -ArgumentList '/c', "$cmd & echo. & pause" -PassThru
+    $mInstall7.Enabled = $false; $mUpdate7.Enabled = $false
+    $m7Status.Text = $(if ($what -eq 'upgrade') { 'Updating 7-Zip...' } else { 'Installing 7-Zip...' }) + ' (finish in the console window)'; $mWingetTimer.Start()
+}
 $mRecheck7.add_Click({ $script:SevenZip = Find-7Zip; Update-ManualUi })
 
 $tabManual.Controls.AddRange(@($mLblSrc, $mLst, $mAdd, $mNet, $mRemove, $mLblDst, $mDest, $mBrowse, $mLblType, $mRbFolder, $mRbZip, $mRb7z, $mGrpEngine,
-        $mLblLevel, $mLevel, $mLblPw, $mPw, $mLblPw2, $mPw2, $mShowPw, $mEncNames, $mLblSfx, $mSfx, $m7Status, $mStart, $mCancel, $mProgress, $mStatus, $mSave, $mLbl7Get, $mWingetBox, $mInstall7, $mRecheck7))
+        $mLblLevel, $mLevel, $mLblPw, $mPw, $mLblPw2, $mPw2, $mShowPw, $mEncNames, $mLblSfx, $mSfx, $m7Status, $mStart, $mCancel, $mProgress, $mStatus, $mSave, $mLbl7Get, $mWingetBox, $mInstall7, $mUpdate7, $mRecheck7))
 Update-ManualUi
 Add-Help $tabManual 330 8 'What to back up' ("Folders and single files to back up right now. 'Add Files/Folders' opens the same tree as on the Build Script tab (files are listed too). 'Add Network Path' takes \\server\share\folder or a file on another PC or NAS.`r`n`r`nEach folder keeps its name in the backup; files picked from one folder go into a folder with that folder's name. Empty folders are kept.")
 Add-Help $tabManual 105 173 'Save to' ("Where the backup goes: an external drive, a second drive or a network share (\\server\share\Backups). A new Backup-<date and time> folder, .zip, .7z or .exe is created there each time, so older backups are never overwritten.")
@@ -1681,7 +1694,7 @@ Add-Help $tabManual 430 489 'Self-extracting .exe' ("Makes the 7z backup into a 
     "Password: with a password the backup cannot be opened without it - there is no way to recover a lost password. 'Also hide the file names' (7z) means even the list of files needs the password. The password is given to 7-Zip on its command line while the backup runs.")
 Add-Help $tabManual 285 711 'Save as Script' ("Saves the backup set up above as a .bat or .ps1 file instead of running it now, to run again later or schedule on the Schedule Task tab. Every run makes a new Backup-<date>_<time>.`r`n`r`n" +
     "A zip made by Windows uses tar.exe (in Windows 10 and 11). The password is never saved in the script: 7-Zip asks for it each time the script runs, so a script with a password is for running by hand, not as a scheduled task.")
-Add-Help $tabManual 140 750 'Get 7-Zip' ("7-Zip is free and open source. 'Install 7-Zip' runs`r`n  winget install -e --id 7zip.7zip`r`nin a console window (you may be asked to allow it). When it finishes the tool finds 7-Zip by itself; 'Check again' looks again after installing it another way. The tool looks for 7-Zip when it starts.")
+Add-Help $tabManual 140 750 'Get 7-Zip' ("7-Zip is free and open source. The tool looks for it when it starts and shows its version.`r`n`r`n'Install 7-Zip' runs  winget install -e --id 7zip.7zip`r`n'Update 7-Zip' runs  winget upgrade -e --id 7zip.7zip`r`nin a console window (you may be asked to allow it). When winget finishes the tool finds 7-Zip again by itself; 'Check again' looks again after installing or updating it another way.")
 $tabs.TabPages.Add($tabManual)
 
 Update-TaskList

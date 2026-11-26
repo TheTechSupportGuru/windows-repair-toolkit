@@ -20,7 +20,7 @@ Windows marks downloaded files as blocked: right-click the zip > **Properties** 
 
 ## New in 1.9.2
 
-- **Backup Script Builder 1.3:** a new **Manual Backup** tab (back up now to a folder, a zip made by Windows or 7-Zip, or a 7z / self-extracting .exe, with Store / Normal / Ultra and an optional password, saved as a .bat / .ps1 if you like, and a one-click 7-Zip install), network folders and files (`\\server\share`) as source or destination, and Robocopy and Xcopy scripts can back up single files as well as folders ([notes](docs/changes/BackupScriptBuilder-1.3.md)). 1.2: the folder picker no longer lists the user folder's junctions as empty extra folders, opens at Users, hides Windows and program folders until you ask for them, and never adds a folder twice ([notes](docs/changes/BackupScriptBuilder-1.2.md)). 1.1 added Robocopy and Xcopy scripts besides FreeFileSync ([1.1 notes](docs/changes/BackupScriptBuilder-1.1.md)).
+- **Backup Script Builder 1.4:** **Update 7-Zip** (winget) next to Install, and corrected help texts ([notes](docs/changes/BackupScriptBuilder-1.4.md)). 1.3: a new **Manual Backup** tab (back up now to a folder, a zip made by Windows or 7-Zip, or a 7z / self-extracting .exe, with Store / Normal / Ultra and an optional password, saved as a .bat / .ps1 if you like, and a one-click 7-Zip install), network folders and files (`\\server\share`) as source or destination, and Robocopy and Xcopy scripts can back up single files as well as folders ([notes](docs/changes/BackupScriptBuilder-1.3.md)). 1.2: the folder picker no longer lists the user folder's junctions as empty extra folders, opens at Users, hides Windows and program folders until you ask for them, and never adds a folder twice ([notes](docs/changes/BackupScriptBuilder-1.2.md)). 1.1 added Robocopy and Xcopy scripts besides FreeFileSync ([1.1 notes](docs/changes/BackupScriptBuilder-1.1.md)).
 - **Fewer downloads:** WinRepairTool, Collect-Logs, Monitor-Logs and ClaudeLogAnalyzer are now one zip, `IndividualTools-v1.9.2.zip`, with one shared launcher (`Run-PS-As-Admin.bat`: drag a `.ps1` onto it). `Start-ClaudeLogAnalyzer.bat` is gone. The tools themselves are unchanged ([V1.9.2](docs/changes/V1.9.2.md)).
 - **Test Center 1.0 beta 3:** a new **Backup Script Builder** tab (script, schedules and layout checks, about 2 minutes, no admin), and a passing test line that mentions "missing" no longer shows CHECK ([notes](docs/changes/TestCenter-1.0-beta.3.md)).
 - **Simpler bug and discussion forms:** WinSuperTool and its individual tools share one Tool entry, the tab / part is an optional text box, and the version list has 4 choices.
@@ -140,28 +140,29 @@ WinRepairTool, Collect-Logs, Monitor-Logs and ClaudeLogAnalyzer are in `Individu
 
 ### Backup Script Builder
 
-`BackupScriptBuilder.ps1` + `BackupScriptBuilder.bat`. Builds and schedules backups, or makes one right now (Manual Backup tab), in these forms: a **[FreeFileSync](https://freefilesync.org/)** batch job (FreeFileSync, the free open source sync tool, must be installed to run it), or a **Robocopy** or **Xcopy** script, which needs nothing but Windows. It has its own version (1.3, [what's new](docs/changes/BackupScriptBuilder-1.3.md)).
+`BackupScriptBuilder.ps1` + `BackupScriptBuilder.bat`. Builds and schedules backups, or makes one right now (Manual Backup tab), in these forms: a **[FreeFileSync](https://freefilesync.org/)** batch job (FreeFileSync, the free open source sync tool, must be installed to run it), or a **Robocopy** or **Xcopy** script, which needs nothing but Windows. It has its own version (1.4, [what's new](docs/changes/BackupScriptBuilder-1.4.md)).
 
 - **Build Script tab:** tick the folders to back up, pick a destination folder and how many days to keep deleted / changed files, then choose what to create: **Create FreeFileSync batch** (`BackupScript.ffs_batch`, mirrors each folder and keeps old versions), **Create Robocopy batch** or **Create Xcopy batch** (a `.ps1` or `.bat` script with log options and every switch explained). **Build Script** creates `AutomaticFileBackups\Current`, `Archive-Deleted` and `Logs` in that folder.
 - **Schedule Task tab:** runs the backup on a schedule (once, daily, weekly, every X hours, at log on), with "run after a missed start" and a time limit. A **backup type** drop-down picks **FreeFileSync**, **Robocopy** or **Xcopy**. It creates, changes, runs and deletes only its own tasks, kept in the Task Scheduler folder `\BackupScriptBuilder\`.
 - A **?** next to every option explains it.
 
 - **New in 1.1:** besides the FreeFileSync batch it can **create a Robocopy or Xcopy script** (`.ps1` or `.bat`) with log options, every relevant switch explained, and (Robocopy) one thread per source drive; the Schedule Task tab has a **backup type** drop-down; and the folder picker now lists Desktop, Documents and OneDrive, with **Quick picks** at the top ([1.1 notes](docs/changes/BackupScriptBuilder-1.1.md)).
+- **New in 1.4:** an **Update 7-Zip** button (`winget upgrade -e --id 7zip.7zip`) next to Install 7-Zip, the 7-Zip version shown, and corrected help texts ([1.4 notes](docs/changes/BackupScriptBuilder-1.4.md)).
 - **New in 1.3:** a **Manual Backup** tab: back up now to a folder, a zip (Windows built in or 7-Zip) or a 7z, with Store / Normal / Ultra, a password and self-extracting .exe when 7-Zip is installed; network sources and destinations (**Add Network Path**, mapped drives saved as `\\server\share`), and Robocopy and Xcopy scripts can back up single files: the picker lists files too ([1.3 notes](docs/changes/BackupScriptBuilder-1.3.md)).
 - **New in 1.2:** a folder picker fix pass: no more empty `My Documents` / `Application Data` junction folders, Windows and program folders hidden until you tick **Show Windows and program folders**, Quick picks for Favorites, Saved Games, Contacts and other users, and a folder inside another ticked folder is added only once ([1.2 notes](docs/changes/BackupScriptBuilder-1.2.md)).
 
-Download `BackupScriptBuilder-v1.3.zip` from the [latest release](../../releases/latest).
+Download `BackupScriptBuilder-v1.4.zip` from the [latest release](../../releases/latest).
 
 ### 7z-Encryptor
 
-`7z-Encryptor.ps1` + `7z-Encryptor.bat`. Encrypts files and folders into one password-protected file with [7-Zip](https://www.7-zip.org/). Version 1.0 ([notes](docs/changes/7z-Encryptor-1.0.md)).
+`7z-Encryptor.ps1` + `7z-Encryptor.bat`. Encrypts files and folders into one password-protected file with [7-Zip](https://www.7-zip.org/). Version 1.0 ([notes](docs/changes/7z-Encryptor-1.0.md)). Download `7z-Encryptor-v1.0.zip` from the [latest release](../../releases/latest).
 
 - **Main window** (double-click `7z-Encryptor.bat`): tick files and folders in the same tree as Backup Script Builder, pick the format and a password (typed twice), and where to save. It is filled in next to the first item.
 - **7z:** AES-256. **Full encryption** (on by default) also hides the file names, so nothing can be seen without the password.
 - **zip:** **Standard** (ZipCrypto) opens in Windows Explorer with the password but is weak, and file names stay visible. **AES-256** is strong but needs 7-Zip, WinRAR or similar to open.
 - **Drag and drop:** drop files or folders on `7z-Encryptor.bat` for a small window that asks 7z or zip and the password. The file is saved in the 7z-Encryptor folder (or, ticked, next to the dropped item).
 - Every new file is tested with the password before it is reported as done. The originals are never changed or deleted, and an existing file is never overwritten.
-- Without 7-Zip, **Install 7-Zip** runs `winget install -e --id 7zip.7zip`. The tool looks for 7-Zip when it starts.
+- 7-Zip is looked for at start. If it is missing, the tool asks whether to install it. **Install 7-Zip** / **Update 7-Zip** run `winget install` / `winget upgrade -e --id 7zip.7zip`.
 - Paths with `&` or `%` in their names cannot be dropped on the `.bat` (a limit of batch files). Use the main window for those.
 ## What has been fixed
 

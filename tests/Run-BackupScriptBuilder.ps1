@@ -373,7 +373,11 @@ $tests = {
     Check 'manual: Cancel stops the zip and removes the half-made file' ($r.Message -eq 'Cancelled.' -and -not (Test-Path "$mw\out\Backup-t-cancel.zip")) "$($r.Message)"
     # 7-Zip, when installed: zip with a password, 7z with hidden names, self-extracting .exe - made in the background like the button does
     $script:SevenZip = Find-7Zip; Update-ManualUi
-    Check 'manual: Get 7-Zip shows the winget command; Install is off once 7-Zip is found' ($mWingetBox.Text -eq 'winget install -e --id 7zip.7zip' -and ($mInstall7.Enabled -ne [bool]$script:SevenZip))
+    Check 'manual: Get 7-Zip shows the winget command; Install is off and Update on once 7-Zip is found' ($mWingetBox.Text -eq 'winget install -e --id 7zip.7zip' -and ($mInstall7.Enabled -ne [bool]$script:SevenZip) -and ($mUpdate7.Enabled -eq [bool]$script:SevenZip))
+    Check 'manual: Update 7-Zip sits next to Install 7-Zip' ($mUpdate7.Top -eq $mInstall7.Top -and $mUpdate7.Left -gt $mInstall7.Right -and $mUpdate7.Left - $mInstall7.Right -lt 20)
+    if ($script:SevenZip) { Check 'manual: the 7-Zip line shows its version' ($m7Status.Text -match '\(version [\d.]+\)') $m7Status.Text }
+    $h7 = @($tabManual.Controls | Where-Object { $_.Text -eq '?' -and $_.Tag[0] -eq 'Get 7-Zip' })
+    Check 'manual: Get 7-Zip help names install and upgrade' ($h7.Count -eq 1 -and $h7[0].Tag[1] -match 'winget install -e --id 7zip' -and $h7[0].Tag[1] -match 'winget upgrade -e --id 7zip')
     if ($script:SevenZip) {
         $eap = $ErrorActionPreference; $ErrorActionPreference = 'Continue'   # 7-Zip writes 'Wrong password' to stderr on purpose here
         foreach ($c in @(@{ N = 'zip7pw'; Mode = 'Zip'; Engine = '7zip'; Password = 'pw 1'; Ext = '.zip' }, @{ N = '7zpw'; Mode = '7z'; Password = 'pw 1'; EncryptNames = $true; Ext = '.7z' }, @{ N = 'sfx'; Mode = '7z'; Sfx = 'Windowed'; Ext = '.exe' })) {
