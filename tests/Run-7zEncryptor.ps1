@@ -109,7 +109,7 @@ Check 'check: a non-ASCII password is refused for zip but allowed for 7z' (((Tes
     Check 'main: Encrypt is on only when 7-Zip is found; Get 7-Zip shows the winget command' ($m.Go.Enabled -eq [bool]$script:SevenZip -and $m.Get7.Box.Text -eq 'winget install -e --id 7zip.7zip' -and ($m.Get7.Btn.Enabled -ne [bool]$script:SevenZip))
     $script:ScriptDir = "$W\tooldir"
     $g = $m.Get7
-    if ($script:SevenZip) { Check '7-Zip row: shows the version, Install off, Update on' ($g.Lbl.Text -match '^7-Zip [\d.]+ installed$' -and -not $g.Btn.Enabled -and $g.BtnUp.Enabled) $g.Lbl.Text }
+    if ($script:SevenZip) { Check '7-Zip row: shows the version, Install off, Update on' ($g.Lbl.Text -match '^7-Zip [\d.]+( [a-z]+)? installed$' -and -not $g.Btn.Enabled -and $g.BtnUp.Enabled) $g.Lbl.Text }
     $help7 = @($m.Page.Controls | Where-Object { $_.Text -eq '?' -and $_.Tag[0] -eq '7-Zip' })
     Check '7-Zip help names both winget commands' ($help7.Count -eq 1 -and $help7[0].Tag[1] -match 'winget install -e --id 7zip\.7zip' -and $help7[0].Tag[1] -match 'winget upgrade -e --id 7zip\.7zip')
     $keep7 = $script:SevenZip; $script:SevenZip = $null; Update-Get7Row $g
@@ -162,7 +162,7 @@ Check 'check: a non-ASCII password is refused for zip but allowed for 7z' (((Tes
     Check 'email: a missing file / no program picked gives a message, nothing starts' ((Send-EncryptedFile "$W\nope.7z" 'Classic' '') -match 'not there' -and (Send-EncryptedFile "$W\src\single file.txt" 'Program' '') -match 'Pick the mail program')
     # ---- 1.4: mailto: with a typed address ----
     $u = Get-MailtoUri 'a.b@example.com' "$W\out\my file.7z"
-    Check 'mailto: the address, the file name as subject, encoded' ($u -eq 'mailto:a.b@example.com?subject=my%20file.7z&body=Attached%3A%20my%20file.7z%20(encrypted).%20The%20password%20comes%20separately.') $u
+    Check 'mailto: the address, the file name as subject, encoded' (($u -replace '%28', '(' -replace '%29', ')') -eq 'mailto:a.b@example.com?subject=my%20file.7z&body=Attached%3A%20my%20file.7z%20(encrypted).%20The%20password%20comes%20separately.') $u
     Check 'mailto: several addresses (; or ,), spaces ignored; empty is allowed' ((Get-MailtoUri ' a@x.org; b@y.net ' 'f.7z') -like 'mailto:a@x.org,b@y.net?subject=f.7z&*' -and (Get-MailtoUri '' 'f.7z') -like 'mailto:?subject=f.7z&*')
     Check 'mailto: no address / extra link parts are refused' ($null -eq (Get-MailtoUri 'not-an-address' 'f.7z') -and $null -eq (Get-MailtoUri 'a@x.org?cc=c@y.net' 'f.7z') -and $null -eq (Get-MailtoUri 'a@x.org&body=x' 'f.7z') -and $null -eq (Get-MailtoUri '"a"@x.org' 'f.7z'))
     Check 'mailto: a bad address gives a message, nothing starts' ((Send-EncryptedFile "$W\src\single file.txt" 'Mailto' '' ([IntPtr]::Zero) 'nope') -match 'Type an email address')
@@ -237,7 +237,7 @@ Start-Process cmd.exe -ArgumentList '/c', "`"`"$Root\tools\7z-Encryptor.bat`" `"
 $proc = $null; $title = ''; $t0 = Get-Date
 while (((Get-Date) - $t0).TotalSeconds -lt 40) {
     Start-Sleep -Milliseconds 500
-    $proc = Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { $_.CommandLine -match '7z-Encryptor\.ps1' -and $_.CommandLine -match [regex]::Escape("`"$drop`"") } | Select-Object -First 1
+    $proc = Get-CimInstance Win32_Process -Filter "Name='powershell.exe' OR Name='pwsh.exe'" | Where-Object { $_.CommandLine -match '7z-Encryptor\.ps1' -and $_.CommandLine -match [regex]::Escape("`"$drop`"") } | Select-Object -First 1
     # the hidden console is the process's "main" window, so its windows are read with UI Automation
     if ($proc) { $title = (@([Windows.Automation.AutomationElement]::RootElement.FindAll('Children', (New-Object Windows.Automation.PropertyCondition([Windows.Automation.AutomationElement]::ProcessIdProperty, [int]$proc.ProcessId))) | ForEach-Object { $_.Current.Name }) -join ','); if ($title -match '(^|,)7z-Encryptor(,|$)') { break } }
 }
@@ -249,7 +249,7 @@ Check 'launcher: a dropped file with spaces opens the 7z-Encryptor window with t
 # Explorer quotes a dropped name only when it has a space, so R&D.txt or x^y.txt reach cmd bare. A copy of the
 # launcher, in a folder with & and a space, starts the tool's real start code, which writes what the window would list.
 $dd = Join-Path $W 'drop R&D'; [void][IO.Directory]::CreateDirectory($dd)
-$batText = [IO.File]::ReadAllText("$Root\tools\7z-Encryptor.bat") -replace 'start "" powershell\.exe -NoProfile -ExecutionPolicy Bypass -STA -WindowStyle Hidden -File "%~dp07z-Encryptor\.ps1"', 'powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0args.ps1"'
+$batText = [IO.File]::ReadAllText("$Root\tools\7z-Encryptor.bat") -replace 'start "" "%PSEXE%" -NoProfile -ExecutionPolicy Bypass -STA -WindowStyle Hidden -File "%~dp07z-Encryptor\.ps1"', '"%PSEXE%" -NoProfile -ExecutionPolicy Bypass -File "%~dp0args.ps1"'
 [IO.File]::WriteAllText("$dd\7z-Encryptor.bat", $batText); [IO.File]::WriteAllText("$dd\7z-Encryptor.ps1", 'x')
 $src0 = [IO.File]::ReadAllText("$Root\tools\7z-Encryptor.ps1"); $a0 = $src0.IndexOf('# ---------- start ----------'); $b0 = $src0.IndexOf('# if the window cannot be built')
 [IO.File]::WriteAllText("$dd\args.ps1", 'param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Files); $ScriptDir = $PSScriptRoot' + "`n" + $src0.Substring($a0, $b0 - $a0) + "`n" + '[IO.File]::WriteAllText("$PSScriptRoot\got.txt", ($Files -join "`n"))')

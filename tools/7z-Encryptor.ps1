@@ -1,4 +1,4 @@
-# Version 1.5 (2026-11-26)
+# Version 1.6 (2026-11-26)
 # 7z-Encryptor - encrypts files and folders with 7-Zip: a 7z (AES-256, optionally the file names too) or a zip
 # (standard ZipCrypto or AES-256), with a password you pick. Files dropped on 7z-Encryptor.bat open the same window, already in the list.
 # Windows Repair Toolkit - Copyright (C) 2026 TheTechSupportGuru - SPDX-License-Identifier: GPL-3.0-or-later
@@ -479,12 +479,31 @@ function Test-EncryptInput([string[]]$sources, [string]$password, [string]$passw
     foreach ($s in $sources) { $d = $s.TrimEnd('\') + '\'; if ([IO.Directory]::Exists($s) -and $out.StartsWith($d, [StringComparison]::OrdinalIgnoreCase)) { return "The encrypted file cannot be saved inside $s, which is being encrypted. Pick another place (Browse...)." } }
     return ''
 }
-# Runs 7-Zip without a window while the window stays responsive; returns the exit code
+# Runs 7-Zip without a window while the window stays responsive; returns the exit code. 1.6: 7-Zip's own output is
+# kept in $script:Last7zOutput (read in the background, so a long output cannot block 7-Zip), for its warnings.
 function Invoke-7Zip([string]$exe, [string[]]$argList) {
     $psi = New-Object Diagnostics.ProcessStartInfo $exe, ((@($argList) | ForEach-Object { ConvertTo-ProcessArg $_ }) -join ' ')
-    $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true
+    $psi.UseShellExecute = $false; $psi.CreateNoWindow = $true; $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
+    $script:Last7zOutput = ''
     $p = [Diagnostics.Process]::Start($psi)
-    try { while (-not $p.WaitForExit(100)) { [System.Windows.Forms.Application]::DoEvents() }; return $p.ExitCode } finally { $p.Dispose() }
+    try {
+        $so = $p.StandardOutput.ReadToEndAsync(); $se = $p.StandardError.ReadToEndAsync()
+        while (-not $p.WaitForExit(100)) { [System.Windows.Forms.Application]::DoEvents() }
+        $p.WaitForExit(); $script:Last7zOutput = [string]$se.Result + [string]$so.Result
+        return $p.ExitCode
+    } finally { $p.Dispose() }
+}
+# 1.6: the WARNING / ERROR lines of 7-Zip's output, each with the line after it (7-Zip writes the file name there),
+# at most $max warnings
+function Get-7ZipWarnings([string]$text, [int]$max = 5) {
+    $all = @(($text -split "`r?`n") | ForEach-Object { $_.Trim() })
+    $l = @(); for ($i = 0; $i -lt $all.Count; $i++) {
+        if ($all[$i] -notmatch '^(WARNING|ERROR)\b') { continue }
+        $w = $all[$i]; if ($i + 1 -lt $all.Count -and $all[$i + 1] -and $all[$i + 1] -notmatch '^(WARNING|ERROR)\b') { $w += ' ' + $all[$i + 1] }
+        $l += $w
+    }
+    if ($l.Count -gt $max) { $l = @($l[0..($max - 1)]) + "... and $($l.Count - $max) more" }
+    return ($l -join "`r`n")
 }
 # Encrypts, then tests the new archive with the password (7z t) so a broken file is never reported as done.
 # Returns @{ Ok; Message; Output }. A failed archive is deleted.
@@ -492,10 +511,11 @@ function Invoke-Encrypt($o) {
     if (-not ($o.SevenZip -and [IO.File]::Exists($o.SevenZip))) { return @{ Ok = $false; Message = '7-Zip is not installed (7z.exe not found).' } }
     [void][IO.Directory]::CreateDirectory((Split-Path $o.Out))
     $rc = Invoke-7Zip $o.SevenZip (New-EncryptArgs $o.Out $o.Sources $o.Format $o.Password ($o.HideNames -ne $false) $(if ($o.ZipMethod) { $o.ZipMethod } else { 'ZipCrypto' }))
+    $warn = Get-7ZipWarnings $script:Last7zOutput
     if ($rc -ge 2 -or -not (Test-Path -LiteralPath $o.Out)) { Remove-Item -LiteralPath $o.Out -Force -ErrorAction SilentlyContinue; return @{ Ok = $false; Message = "7-Zip could not create the file (exit code $rc)."; Output = $o.Out } }
     $t = Invoke-7Zip $o.SevenZip @('t', "-p$($o.Password)", '--', $o.Out)
     if ($t -ne 0) { Remove-Item -LiteralPath $o.Out -Force -ErrorAction SilentlyContinue; return @{ Ok = $false; Message = "The new file did not pass 7-Zip's test (exit code $t) and was deleted."; Output = $o.Out } }
-    $msg = if ($rc -eq 1) { 'Encrypted, but some files were skipped (in use or no access).' } else { 'Encrypted and tested.' }
+    $msg = if ($rc -eq 1) { 'Encrypted, but some files were skipped (in use or no access).' + $(if ($warn) { "`r`n7-Zip says:`r`n$warn" }) } else { 'Encrypted and tested.' }
     return @{ Ok = ($rc -eq 0); Message = $msg; Output = $o.Out }
 }
 

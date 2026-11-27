@@ -5,7 +5,7 @@
 #   Invoke-Pester .\tests\7zEncryptor.Tests.ps1
 $encFile = Join-Path (Split-Path $PSScriptRoot -Parent) 'tools\7z-Encryptor.ps1'
 $encAst = [Management.Automation.Language.Parser]::ParseFile($encFile, [ref]$null, [ref]$null)
-foreach ($fn in $encAst.FindAll({ $args[0] -is [Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -in 'ConvertTo-ProcessArg', 'New-EncryptArgs', 'Get-ItemName', 'Get-ArchivePath', 'Test-EncryptInput', 'Get-MailtoUri', 'Get-MailProgramArgs', 'Get-DroppedItems', 'Get-SettingsFile', 'Read-Settings', 'Save-Settings', 'Remove-Settings', 'Get-UniqueFolders', 'Find-7Zip', 'Find-7ZipUnder', 'Test-WinPe' }, $true)) { . ([scriptblock]::Create($fn.Extent.Text)) }
+foreach ($fn in $encAst.FindAll({ $args[0] -is [Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -in 'ConvertTo-ProcessArg', 'New-EncryptArgs', 'Get-ItemName', 'Get-ArchivePath', 'Test-EncryptInput', 'Get-MailtoUri', 'Get-MailProgramArgs', 'Get-DroppedItems', 'Get-SettingsFile', 'Read-Settings', 'Save-Settings', 'Remove-Settings', 'Get-UniqueFolders', 'Find-7Zip', 'Find-7ZipUnder', 'Test-WinPe', 'Get-7ZipWarnings' }, $true)) { . ([scriptblock]::Create($fn.Extent.Text)) }
 # the settings value types, read from the script itself so the test follows it
 $typesAst = $encAst.Find({ $args[0] -is [Management.Automation.Language.AssignmentStatementAst] -and $args[0].Left.Extent.Text -eq '$EncSettingTypes' }, $true)
 $EncSettingTypes = & ([scriptblock]::Create($typesAst.Right.Extent.Text))
@@ -192,4 +192,17 @@ Describe 'Finding 7-Zip in Windows PE: X: and Y:, up to 3 folders deep (7z-Encry
         } finally { $env:ProgramFiles = $keep.P; ${env:ProgramFiles(x86)} = $keep.X; $env:ProgramW6432 = $keep.W }
     }
     It 'Test-WinPe is false on a normal Windows' { if ($env:SystemDrive -ne 'X:') { Test-WinPe | Should Be $false } }
+}
+Describe '7-Zip warnings in the message (7z-Encryptor 1.6)' {
+    It 'keeps the WARNING lines with the file name after them, and nothing else' {
+        $o = "7-Zip 21.02 alpha (x64)`r`nScanning the drive:`r`nWARNING: The process cannot access the file because it is being used by another process.`r`nC:\a\b.txt`r`n`r`nEverything is Ok"
+        Get-7ZipWarnings $o | Should Be 'WARNING: The process cannot access the file because it is being used by another process. C:\a\b.txt'
+    }
+    It 'at most 5 lines, then how many more' {
+        $o = (1..8 | ForEach-Object { "WARNING: file $_" }) -join "`n"
+        $w = @((Get-7ZipWarnings $o) -split "`r`n")
+        $w.Count | Should Be 6
+        $w[5] | Should Be '... and 3 more'
+    }
+    It 'no warnings: empty' { Get-7ZipWarnings "Everything is Ok`r`n" | Should Be '' }
 }

@@ -19,7 +19,10 @@
 #     use -NoRepairs.
 #   4 every GUI tool started for 20 s: does it open, does it report errors
 #   5 window sizes (resize audit, short)
-#   6 unit tests, if Pester is in this PE
+#   6 unit tests (every tests\*.Tests.ps1), if Pester is in this PE
+#   7 (2.5) Backup Script Builder, 7z-Encryptor and Test Center: finding 7-Zip in this PE (X: and Y:, the way both tools
+#     look for it), then their full GUI tests (Run-BackupScriptBuilder, Run-7zEncryptor, Run-TestCenterGui). These only
+#     write to temporary folders on X: (or %TEMP%).
 # Changes nothing (no repair, no boot change, no format; letters it adds are removed; every question is answered No) apart from writing the
 # results. Results: <first Windows drive>\WRT-PE-Results-<date> (so they are there after booting that Windows) and a
 # copy in X:\WRT-PE-Results. private\ = unmasked, share\ + WRT-PE-share.zip = masked: send that one.
@@ -59,7 +62,7 @@ W ("PowerShell   : {0}   .NET release: {1}   Pester: {2}" -f $PSVersionTable.PSV
 $wf = try { Add-Type -AssemblyName System.Windows.Forms, System.Drawing -ErrorAction Stop; 'loads' } catch { "DOES NOT LOAD: $($_.Exception.Message)" }
 W "WinForms     : $wf"
 if ($wf -eq 'loads') { W ("Screen       : {0}  ({1} monitor(s))" -f [Windows.Forms.Screen]::PrimaryScreen.Bounds.Size, [Windows.Forms.Screen]::AllScreens.Count) }
-$exe = foreach ($e in 'bcdedit', 'bcdboot', 'bootrec', 'dism', 'sfc', 'chkdsk', 'diskpart', 'reg', 'wevtutil', 'mountvol', 'pnputil', 'robocopy', 'conhost') { '{0}{1}' -f $e, $(if (Get-Command "$e.exe" -ErrorAction SilentlyContinue) { '' } else { ' (MISSING)' }) }
+$exe = foreach ($e in 'bcdedit', 'bcdboot', 'bootrec', 'dism', 'sfc', 'chkdsk', 'diskpart', 'reg', 'wevtutil', 'mountvol', 'pnputil', 'robocopy', 'conhost', 'tar') { '{0}{1}' -f $e, $(if (Get-Command "$e.exe" -ErrorAction SilentlyContinue) { '' } else { ' (MISSING)' }) }
 W ("Tools        : {0}" -f ($exe -join ', '))
 W ("Storage cmds : Get-Partition {0}, Get-Volume {1}, Get-CimInstance {2}" -f [bool](Get-Command Get-Partition -ErrorAction SilentlyContinue), [bool](Get-Command Get-Volume -ErrorAction SilentlyContinue), [bool](Get-Command Get-CimInstance -ErrorAction SilentlyContinue))
 $vols = @(Get-CimInstance Win32_LogicalDisk -ErrorAction SilentlyContinue | ForEach-Object { '{0} {1} {2:N0} GB {3}' -f $_.DeviceID, $_.FileSystem, ($_.Size / 1GB), $_.VolumeName })
@@ -216,7 +219,7 @@ if ($Win -and $IsWinPE -and $wf -eq 'loads') {
 # ---------- 4 GUI tools start ----------
 if (-not $NoGui -and $wf -eq 'loads') {
     Step '4 Every GUI tool started for 20 s (do not use the mouse)'
-    $gui = @(Get-ChildItem (Join-Path $Repo 'tools') -Filter *.ps1 | Where-Object { [IO.File]::ReadAllText($_.FullName) -match 'Windows\.Forms\.Form' })
+    $gui = @(Get-ChildItem (Join-Path $Repo 'tools') -Filter *.ps1 | Where-Object { [IO.File]::ReadAllText($_.FullName) -match 'Windows\.Forms\.Form' }) + @(Get-Item (Join-Path $PSScriptRoot 'TestCenter.ps1'))
     foreach ($g in $gui) {
         $name = "$($g.Directory.Name)\$($g.Name)"; $tr = Join-Path $Priv ("start-" + ($name -replace '\\', '-') + '.txt')
         $extra = if ($g.Name -eq 'WinFixKit.ps1') { " -DataRoot '$Priv\wfk-data'" } else { '' }
@@ -225,7 +228,8 @@ if (-not $NoGui -and $wf -eq 'loads') {
         $p.Refresh(); $alive = -not $p.HasExited; $title = $p.MainWindowTitle
         if ($alive) { [void]$p.CloseMainWindow(); if (-not $p.WaitForExit(8000)) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue } }
         Start-Sleep -Milliseconds 500
-        $errs = @(Select-String -Path $tr -Pattern 'FullyQualifiedErrorId' -ErrorAction SilentlyContinue)
+        # PowerShell 5.1 writes FullyQualifiedErrorId; PowerShell 7 (Hiren's PE 10) writes "Command: X:\...\tool.ps1:123"
+        $errs = @(Select-String -Path $tr -Pattern 'FullyQualifiedErrorId|is not recognized as|[A-Za-z-]+: \S*[A-Z]:\\S*\.ps1:\d+' -ErrorAction SilentlyContinue)
         W ("  {0,-34} open after 20 s: {1,-5} window: '{2}'  errors: {3}" -f $name, $alive, $title, $errs.Count)
         foreach ($e in ($errs | Select-Object -First 2)) { W ("      " + (Protect-Text $e.Line.Trim())) }
     }
@@ -239,13 +243,47 @@ if (-not $NoGui -and $wf -eq 'loads') {
 # ---------- 6 unit tests ----------
 if (Get-Module Pester -ListAvailable) {
     Step '6 Unit tests'
-    foreach ($s in 'Beta', 'Toolkit', 'Suite') {
+    foreach ($s in @(Get-ChildItem $PSScriptRoot -Filter *.Tests.ps1 | Sort-Object Name | ForEach-Object { $_.Name -replace '\.Tests\.ps1$', '' })) {
         $o = & $PsExe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "$s.Tests.ps1") 2>&1 | Out-String
         Save-Both "unit-$s.txt" $o
         $fail = @([regex]::Matches($o, '(?m)^\s*\[-\].*$') | ForEach-Object { $_.Value.Trim() })
-        W ("  {0,-8} passed {1}, failed {2}" -f $s, ([regex]::Matches($o, '\[\+\]')).Count, $fail.Count); foreach ($x in $fail) { W "     $(Protect-Text $x)" }
+        W ("  {0,-20} passed {1}, failed {2}" -f $s, ([regex]::Matches($o, '\[\+\]')).Count, $fail.Count); foreach ($x in $fail) { W "     $(Protect-Text $x)" }
     }
 } else { Step '6 skipped: Pester is not in this PE' }
+
+# ---------- 7 Backup Script Builder, 7z-Encryptor, Test Center (2.5) ----------
+Step '7 Backup Script Builder, 7z-Encryptor and Test Center'
+# where 7-Zip really is on X: and Y: (up to 4 folders deep), to compare with what the tools find
+$real = @(foreach ($d in 'X:\', 'Y:\') { if (Test-Path $d) { Get-ChildItem $d -Recurse -Depth 4 -Filter 7z.exe -File -ErrorAction SilentlyContinue | ForEach-Object FullName } })
+W ("  7z.exe on X: / Y: : {0}" -f $(if ($real) { ($real | Select-Object -First 5) -join '; ' } else { 'none found (up to 4 folders deep)' }))
+# a 7z.exe in at most 3 folders below the drive root: X:\a\b\c\7z.exe
+$shallow = @($real | Where-Object { @($_.Substring(3).Split([char]92)).Count -le 4 })
+foreach ($tool in 'BackupScriptBuilder.ps1', '7z-Encryptor.ps1') {
+    $ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $Repo "tools\$tool"), [ref]$null, [ref]$null)
+    $fns = @(foreach ($n in 'Test-WinPe', 'Find-7ZipUnder', 'Find-7Zip') { $f = $ast.Find({ param($x) $x -is [Management.Automation.Language.FunctionDefinitionAst] -and $x.Name -eq $n }, $true); if ($f) { $f.Extent.Text } })
+    Check "${tool}: has Test-WinPe, Find-7ZipUnder and Find-7Zip" { ($fns.Count -eq 3), "$($fns.Count) of 3" }
+    if ($fns.Count -ne 3) { continue }
+    $body = ($fns -join [Environment]::NewLine) + [Environment]::NewLine + '$t0 = Get-Date; $pe = Test-WinPe; $z = Find-7Zip; [pscustomobject]@{ Pe = $pe; Path = [string]$z; Ms = [int]((Get-Date) - $t0).TotalMilliseconds }'
+    try { $r = & ([scriptblock]::Create($body)) } catch { $r = [pscustomobject]@{ Pe = $null; Path = "EXCEPTION $($_.Exception.Message)"; Ms = 0 } }
+    Check "${tool}: Test-WinPe says WinPE = $IsWinPE" { ($r.Pe -eq $IsWinPE), "says $($r.Pe)" }
+    if ($shallow) { Check "${tool}: finds 7-Zip (one is within 3 folders of X: or Y:)" { ([bool]$r.Path -and (Test-Path -LiteralPath $r.Path)), "found: $($r.Path)  ($($r.Ms) ms)" } }
+    else { W ("  ${tool}: 7-Zip found: {0}  ({1} ms)" -f $(if ($r.Path) { $r.Path } else { 'none (none on X: or Y: within 3 folders)' }), $r.Ms) }
+    Check "${tool}: the 7-Zip search takes under 30 s" { ($r.Ms -lt 30000), "$($r.Ms) ms" }
+}
+if (-not $NoGui -and $wf -eq 'loads') {
+    W '  full GUI tests: windows open and close by themselves (do not use the mouse), up to 20 minutes each'
+    foreach ($g in 'Run-BackupScriptBuilder', 'Run-7zEncryptor', 'Run-TestCenterGui') {
+        $out = Join-Path $Priv "$g.txt"; $t0 = Get-Date
+        $pr = Start-Process $PsExe -PassThru -RedirectStandardOutput $out -RedirectStandardError "$out.err" -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-STA', '-File', ('"{0}"' -f (Join-Path $PSScriptRoot "$g.ps1"))
+        if (-not $pr.WaitForExit(1200000)) { Stop-Process -Id $pr.Id -Force -ErrorAction SilentlyContinue; W "  $g did not finish in 20 minutes: stopped" }
+        $o = [string](Get-Content $out -Raw -ErrorAction SilentlyContinue) + [string](Get-Content "$out.err" -Raw -ErrorAction SilentlyContinue)
+        Save-Both "$g.txt" $o
+        $pass = ([regex]::Matches($o, '(?m)^PASS  ')).Count; $fail = @([regex]::Matches($o, '(?m)^FAIL  .*$') | ForEach-Object { $_.Value.Trim() })
+        $secs = [int]((Get-Date) - $t0).TotalSeconds
+        Check "${g}: every check passed" { ($pass -gt 0 -and $fail.Count -eq 0), "passed $pass, failed $($fail.Count)  ($secs s)" }
+        foreach ($x in ($fail | Select-Object -First 15)) { W "     $(Protect-Text $x)" }
+    }
+} else { W '  full GUI tests skipped: WinForms does not load in this PE (or -NoGui)' }
 
 # ---------- save ----------
 Step 'Done'

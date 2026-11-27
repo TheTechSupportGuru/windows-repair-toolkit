@@ -8,7 +8,12 @@
 # Open results). Needs internet for the Online checks. Do not use the mouse or keyboard while it runs (~5 min).
 #   powershell -STA -ExecutionPolicy Bypass -File .	ests\Run-TestCenterGui.ps1
 # Results: the console and %TEMP%	c-gui-results.csv
+# In WinPE (2.6) it checks what Test Center offers there: only the tests that work without a running Windows, and
+# PowerShell 7 (Hiren's PE 10) is used when it is the PowerShell this test runs in.
 param([string]$Tc = (Join-Path $PSScriptRoot 'TestCenter.ps1'))
+$InWinPE = Test-Path 'HKLM:\SYSTEM\CurrentControlSet\Control\MiniNT'
+$PsExe = (Get-Process -Id $PID).Path
+$HasPester = [bool](Get-Module Pester -ListAvailable)
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type @"
 using System; using System.Text; using System.Collections.Generic; using System.Runtime.InteropServices;
@@ -32,11 +37,13 @@ public static class W {
 }
 "@
 $res = New-Object Collections.ArrayList
-Add-Type -ReferencedAssemblies Accessibility -TypeDefinition @"
-using System; using System.Runtime.InteropServices; using Accessibility;
+# the check state through IAccessible, read late-bound (IDispatch): no Accessibility reference, so it also compiles in
+# PowerShell 7 (Hiren's PE 10)
+Add-Type -TypeDefinition @"
+using System; using System.Reflection; using System.Runtime.InteropServices;
 public static class Acc {
-  [DllImport("oleacc.dll")] static extern int AccessibleObjectFromWindow(IntPtr h, uint id, ref Guid iid, [MarshalAs(UnmanagedType.IUnknown)] out object o);
-  public static int State(IntPtr h) { Guid g = new Guid("618736E0-3C3D-11CF-810C-00AA00389B71"); object o; if (AccessibleObjectFromWindow(h, 0xFFFFFFFC, ref g, out o) != 0) return -1; return (int)((IAccessible)o).get_accState(0); }
+  [DllImport("oleacc.dll")] static extern int AccessibleObjectFromWindow(IntPtr h, uint id, ref Guid iid, [MarshalAs(UnmanagedType.IDispatch)] out object o);
+  public static int State(IntPtr h) { Guid g = new Guid("618736E0-3C3D-11CF-810C-00AA00389B71"); object o; if (AccessibleObjectFromWindow(h, 0xFFFFFFFC, ref g, out o) != 0 || o == null) return -1; return Convert.ToInt32(o.GetType().InvokeMember("accState", BindingFlags.GetProperty, null, o, new object[] { 0 })); }
 }
 "@
 function Add-Check($n, $ok, $d = '') { [void]$res.Add([pscustomobject]@{ Check = $n; Result = $(if ($ok) { 'PASS' } else { 'FAIL' }); Detail = $d }); Write-Host ("{0}  {1}  {2}" -f $(if ($ok) { 'PASS' } else { 'FAIL' }), $n, $d) }
@@ -57,11 +64,13 @@ function Set-EditText([string]$old, [string]$new) { $h = Find-Ctl $old 'EDIT' 2;
 function Get-Boxes { Get-All | Where-Object { [W]::Cls($_) -match 'BUTTON' -and [W]::Text($_) -match '\[.*min\]' } }
 # tabs: select by sending a real click is not needed - the tab control takes TCM_SETCURFOCUS (raises the change)
 function Select-Tab([int]$i) {
-    $tc = Get-All | Where-Object { [W]::Cls($_) -match 'SysTabControl32' } | Select-Object -First 1
+    $tc = $null
+    for ($k = 0; $k -lt 60 -and -not $tc; $k++) { $tc = Get-All | Where-Object { [W]::Cls($_) -match 'SysTabControl32' } | Select-Object -First 1; if (-not $tc) { Start-Sleep -Milliseconds 250 } }
+    if (-not $tc) { Write-Host '   (tab control not found)'; return }
     [void][W]::SendMessage($tc, 0x1330, [IntPtr]$i, [IntPtr]::Zero); Start-Sleep -Milliseconds 600   # TCM_SETCURFOCUS
 }
 
-$p = Start-Process powershell.exe -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-STA', '-File', "`"$Tc`"" -PassThru
+$p = Start-Process $PsExe -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-STA', '-File', "`"$Tc`"" -PassThru
 for ($i = 0; $i -lt 40 -and $p.MainWindowHandle -eq 0; $i++) { Start-Sleep -Milliseconds 500; $p.Refresh() }
 Start-Sleep 2; $p.Refresh()
 Add-Check 'window opens' ($p.MainWindowHandle -ne 0) $p.MainWindowTitle
@@ -77,8 +86,13 @@ for ($i = 0; $i -lt $expect.Count; $i++) {
 # Tick all on the Other PCs tab: field test ticked, WinPE test disabled + reason
 Click (Find-Ctl 'Tick all on this tab' 'BUTTON')
 $field = Find-Ctl 'Field test*' 'BUTTON' -Like; $pe = Find-Ctl 'WinPE test*' 'BUTTON' -Like
+if ($InWinPE) {
+    Add-Check 'WinPE: Tick all ticks the WinPE test' (Get-Checked $pe) ((Get-Boxes | Where-Object { [W]::IsWindowVisible($_) } | ForEach-Object { '{0}={1}' -f ([W]::Text($_).Substring(0, 12)), (Get-Checked $_) }) -join '; ')
+    Add-Check 'WinPE: the field test is greyed out (needs a running Windows)' ((-not [W]::IsWindowEnabled($field)) -and ([W]::Text($field) -match 'needs a running Windows') -and -not (Get-Checked $field)) ([W]::Text($field))
+} else {
 Add-Check 'Tick all on this tab ticks the available test' (Get-Checked $field) ((Get-Boxes | Where-Object { [W]::IsWindowVisible($_) } | ForEach-Object { '{0}={1}' -f ([W]::Text($_).Substring(0, 12)), (Get-Checked $_) }) -join '; ')
 Add-Check 'WinPE test greyed out outside WinPE (with reason)' ((-not [W]::IsWindowEnabled($pe)) -and ([W]::Text($pe) -match 'only inside WinPE') -and -not (Get-Checked $pe)) ([W]::Text($pe))
+}
 Click (Find-Ctl 'Untick all' 'BUTTON')
 Add-Check 'Untick all' (-not (Get-Boxes | Where-Object { Get-Checked $_ }))
 Click (Find-Ctl 'Run selected' 'BUTTON')
@@ -92,11 +106,11 @@ Add-Check 'tools folder edit found' (Set-EditText $toolsDefault $empty)
 Click (Find-Ctl 'Re-check' 'BUTTON')
 Add-Check 'empty folder: "No scripts" + every test greyed out' (((Find-Ctl 'No scripts in that folder' '' 3) -ne [IntPtr]::Zero) -and -not (Get-Boxes | Where-Object { [W]::IsWindowEnabled($_) }))
 [void](Set-EditText $empty $toolsDefault); Click (Find-Ctl 'Re-check' 'BUTTON')
-Add-Check 'real folder: version shown, tests back' (((Find-Ctl 'Version *, * scripts' '' 3 -Like) -ne [IntPtr]::Zero) -and @(Get-Boxes | Where-Object { [W]::IsWindowEnabled($_) }).Count -ge 15)
+Add-Check 'real folder: version shown, tests back' (((Find-Ctl 'Version *, * scripts' '' 3 -Like) -ne [IntPtr]::Zero) -and @(Get-Boxes | Where-Object { [W]::IsWindowEnabled($_) }).Count -ge $(if ($InWinPE) { 3 } else { 15 }))
 $only = Join-Path $env:TEMP 'tc-only-wfk'; Remove-Item $only -Recurse -Force -ErrorAction SilentlyContinue; New-Item -ItemType Directory -Force $only | Out-Null; Copy-Item (Join-Path $toolsDefault 'WinFixKit.ps1') $only
 [void](Set-EditText $toolsDefault $only); Click (Find-Ctl 'Re-check' 'BUTTON')
 $lm = Find-Ctl 'Live Monitor*' 'BUTTON' -Like; $ws = Find-Ctl 'Check status: every section (no admin)*' 'BUTTON' -Like
-Add-Check 'folder with only WinFixKit: WinSuperTool tests greyed, WinFixKit tests not' ((-not [W]::IsWindowEnabled($lm)) -and ([W]::Text($lm) -match 'no WinSuperTool.ps1') -and [W]::IsWindowEnabled($ws)) ([W]::Text($lm) -replace '^.*not available', 'not available')
+Add-Check 'folder with only WinFixKit: WinSuperTool tests greyed, WinFixKit tests not' ((-not [W]::IsWindowEnabled($lm)) -and ($InWinPE -or (([W]::Text($lm) -match 'no WinSuperTool.ps1') -and [W]::IsWindowEnabled($ws)))) ([W]::Text($lm) -replace '^.*not available', 'not available')
 [void](Set-EditText $only $toolsDefault); Click (Find-Ctl 'Re-check' 'BUTTON')
 
 # --- online
@@ -120,22 +134,24 @@ Add-Content "$got\WinFixKit.ps1" '# local edit by the GUI test'
 Click (Find-Ctl 'Re-check' 'BUTTON')
 Add-Check 'edited script detected' ((Find-Ctl 'Version *, * scripts, 1 edited' '' 3 -Like) -ne [IntPtr]::Zero)
 
-# --- run two tests, stop the second
+# --- run two tests, stop the second (in WinPE: the unit test suite, as Window sizes needs a running Windows)
+if ($InWinPE -and -not $HasPester) { Write-Host 'SKIP  the run checks: Pester is not in this PE (the unit tests need it)' } else {
+$second = if ($InWinPE) { 'Unit tests: every tool' } else { 'Window sizes' }; $secondId = if ($InWinPE) { 'unit-suite' } else { 'sizes' }
 Select-Tab 0
 Click (Find-Ctl 'Untick all' 'BUTTON')
-Click (Find-Ctl 'Unit tests: shared code*' 'BUTTON' -Like); Click (Find-Ctl 'Window sizes*' 'BUTTON' -Like)
+Click (Find-Ctl 'Unit tests: shared code*' 'BUTTON' -Like); Click (Find-Ctl "$second*" 'BUTTON' -Like)
 Click (Find-Ctl 'Run selected' 'BUTTON')
-$l = Wait-Log 'START   Window sizes' 240
+$l = Wait-Log "START   $([regex]::Escape($second))" 240
 Add-Check 'run: unit test result + count logged' ($l -match '(PASSED|FAILED)\s+Unit tests: shared code' -and $l -match 'Passed \d+  Failed \d+') ([regex]::Match($l, 'Passed \d+  Failed \d+  Skipped \d+').Value)
 Add-Check 'run: Run disabled, Stop enabled while running' ((-not [W]::IsWindowEnabled((Find-Ctl 'Run selected' 'BUTTON'))) -and [W]::IsWindowEnabled((Find-Ctl 'Stop' 'BUTTON')))
 Start-Sleep 15; Click (Find-Ctl 'Stop' 'BUTTON'); $l = Wait-Log 'ALL DONE' 60
-Add-Check 'Stop ends the running test (STOPPED)' ($l -match 'STOPPED\s+Window sizes')
-$root = [regex]::Match($l, 'C:\\Users\\Public\\wrt-testcenter-\d{8}-\d{6}').Value
+Add-Check 'Stop ends the running test (STOPPED)' ($l -match ('STOPPED\s+' + [regex]::Escape($second)))
+$root = [regex]::Match($l, '[A-Z]:\\(Users\\Public\\)?wrt-testcenter-\d{8}-\d{6}').Value
 Add-Check 'report.html + summary-for-github.md + report.txt written' ($root -and (Test-Path "$root\report.html") -and (Test-Path "$root\summary-for-github.md") -and (Test-Path "$root\report.txt")) $root
-Add-Check 'each test has a folder with console.txt' ((Test-Path "$root\unit-toolkit\console.txt") -and (Test-Path "$root\sizes"))
+Add-Check 'each test has a folder with console.txt' ((Test-Path "$root\unit-toolkit\console.txt") -and (Test-Path "$root\$secondId"))
 Add-Check 'run used a copy of the downloaded (edited) tools' ((Get-Content "$root\_run\tools\WinFixKit.ps1" -Tail 1) -match 'local edit by the GUI test')
 Start-Sleep 2
-Get-Process powershell -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne $p.Id -and $_.Id -ne $PID -and $_.MainWindowTitle -match 'WinSuperTool|WinFixKit|Collect|Monitor|WinRepair|Claude|Windows Repair Tool' } | Stop-Process -Force -ErrorAction SilentlyContinue
+Get-Process powershell, pwsh -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne $p.Id -and $_.Id -ne $PID -and $_.MainWindowTitle -match 'WinSuperTool|WinFixKit|Collect|Monitor|WinRepair|Claude|Windows Repair Tool' } | Stop-Process -Force -ErrorAction SilentlyContinue
 
 # --- copy summary for GitHub
 [Windows.Forms.Clipboard]::Clear()
@@ -163,6 +179,7 @@ $saved = if (Test-Path $out) { Get-Item $out } else { Get-ChildItem ([Environmen
 $h = if ($saved) { Get-Content $saved.FullName -Raw } else { "" }; $out = "$saved"
 Add-Check 'Export HTML... saves the report' ($h -match '<h1>Windows Repair Toolkit - Test Center' -and $h -match 'STOPPED' -and $h -match 'edited') $out
 Add-Check 'HTML: no user / PC name' ($h -and -not ($h -match [regex]::Escape($env:USERNAME) -or $h -match $env:COMPUTERNAME))
+}   # the run checks
 # --- open results folder
 Click (Find-Ctl 'Open results' 'BUTTON'); Start-Sleep 3
 $shell = New-Object -ComObject Shell.Application

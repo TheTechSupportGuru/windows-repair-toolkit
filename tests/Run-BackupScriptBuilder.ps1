@@ -114,7 +114,10 @@ $tests = {
     $bytes = [IO.File]::ReadAllBytes("$dst\BackupScript.ffs_batch")
     Check 'script file is written without a BOM' ($bytes[0] -eq 0x3C)
 
-    # ---- 3. scheduled tasks ----
+    # ---- 3. scheduled tasks (1.9: Windows PE has no Task Scheduler: the tab is greyed out there with the reason) ----
+    if ($SchedOff) {
+        Check 'WinPE (1.9): Schedule Task tab greyed out, the reason shown, no task read' (-not $cboTask.Enabled -and -not $btnSave.Enabled -and -not $btnRun.Enabled -and $lblStatus.Text -match 'Windows PE' -and @(Get-OurTasks).Count -eq 0) $lblStatus.Text
+    } else {
     Add-ScriptChoice "$dst\BackupScript.ffs_batch"
     $exe = 'C:\Program Files\FreeFileSync\FreeFileSync.exe'
     $act = New-ScheduledTaskAction -Execute $exe -Argument ('"' + "$dst\BackupScript.ffs_batch" + '"')
@@ -192,6 +195,7 @@ $tests = {
         foreach ($k in 'zz-test button', 'zz-test renamed', 'zz-test bad', 'zz-test Robocopy', 'zz-test Xcopy') { Unregister-ScheduledTask -TaskPath $TaskFolder -TaskName $k -Confirm:$false -ErrorAction SilentlyContinue }
         Remove-Item -Recurse -Force $tmp2 -ErrorAction SilentlyContinue
     }
+    }   # not WinPE
 
     # ---- 5. (1.1) folder picker: user folders, OneDrive, junctions ----
     $qf = @(Get-QuickFolders)

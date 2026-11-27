@@ -1,9 +1,17 @@
 @echo off
-rem Version 2.0 (2026-11-26). What changed: docs/changes/V2.0.md
+rem Version 2.6 (2026-11-26). What changed: docs/changes/V2.6.md
 rem Windows Repair Toolkit - Copyright (C) 2026 TheTechSupportGuru - SPDX-License-Identifier: GPL-3.0-or-later
 rem Free software under the GNU General Public License v3 or (at your option) any later version, WITHOUT ANY WARRANTY. See LICENSE
 setlocal EnableExtensions
 title Run PowerShell script as Administrator
+
+rem ---- PowerShell: Windows PowerShell, else PowerShell 7 (pwsh.exe), the only one in Hiren's BootCD PE 10 (not on the PATH there)
+set "PSEXE=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
+if not exist "%PSEXE%" for /f "delims=" %%P in ('where powershell.exe 2^>nul') do set "PSEXE=%%P"
+set "PWSH="
+if not exist "%PSEXE%" for /f "delims=" %%P in ('where pwsh.exe 2^>nul') do if not defined PWSH set "PWSH=%%P"
+if not exist "%PSEXE%" for %%D in (X Y) do if not defined PWSH if exist %%D:\ for /f "delims=" %%P in ('dir /s /b %%D:\pwsh.exe 2^>nul') do if not defined PWSH set "PWSH=%%P"
+if defined PWSH set "PSEXE=%PWSH%"
 
 rem ---- Option: set to 1 to keep the PowerShell window open after the script ends
 set "KEEPOPEN=0"
@@ -47,7 +55,7 @@ echo Launching as Administrator: "%PSFILE%"
 set "NOEXIT="
 if "%KEEPOPEN%"=="1" set "NOEXIT='-NoExit',"
 
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "try { Start-Process powershell.exe -Verb RunAs -ArgumentList %NOEXIT%'-NoProfile','-ExecutionPolicy','Bypass','-STA','-File',([char]34+$env:PSFILE+[char]34) } catch { Write-Host ('Launch cancelled or failed: ' + $_.Exception.Message) -ForegroundColor Red; exit 1 }"
+"%PSEXE%" -NoProfile -ExecutionPolicy Bypass -Command "try { Start-Process $env:PSEXE -Verb RunAs -ArgumentList %NOEXIT%'-NoProfile','-ExecutionPolicy','Bypass','-STA','-File',([char]34+$env:PSFILE+[char]34) } catch { Write-Host ('Launch cancelled or failed: ' + $_.Exception.Message) -ForegroundColor Red; exit 1 }"
 
 if errorlevel 1 (
     echo.

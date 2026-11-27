@@ -1,4 +1,4 @@
-# Version 1.8 (2026-11-26)
+# Version 1.9 (2026-11-26)
 # Backup Script Builder - builds a FreeFileSync batch file (BackupScript.ffs_batch), or a Robocopy / Xcopy script (.ps1 or .bat),
 # and (1.3) makes a manual backup now: to a folder, a zip (Windows or 7-Zip) or a 7z / self-extracting .exe
 # Windows Repair Toolkit - Copyright (C) 2026 TheTechSupportGuru - SPDX-License-Identifier: GPL-3.0-or-later
@@ -770,7 +770,7 @@ function Invoke-ManualCopy([string[]]$sources, [string]$dest, $state) {
 # offers; Ultra is 7-Zip only and greyed out for Windows zip, 1.8 - an Ultra that gets here is made as Normal). Folders keep their name at the top of the zip; empty folders are
 # kept; junctions are skipped; a file that cannot be read (locked) is listed in Failed and the rest goes on.
 function Invoke-BuiltinZip([string]$out, [string[]]$sources, [string]$level, $state) {
-    Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
+    try { Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem -ErrorAction Stop } catch { }   # PowerShell 7 has them already
     $lvl = if ($level -eq 'Store') { [IO.Compression.CompressionLevel]::NoCompression } else { [IO.Compression.CompressionLevel]::Optimal }
     $failed = New-Object System.Collections.Generic.List[string]; $n = 0; $used = @{}; $tops = @{}
     $fs = [IO.File]::Open($out, 'CreateNew'); $zip = New-Object IO.Compression.ZipArchive($fs, [IO.Compression.ZipArchiveMode]::Create)
@@ -837,7 +837,8 @@ function Invoke-ManualBackup($o, $state) {
 }
 
 # The same manual backup as a script to keep or schedule (.bat or .ps1). Each run makes a new Backup-<date>_<time>.
-# A zip "made by Windows" uses tar.exe (in Windows 10 1803 and later). A password is never written into the script:
+# A zip "made by Windows" uses Windows' own .NET zip, the same code as Back up now (1.9: no tar.exe, which Windows PE
+# does not have). A .bat finds PowerShell itself (pwsh.exe in Hiren's PE 10). A password is never written into the script:
 # 7-Zip asks for it each time the script runs (-p with no value).
 function New-ManualScript($o, [string]$format) {
     $OUT = '@@OUT@@'
@@ -867,37 +868,53 @@ function New-ManualScript($o, [string]$format) {
             $a = New-7ZipArgs $target $o.Sources $fmt $o.Level $(if ($o.Password) { '@@ASK@@' } else { '' }) $sfxMod ($o.EncryptNames -ne $false)
             [void]$cmds.Add(@{ Exe = $exe; FailAt = 2; Args = @($a | ForEach-Object { if ($_ -eq '-p@@ASK@@') { '-p' } else { $_ } }) })
         } else {
-            $a = @('-a', '-c', '-f', $target)
-            # Store or Normal only (1.8): Ultra is 7-Zip only, so Run now and the script make the same zip on Windows 10, 11 and PE
-            if ($o.Level -eq 'Store') { $a += '--options', 'zip:compression=store' }
-            foreach ($s in $o.Sources) {
-                $t = $s.TrimEnd('\')
-                if ([IO.File]::Exists($s)) { $par = [IO.Path]::GetDirectoryName($t); $a += '-C', [IO.Path]::GetDirectoryName($par), ((Split-Path $par -Leaf) + '/' + [IO.Path]::GetFileName($t)) }
-                elseif ($t -match '^[A-Za-z]:$|^\\\\[^\\]+\\[^\\]+$') { $a += '-C', ($t + '\'), '.' }
-                else { $a += '-C', [IO.Path]::GetDirectoryName($t), (Split-Path $t -Leaf) }
-            }
-            [void]$cmds.Add(@{ Exe = 'tar'; FailAt = 1; Args = $a })
+            # 1.9: Windows' own .NET zip, the same code as Back up now (Invoke-BuiltinZip), written into the script. No
+            # tar.exe: it is not in Windows PE (Hiren's BootCD PE 10 / 11). Store or Normal only (Ultra is 7-Zip only).
+            [void]$cmds.Add(@{ Zip = $true; Level = $(if ($o.Level -eq 'Store') { 'Store' } else { 'Normal' }); Sources = @($o.Sources) })
         }
     }
-    $what = switch ($o.Mode) { 'Folder' { 'copy to a folder (robocopy)' } 'Zip' { if ($o.Engine -eq '7zip') { "zip by 7-Zip, $($o.Level)" } else { "zip by Windows (tar), $($o.Level)" } } default { "7z, $($o.Level)" + $(if ($o.Sfx) { ", self-extracting ($($o.Sfx))" }) } }
+    $what = switch ($o.Mode) { 'Folder' { 'copy to a folder (robocopy)' } 'Zip' { if ($o.Engine -eq '7zip') { "zip by 7-Zip, $($o.Level)" } else { "zip by Windows (built-in .NET zip), $(if ($o.Level -eq 'Store') { 'Store' } else { 'Normal' })" } } default { "7z, $($o.Level)" + $(if ($o.Sfx) { ", self-extracting ($($o.Sfx))" }) } }
+    # the zip code for a Windows zip: Get-PairName + Invoke-BuiltinZip as they are in this tool, then the call
+    $zipCode = ''
+    foreach ($c in @($cmds | Where-Object { $_.Zip })) {
+        $q = { param($x) "'" + $x.Replace("'", "''") + "'" }
+        $zipCode = (@('Get-PairName', 'Invoke-BuiltinZip') | ForEach-Object { "function $_ {`r`n" + ((Get-Item "function:$_").Definition.Trim() -replace "`r?`n", "`r`n") + "`r`n}" }) -join "`r`n"
+        $zipCode += "`r`n`$r = Invoke-BuiltinZip (`$Out + '.zip') @(" + (($c.Sources | ForEach-Object { & $q $_ }) -join ', ') + ") '$($c.Level)' @{ Cancel = `$false; Status = '' }"
+        $zipCode += "`r`nforeach (`$f in @(`$r.Failed)) { Write-Host ('Could not read: ' + `$f) -ForegroundColor Yellow }`r`nWrite-Host `$r.Message"
+    }
     $notes = @("Manual backup script made by Backup Script Builder 1.4 on $(Get-Date -Format 'yyyy-MM-dd HH:mm'): $what", 'Windows Repair Toolkit - https://github.com/TheTechSupportGuru/windows-repair-toolkit', 'Every run makes a new Backup-<date>_<time> in the destination.')
     if ($o.Password) { $notes += '7-Zip asks for the password each time it runs (it is not stored in this script), so run it by hand, not as a scheduled task.' }
     $dest = $o.Dest.TrimEnd('\'); $nl = "`r`n"; $sb = New-Object System.Text.StringBuilder
     if ($format -eq 'bat') {
         $arg = { param($x) if ($x.Contains($OUT)) { '"' + ($x -replace '%', '%%').Replace($OUT, '%OUT%') + '"' } else { (ConvertTo-ProcessArg $x) -replace '%', '%%' } }
         [void]$sb.Append("@echo off$nl" + (($notes | ForEach-Object { "rem $_" }) -join $nl) + "${nl}setlocal$nl")
-        [void]$sb.Append("for /f %%a in ('powershell -NoProfile -Command ""Get-Date -Format yyyy-MM-dd_HHmmss""') do set ""STAMP=%%a""$nl")
+        # 1.9: find PowerShell (for the date and the Windows zip): Windows PowerShell, else PowerShell 7 (pwsh.exe), which
+        # is the only one in Hiren's BootCD PE 10 (Y:\Programs\PowerShell Core_x64) and is not on the PATH there
+        [void]$sb.Append("set ""PS=""${nl}for /f ""delims="" %%P in ('where powershell.exe 2^>nul') do if not defined PS set ""PS=%%P""$nl")
+        [void]$sb.Append("if not defined PS if exist ""%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"" set ""PS=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe""$nl")
+        [void]$sb.Append("if not defined PS for /f ""delims="" %%P in ('where pwsh.exe 2^>nul') do if not defined PS set ""PS=%%P""$nl")
+        [void]$sb.Append("for %%D in (X Y) do if not defined PS if exist %%D:\ for /f ""delims="" %%P in ('dir /s /b %%D:\pwsh.exe 2^>nul') do if not defined PS set ""PS=%%P""$nl")
+        [void]$sb.Append("if not defined PS (echo PowerShell was not found: no powershell.exe or pwsh.exe. & exit /b 1)$nl")
+        [void]$sb.Append("for /f %%a in ('call ""%PS%"" -NoProfile -Command ""Get-Date -Format yyyy-MM-dd_HHmmss""') do set ""STAMP=%%a""$nl")
         [void]$sb.Append("set ""OUT=$($dest -replace '%', '%%')\Backup-%STAMP%""${nl}if not exist ""$(($dest -replace '%', '%%'))"" mkdir ""$(($dest -replace '%', '%%'))""${nl}set BAD=0$nl")
+        if ($zipCode) { [void]$sb.Append("set ""BSB_SELF=%~f0""$nl") }
         foreach ($c in $cmds) {
+            if ($c.Zip) {
+                # the zip code is at the end of this file, after exit /b (cmd never reads it); PowerShell runs it from there
+                [void]$sb.Append("""%PS%"" -NoProfile -ExecutionPolicy Bypass -Command ""`$s = [IO.File]::ReadAllText(`$env:BSB_SELF); `$Out = `$env:OUT; Invoke-Expression `$s.Substring(`$s.IndexOf('#' + 'BSB-ZIP-CODE')); if (-not `$r.Ok) { exit 1 }""${nl}if %ERRORLEVEL% GEQ 1 set BAD=1$nl")
+                continue
+            }
             $exe = if ($c.Exe -match '[\\ ]') { '"' + $c.Exe + '"' } else { $c.Exe }
             [void]$sb.Append($exe + ' ' + (($c.Args | ForEach-Object { & $arg $_ }) -join ' ') + "${nl}if %ERRORLEVEL% GEQ $($c.FailAt) set BAD=1$nl")
         }
         [void]$sb.Append("if %BAD%==1 (echo Backup finished WITH ERRORS. & exit /b 1)${nl}echo Backup finished: $(& $arg $target)${nl}exit /b 0$nl")
+        if ($zipCode) { [void]$sb.Append("${nl}#BSB-ZIP-CODE - PowerShell: the Windows zip, run by the line above (Windows' own .NET zip)$nl$zipCode$nl") }
     } else {
         $arg = { param($x) if ($x.StartsWith($OUT)) { "(`$Out + '" + $x.Substring($OUT.Length).Replace("'", "''") + "')" } else { "'" + $x.Replace("'", "''") + "'" } }
         [void]$sb.Append((($notes | ForEach-Object { "# $_" }) -join $nl) + $nl)
         [void]$sb.Append("`$Out = Join-Path '$($dest.Replace("'", "''"))' ('Backup-' + (Get-Date -Format 'yyyy-MM-dd_HHmmss'))${nl}[void][IO.Directory]::CreateDirectory((Split-Path `$Out))${nl}`$Bad = `$false$nl")
         foreach ($c in $cmds) {
+            if ($c.Zip) { [void]$sb.Append("$zipCode${nl}if (-not `$r.Ok) { `$Bad = `$true }$nl"); continue }
             [void]$sb.Append("& '$($c.Exe.Replace("'", "''"))' " + (($c.Args | ForEach-Object { & $arg $_ }) -join ' ') + "${nl}if (`$LASTEXITCODE -ge $($c.FailAt)) { `$Bad = `$true }$nl")
         }
         [void]$sb.Append("if (`$Bad) { Write-Host 'Backup finished WITH ERRORS.' -ForegroundColor Red; exit 1 }${nl}Write-Host ('Backup finished: ' + $(& $arg $target)) -ForegroundColor Green${nl}exit 0$nl")
@@ -1350,7 +1367,11 @@ function Update-TypeUi {
     $lblExe.Visible = $ffs; $txtExe.Visible = $ffs; $btnExe.Visible = $ffs
     foreach ($c in $tabSched.Controls) { if ($c -is [System.Windows.Forms.Button] -and $c.Text -eq '?' -and $c.Tag -and $c.Tag[0] -eq 'FreeFileSync.exe') { $c.Visible = $ffs } }
 }
+# 1.9: Windows PE has no Task Scheduler (Hiren's PE 10: no ScheduledTasks commands; PE 11: they fail), so the
+# Schedule Task tab is greyed out there with the reason
+$SchedOff = (Test-WinPe) -or -not (Get-Command New-ScheduledTaskAction -ErrorAction SilentlyContinue)
 function Get-OurTasks {
+    if ($script:SchedOff) { return @() }
     return @(Get-ScheduledTask -TaskPath $TaskFolder -ErrorAction SilentlyContinue | Sort-Object TaskName)
 }
 
@@ -1762,7 +1783,7 @@ Add-Help $tabManual 135 238 'Back up to' ("A folder: a plain copy (robocopy) you
 Add-Help $tabManual 430 489 'Self-extracting .exe' ("Makes the 7z backup into a program: double-click it on any Windows PC to unpack it, no 7-Zip needed there. 'Windowed' asks where to unpack; 'console' unpacks into the folder it is in.`r`n`r`n" +
     "Password: with a password the backup cannot be opened without it - there is no way to recover a lost password. 'Also hide the file names' (7z) means even the list of files needs the password. The password is given to 7-Zip on its command line while the backup runs.")
 Add-Help $tabManual 285 711 'Save as Script' ("Saves the backup set up above as a .bat or .ps1 file instead of running it now, to run again later or schedule on the Schedule Task tab. Every run makes a new Backup-<date>_<time>.`r`n`r`n" +
-    "A zip made by Windows uses tar.exe (in Windows 10 and 11). The password is never saved in the script: 7-Zip asks for it each time the script runs, so a script with a password is for running by hand, not as a scheduled task.")
+    "A zip made by Windows uses Windows' own .NET zip, so the script works in Windows 10, 11 and Windows PE (a .bat also finds PowerShell 7 in Hiren's PE 10). The password is never saved in the script: 7-Zip asks for it each time the script runs, so a script with a password is for running by hand, not as a scheduled task.")
 Add-Help $tabManual 140 750 'Get 7-Zip' ("7-Zip is free and open source. The tool looks for it when it starts and shows its version.`r`n`r`nWhere it looks: the Program Files folders, the place 7-Zip's setup records and the PATH. In Windows PE (Hiren's BootCD PE 10 / 11 and others) also the X: and Y: drives, up to 3 folders deep.`r`n`r`n'Install 7-Zip' runs  winget install -e --id 7zip.7zip`r`n'Update 7-Zip' runs  winget upgrade -e --id 7zip.7zip`r`nin a console window (you may be asked to allow it). When winget finishes the tool finds 7-Zip again by itself; 'Check again' looks again after installing or updating it another way.")
 $tabs.TabPages.Add($tabManual)
 
@@ -1823,6 +1844,11 @@ $form.add_FormClosing({ Save-BsbSettings })
 Update-TaskList
 Update-FreqUi
 Update-TypeUi
+if ($SchedOff) {
+    foreach ($c in $tabSched.Controls) { if ($c -ne $lblStatus -and -not ($c -is [System.Windows.Forms.Label]) -and $c.Text -ne '?') { $c.Enabled = $false } }
+    $lblStatus.Text = 'Scheduling needs Task Scheduler, which Windows PE does not have. Build and save scripts here, schedule them in Windows.'
+    $lblStatus.ForeColor = [System.Drawing.Color]::DarkRed
+}
 
 Initialize-WrtWindow $form @($tabBuild, $tabSched, $tabManual) 600 600
 [void]$form.ShowDialog()

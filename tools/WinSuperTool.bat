@@ -1,5 +1,5 @@
 @echo off
-rem Version 2.0 (2026-11-26). What changed: docs/changes/V2.0.md
+rem Version 2.6 (2026-11-26). What changed: docs/changes/V2.6.md
 rem Windows Repair Toolkit - Copyright (C) 2026 TheTechSupportGuru - SPDX-License-Identifier: GPL-3.0-or-later
 rem Free software under the GNU General Public License v3 or (at your option) any later version, WITHOUT ANY WARRANTY. See LICENSE
 setlocal EnableExtensions
@@ -21,6 +21,12 @@ set "PSEXE=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
 if exist "%SystemRoot%\Sysnative\WindowsPowerShell\v1.0\powershell.exe" set "PSEXE=%SystemRoot%\Sysnative\WindowsPowerShell\v1.0\powershell.exe"
 rem The ELEVATED copy is started BY the 64-bit PowerShell above, where Sysnative does not exist: give it the System32 path.
 set "PSEXE64=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
+rem 2.6: no Windows PowerShell (Hiren's BootCD PE 10 has only PowerShell 7, not on the PATH there): use pwsh.exe
+set "PWSH="
+if not exist "%PSEXE%" for /f "delims=" %%P in ('where pwsh.exe 2^>nul') do if not defined PWSH set "PWSH=%%P"
+if not exist "%PSEXE%" for %%D in (X Y) do if not defined PWSH if exist %%D:\ for /f "delims=" %%P in ('dir /s /b %%D:\pwsh.exe 2^>nul') do if not defined PWSH set "PWSH=%%P"
+if defined PWSH set "PSEXE=%PWSH%"
+if defined PWSH set "PSEXE64=%PWSH%"
 
 set "ISMAIN=0"
 

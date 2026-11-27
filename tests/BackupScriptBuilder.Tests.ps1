@@ -165,7 +165,7 @@ Describe 'Manual backup: saved scripts really run (1.3), only into $TestDrive' {
             $file = Join-Path $TestDrive "s-$($c.N).$fmt"; [IO.File]::WriteAllText($file, (New-ManualScript $o $fmt))
             if ($fmt -eq 'ps1') { & powershell -NoProfile -ExecutionPolicy Bypass -File $file | Out-Null } else { & cmd /c "`"$file`"" | Out-Null }
             $LASTEXITCODE | Should Be 0
-            $made = @(Get-ChildItem $dest -Filter 'Backup-*'); $made.Count | Should Be 1
+            $made = @(Get-ChildItem $dest -Filter 'Backup-*'); $made.Count | Should Be 1; $made[0].Name | Should Match '^Backup-\d{4}-\d\d-\d\d_\d{6}'
             $m = $made[0].FullName
             if ($c.Mode -eq 'Folder') { $names = @(Get-ChildItem $m -Recurse | ForEach-Object { $_.FullName.Substring($m.Length + 1).Replace('\', '/') }) }
             elseif ($c.Engine -eq 'Windows') { $zz = [IO.Compression.ZipFile]::OpenRead($m); $names = @($zz.Entries | ForEach-Object { $_.FullName.TrimEnd('/') }); $zz.Dispose() }
@@ -179,11 +179,29 @@ Describe 'Manual backup: saved scripts really run (1.3), only into $TestDrive' {
             if ($c.N -eq 'winzip-normal') { (Get-Item $m).Length | Should BeLessThan 5000 }
         }
     } }
-    It 'Windows zip (1.8): Ultra is 7-Zip only, so the script never asks tar for a level; Store stays store' {
+    It 'Windows zip (1.9): Windows'' own .NET zip, never tar.exe (not in Windows PE); Ultra is made as Normal, Store stays Store' {
         foreach ($fmt in 'bat', 'ps1') {
-            New-ManualScript @{ Mode = 'Zip'; Engine = 'Windows'; Level = 'Ultra'; Sources = @('C:\a'); Dest = 'D:\b' } $fmt | Should Not Match 'compression-level'
-            New-ManualScript @{ Mode = 'Zip'; Engine = 'Windows'; Level = 'Store'; Sources = @('C:\a'); Dest = 'D:\b' } $fmt | Should Match 'zip:compression=store'
+            $u = New-ManualScript @{ Mode = 'Zip'; Engine = 'Windows'; Level = 'Ultra'; Sources = @('C:\a', "D:\it's"); Dest = 'D:\b' } $fmt
+            $u | Should Not Match '(?i)\btar(\.exe)?\b'
+            $u | Should Match ([regex]::Escape("Invoke-BuiltinZip (`$Out + '.zip') @('C:\a', 'D:\it''s') 'Normal'"))
+            $u | Should Match 'function Invoke-BuiltinZip \{'
+            $u | Should Match 'function Get-PairName \{'
+            $s = New-ManualScript @{ Mode = 'Zip'; Engine = 'Windows'; Level = 'Store'; Sources = @('C:\a'); Dest = 'D:\b' } $fmt
+            $s | Should Match ([regex]::Escape("@('C:\a') 'Store'"))
         }
+    }
+    It 'a .bat (1.9) finds PowerShell itself: Windows PowerShell, else pwsh.exe on the PATH or on X: / Y: (Hiren''s PE 10)' {
+        foreach ($c in @(@{ Mode = 'Zip'; Engine = 'Windows'; Level = 'Normal' }, @{ Mode = 'Folder' }, @{ Mode = '7z'; Level = 'Normal'; SevenZip = 'C:\7-Zip\7z.exe' })) {
+            $o = @{} + $c; $o.Sources = @('C:\a'); $o.Dest = 'D:\b'
+            $b = New-ManualScript $o 'bat'
+            $b | Should Match ([regex]::Escape("for /f ""delims="" %%P in ('where pwsh.exe 2^>nul') do if not defined PS set ""PS=%%P"""))
+            $b | Should Match ([regex]::Escape("for %%D in (X Y) do if not defined PS if exist %%D:\ for /f ""delims="" %%P in ('dir /s /b %%D:\pwsh.exe 2^>nul')"))
+            $b | Should Match ([regex]::Escape("for /f %%a in ('call ""%PS%"" -NoProfile -Command"))
+            $b | Should Not Match "\('powershell -NoProfile"
+        }
+        # the zip code sits after exit /b, where cmd never reads it
+        $z = New-ManualScript @{ Mode = 'Zip'; Engine = 'Windows'; Level = 'Normal'; Sources = @('C:\a'); Dest = 'D:\b' } 'bat'
+        $z.IndexOf('#BSB-ZIP-CODE') | Should BeGreaterThan $z.LastIndexOf('exit /b 0')
     }
     It 'a password is never written into the script; 7-Zip asks for it (-p)' {
         foreach ($fmt in 'bat', 'ps1') {

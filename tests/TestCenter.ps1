@@ -16,7 +16,7 @@
 #   Scripted (e.g. your own build):  ... TestCenter.ps1 -ToolsFolder D:\my-build\tools -Run unit-suite,unit-toolkit,sizes -ExitWhenDone
 #   (test ids: the Id values in $Tests below; -Run all = every test that can run here)
 param([string]$ToolsFolder, [string[]]$Run, [switch]$ExitWhenDone)
-$TestCenterVersion = '1.0'
+$TestCenterVersion = '1.1'
 $ErrorActionPreference = 'Continue'
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 [Windows.Forms.Application]::EnableVisualStyles()
