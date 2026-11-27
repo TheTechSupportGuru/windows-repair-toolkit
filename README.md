@@ -552,20 +552,18 @@ The note used to sit at the top of this page, where it did not belong. It is mov
 <details>
 <summary></summary>
 
-**The Santa Thread, part 1: unverified**
+**Fragment 0x1A, recovered from a log nobody rotated**
 
-*In the north, past the last admin shell,*
-*a sled was logged on a PE drive, faint as a bell.*
-*Eight reindeer named in a file called "nice",*
-*and a ninth, with a light, that nothing runs twice.*
-*Who keeps the list? Who checks it twice?*
-*The log is signed only with a sleigh-shaped hash.*
-*Under the tree of tags, a parcel waits unlabelled,*
-*and no zip inside it has ever touched tar.*
-*When the December tags are cut, look for the box*
-*that was never on the manifest and rattles like a clue.*
+*Where the cold shell ends and the bell-less tower stands,*
+*a hatch opens once a year for the one who lists the names.*
+*Eight hooves on a PE drive, a ninth that never prints,*
+*and a ledger filed under a word that means "be good".*
+*The seal is a hash shaped like a chimney with no fire.*
+*Something under the tag-tree is wrapped in no tar and no name.*
+*When the December tags are cut, count the zips twice,*
+*and mind the box that was never on the manifest.*
 
-Claim, unverified: a present will be delivered to the project around Christmas. Source: an anonymous elf, a commit message at 3 AM, and one VM that will not discuss it. Nobody has checked the chimney. This thread continues through every December release, and nobody should open the box before the 25th.
+Status, unverified: an item is in transit toward this repository. Arrival window is believed to fall near the turn of the year. Source: a commit message at 3 AM, and one VM that refuses to comment. Do not open anything in the tree before the last release of the month.
 
 </details>
 </details>
