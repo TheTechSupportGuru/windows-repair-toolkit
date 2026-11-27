@@ -549,6 +549,25 @@ The note used to sit at the top of this page, where it did not belong. It is mov
 
 **Gobble gobble gobble gobble gobble.** 2.6 shipped with the PE fixes, and the turkey finally learned to run without tar. The VMs were asked to regress Hiren's PE and gobbled in its place.
 
+<details>
+<summary></summary>
+
+**The Santa Thread, part 1: unverified**
+
+*In the north, past the last admin shell,*
+*a sled was logged on a PE drive, faint as a bell.*
+*Eight reindeer named in a file called "nice",*
+*and a ninth, with a light, that nothing runs twice.*
+*Who keeps the list? Who checks it twice?*
+*The log is signed only with a sleigh-shaped hash.*
+*Under the tree of tags, a parcel waits unlabelled,*
+*and no zip inside it has ever touched tar.*
+*When the December tags are cut, look for the box*
+*that was never on the manifest and rattles like a clue.*
+
+Claim, unverified: a present will be delivered to the project around Christmas. Source: an anonymous elf, a commit message at 3 AM, and one VM that will not discuss it. Nobody has checked the chimney. This thread continues through every December release, and nobody should open the box before the 25th.
+
+</details>
 </details>
 
 </details>
