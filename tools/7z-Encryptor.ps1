@@ -1,4 +1,4 @@
-# Version 1.6 (2026-11-26)
+# Version 1.7 (2026-11-27)
 # 7z-Encryptor - encrypts files and folders with 7-Zip: a 7z (AES-256, optionally the file names too) or a zip
 # (standard ZipCrypto or AES-256), with a password you pick. Files dropped on 7z-Encryptor.bat open the same window, already in the list.
 # Windows Repair Toolkit - Copyright (C) 2026 TheTechSupportGuru - SPDX-License-Identifier: GPL-3.0-or-later
@@ -624,6 +624,13 @@ function Send-EncryptedFile([string]$file, [string]$mode, [string]$program, [Int
         $u = Get-MailtoUri $mailTo $file
         if (-not $u) { return "Type an email address for mailto: (several: separate them with ; ), or leave it empty." }
         try { Start-Process $u } catch { return "Windows has no mail program set for mailto: links.`r`n$($_.Exception.Message)" }
+        # with no default mail program Windows asks which app to use (OpenWith.exe); opening Explorer now would
+        # close that prompt, so wait until the user has picked (or closed it), up to 10 minutes
+        $sw = [Diagnostics.Stopwatch]::StartNew()
+        while ($sw.Elapsed.TotalSeconds -lt 600) {
+            if ($sw.Elapsed.TotalMilliseconds -gt 1500 -and -not (Get-Process -Name OpenWith -ErrorAction SilentlyContinue)) { break }
+            [Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 200
+        }
         Show-InFolder $file
         return "Your mail program opens a new email$(if ($mailTo.Trim()) { " to $($mailTo.Trim())" }).`r`n`r`nA mailto: link cannot attach files: drag $name from the Explorer window that opened into the email."
     }
@@ -765,9 +772,16 @@ function New-MainWindow([string[]]$items = @()) {
     $w.RbShare = New-Ctl RadioButton 'Windows Share' '178,2' '115,24'
     $w.RbProgram = New-Ctl RadioButton 'Choose program...' '296,2' '160,24'
     # 1.4: mailto: with the address typed here (typing in the box picks this option)
-    $w.RbMailto = New-Ctl RadioButton 'mailto:' '0,32' '70,24'
-    $w.MailTo = New-Ctl TextBox ([string]$script:Settings.MailTo) '72,31' '384,25'
-    $w.MailPanel.Controls.AddRange(@($w.RbClassic, $w.RbShare, $w.RbProgram, $w.RbMailto, $w.MailTo))
+    $w.MailDefault = New-Ctl Button 'Default...' '0,30' '70,27'
+    $w.RbMailto = New-Ctl RadioButton 'mailto:' '76,32' '66,24'
+    $w.MailTo = New-Ctl TextBox ([string]$script:Settings.MailTo) '144,31' '312,25'
+    $w.MailPanel.Controls.AddRange(@($w.RbClassic, $w.RbShare, $w.RbProgram, $w.MailDefault, $w.RbMailto, $w.MailTo))
+    (New-Object System.Windows.Forms.ToolTip).SetToolTip($w.MailDefault, 'Change the default mail program for mailto: links (Windows Settings > Default apps)')
+    $w.MailDefault.add_Click({
+        $ok = $false
+        foreach ($t in 'ms-settings:defaultapps?registeredProtocol=mailto', 'ms-settings:defaultapps') { try { Start-Process $t -ErrorAction Stop; $ok = $true; break } catch {} }
+        if (-not $ok) { [void][Windows.Forms.MessageBox]::Show('This Windows has no Default apps settings page (for example Windows PE).', '7z-Encryptor') }
+    })
     $mode = [string]$script:Settings.EmailMode; if ($EmailModes -notcontains $mode) { $mode = 'Classic' }
     switch ($mode) { 'Share' { $w.RbShare.Checked = $true } 'Program' { $w.RbProgram.Checked = $true } 'Mailto' { $w.RbMailto.Checked = $true } default { $w.RbClassic.Checked = $true } }
     if ($mode -eq 'Program' -and $script:Settings.EmailProgram) { $w.RbProgram.Text = 'Program: ' + [IO.Path]::GetFileNameWithoutExtension([string]$script:Settings.EmailProgram) }
