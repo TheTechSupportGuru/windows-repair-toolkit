@@ -404,7 +404,7 @@ What that means in practice:
 ### You found the time sheet
 
 
-How long this project has taken, as of **2.4** (November 26, 2026): the version that was a joke at the bottom of this very section until it wasn't. For 1.1 onwards, the AI hours are measured from the session logs, and the human hours are an honest guess, "which is the polite word for 'vibes'". The original scripts are estimated by the Claude project that wrote them, which had no stopwatch either. The 1.9 sheet is kept in [docs/timesheets/timesheet-1.9.md](docs/timesheets/timesheet-1.9.md), in case anyone wants to audit the vibes.
+How long this project has taken, as of **2.5** (November 26, 2026): the version that was a joke at the bottom of this very section until it wasn't. For 1.1 onwards, the AI hours are measured from the session logs, and the human hours are an honest guess, "which is the polite word for 'vibes'". The original scripts are estimated by the Claude project that wrote them, which had no stopwatch either. The 1.9 sheet is kept in [docs/timesheets/timesheet-1.9.md](docs/timesheets/timesheet-1.9.md), in case anyone wants to audit the vibes.
 
 | | Human | AI |
 |---|---:|---:|
@@ -530,6 +530,8 @@ The note used to sit at the top of this page, where it did not belong. It is mov
 **Gobble gobble.** 2.3 shipped with a Remember settings box that is off until you tick it, and the bug forms finally list 2.3. Nobody has explained the turkey. The VMs were asked for a comment and replied only with a sound.
 
 **Gobble gobble gobble.** 2.4 shipped with a 7z-Encryptor that opens one window for both ways of starting, and the turkey still has not been explained. The VMs were asked for a second comment and gobbled back.
+
+**Gobble gobble gobble gobble.** 2.5 shipped with Test Center out of beta, and the turkey has now been seen by a Windows PE drive letter. The VMs were asked once more and gobbled in unison.
 
 </details>
 
