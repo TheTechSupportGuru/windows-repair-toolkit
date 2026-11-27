@@ -16,7 +16,7 @@
 #   Scripted (e.g. your own build):  ... TestCenter.ps1 -ToolsFolder D:\my-build\tools -Run unit-suite,unit-toolkit,sizes -ExitWhenDone
 #   (test ids: the Id values in $Tests below; -Run all = every test that can run here)
 param([string]$ToolsFolder, [string[]]$Run, [switch]$ExitWhenDone)
-$TestCenterVersion = '1.0 beta 4'
+$TestCenterVersion = '1.0'
 $ErrorActionPreference = 'Continue'
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 [Windows.Forms.Application]::EnableVisualStyles()
@@ -94,14 +94,14 @@ $Tests = @(
        Desc = 'The beta in beta\: the Automation code must still match WinSuperTool''s, and the Registry changes tab (key times, scan, defaults list, a real revert on a throw-away HKCU key). Changes nothing else.' }
     # ---- Backup Script Builder
     @{ Tab = 'Backup Script Builder'; Id = 'backup-unit'; Name = 'Unit tests: Backup Script Builder edge cases'; Kind = 'pester'; Script = 'BackupScriptBuilder.Tests.ps1'; Min = 1; Default = $true
-       Desc = 'Pair names, drive keys, log file stamps, XML escaping, ticked-folder clean-up and reading tasks back. Changes nothing.' }
+       Desc = 'Pair names, drive keys, log file stamps, XML escaping, ticked-folder clean-up, reading tasks back, saved manual backup scripts (a Windows zip never asks tar for Ultra) and finding 7-Zip in Windows PE (X: and Y:). Changes nothing outside a temporary folder.' }
     @{ Tab = 'Backup Script Builder'; Id = 'backup-builder'; Name = 'Backup Script Builder: scripts, folder picker, schedules, layout'; Kind = 'ps'; Script = 'Run-BackupScriptBuilder.ps1'; Min = 3; Default = $true
-       Desc = 'Builds a FreeFileSync script and compares it line by line with a reference, checks the destination rules, runs real Robocopy / Xcopy scripts, checks the folder picker (every user folder listed, no junctions, system folders only on request, no duplicates, the real dialog), creates / reads back / deletes a scheduled task of every type (in \BackupScriptBuilder\, as you), and checks the layout and every ? help text.' }
+       Desc = 'Builds a FreeFileSync script and compares it line by line with a reference, checks the destination rules, runs real Robocopy / Xcopy scripts, checks the folder picker (every user folder listed, no junctions, system folders only on request, no duplicates, the real dialog), creates / reads back / deletes a scheduled task of every type (in \BackupScriptBuilder\, as you), checks the Manual Backup tab (Ultra greyed out for a Windows zip, Remember settings keeping folder / zip / 7z, dragging files and folders from Explorer onto the list, Save to, Destination and Log folder), and checks the layout and every ? help text.' }
     # ---- 7z-Encryptor
     @{ Tab = '7z-Encryptor'; Id = '7z-unit'; Name = 'Unit tests: 7z-Encryptor edge cases'; Kind = 'pester'; Script = '7zEncryptor.Tests.ps1'; Min = 1; Default = $true
-       Desc = '7-Zip arguments and quoting, file names and where the file is saved, the checks before encrypting (passwords that differ only in case, saving inside a folder being encrypted), dropped items, mailto: links, mail program switches and odd settings files. Needs no 7-Zip. Changes nothing.' }
+       Desc = '7-Zip arguments and quoting, file names and where the file is saved, the checks before encrypting (passwords that differ only in case, saving inside a folder being encrypted), dropped items, mailto: links, mail program switches, odd settings files and finding 7-Zip in Windows PE (X: and Y:). Needs no 7-Zip. Changes nothing.' }
     @{ Tab = '7z-Encryptor'; Id = '7z-encryptor'; Name = '7z-Encryptor: encryption, window, drag-and-drop launcher'; Kind = 'ps'; Script = 'Run-7zEncryptor.ps1'; Min = 2; Default = $true
-       Desc = 'Encrypts test files in every mode with 7-Zip and unpacks them again (also odd names and passwords), checks the window started empty and by a drop, Send by email (incl. mailto:), Remember settings, and drops files on the launcher, also names with & ^ % ! that cmd would cut up. Needs 7-Zip. Works only in a temporary folder.' }
+       Desc = 'Encrypts test files in every mode with 7-Zip and unpacks them again (also odd names and passwords), checks the window started empty and by a drop, Send by email (incl. mailto:), Remember settings (also 7z or zip), dragging files from Explorer onto the list, and drops files on the launcher, also names with & ^ % ! that cmd would cut up. Needs 7-Zip. Works only in a temporary folder.' }
     # ---- Log tools
     @{ Tab = 'Log tools'; Id = 'logs'; Name = 'Log collection + AI log readers'; Kind = 'ps'; Script = 'Run-LogGen.ps1'; Min = 15; Admin = $true
        Results = '%TEMP%\suite-logs'

@@ -1,4 +1,4 @@
-# Version 1.7 (2026-11-26)
+# Version 1.8 (2026-11-26)
 # Backup Script Builder - builds a FreeFileSync batch file (BackupScript.ffs_batch), or a Robocopy / Xcopy script (.ps1 or .bat),
 # and (1.3) makes a manual backup now: to a folder, a zip (Windows or 7-Zip) or a 7z / self-extracting .exe
 # Windows Repair Toolkit - Copyright (C) 2026 TheTechSupportGuru - SPDX-License-Identifier: GPL-3.0-or-later
@@ -679,14 +679,36 @@ function Show-FolderPicker([bool]$Files = $false) {
 # ---------- 1.3: Manual backup (run now: to a folder, a zip or a 7z, optionally a self-extracting .exe) ----------
 # These functions also run inside a background runspace (Start-ManualBackup), so they use nothing from the window.
 $ManualFns = @('Get-PairName', 'ConvertTo-ProcessArg', 'New-7ZipArgs', 'Wait-BackupProcess', 'Invoke-ManualCopy', 'Invoke-BuiltinZip', 'Invoke-ManualBackup')
-# 7z.exe from the usual install folders or the path 7-Zip's setup writes to the registry; $null when not installed
-function Find-7Zip {
+# 7z.exe from the usual install folders, the path 7-Zip's setup writes to the registry or the PATH; in Windows PE
+# (Hiren's BootCD PE 10 / 11 and others, 1.8) also X:\ and Y:\, up to 3 folders deep; $null when not found
+function Test-WinPe { return (Test-Path 'HKLM:\SYSTEM\CurrentControlSet\Control\MiniNT') -or ($env:SystemDrive -eq 'X:') }
+# The first 7z.exe in $root or up to $depth folders below it, shallowest first. Skips Windows, boot and system folders,
+# and stops after $max folders so a big drive cannot hang the tool.
+function Find-7ZipUnder([string]$root, [int]$depth = 3, [int]$max = 4000) {
+    if (-not $root -or -not [IO.Directory]::Exists($root)) { return $null }
+    $skip = '^(Windows|Boot|EFI|Recovery|sources|System Volume Information|\$.*)$'
+    $level = @($root); $seen = 0
+    for ($d = 0; $d -le $depth -and $level.Count; $d++) {
+        $next = New-Object System.Collections.Generic.List[string]
+        foreach ($dir in $level) {
+            $f = Join-Path $dir '7z.exe'; if ([IO.File]::Exists($f)) { return $f }
+            if ($d -eq $depth) { continue }
+            try { $subs = [IO.Directory]::GetDirectories($dir) } catch { continue }
+            foreach ($s in $subs) { if ([IO.Path]::GetFileName($s) -notmatch $skip -and ++$seen -le $max) { $next.Add($s) } }
+        }
+        $level = $next.ToArray()
+    }
+    return $null
+}
+function Find-7Zip([string[]]$peRoots = @('X:\', 'Y:\'), [bool]$isPe = (Test-WinPe)) {
     $c = @("$env:ProgramFiles\7-Zip\7z.exe", "${env:ProgramFiles(x86)}\7-Zip\7z.exe", "$env:ProgramW6432\7-Zip\7z.exe")
     foreach ($k in 'HKLM:\SOFTWARE\7-Zip', 'HKCU:\SOFTWARE\7-Zip', 'HKLM:\SOFTWARE\WOW6432Node\7-Zip') {
         $i = Get-ItemProperty $k -ErrorAction SilentlyContinue
         foreach ($v in @($i.Path64, $i.Path)) { if ($v) { $c += (Join-Path $v '7z.exe') } }
     }
+    $c += @(Get-Command 7z.exe -CommandType Application -ErrorAction SilentlyContinue | ForEach-Object { $_.Source })
     foreach ($p in $c) { if ($p -and [IO.File]::Exists($p)) { return $p } }
+    if ($isPe) { foreach ($r in $peRoots) { $f = Find-7ZipUnder $r; if ($f) { return $f } } }
     return $null
 }
 # One command-line argument, quoted the way Windows programs (and 7-Zip) split them
@@ -744,8 +766,8 @@ function Invoke-ManualCopy([string[]]$sources, [string]$dest, $state) {
     if ($failed.Count) { return @{ Ok = $false; Message = "Some files could not be copied (robocopy exit code $worst)."; Failed = $failed } }
     return @{ Ok = $true; Message = 'Copied.'; Failed = @() }
 }
-# Zip with what Windows has (.NET ZipArchive). Store = no compression; Normal and Ultra = Optimal (the strongest
-# Windows offers - 7-Zip's Ultra compresses further). Folders keep their name at the top of the zip; empty folders are
+# Zip with what Windows has (.NET ZipArchive). Store = no compression; Normal = Optimal (the strongest Windows
+# offers; Ultra is 7-Zip only and greyed out for Windows zip, 1.8 - an Ultra that gets here is made as Normal). Folders keep their name at the top of the zip; empty folders are
 # kept; junctions are skipped; a file that cannot be read (locked) is listed in Failed and the rest goes on.
 function Invoke-BuiltinZip([string]$out, [string[]]$sources, [string]$level, $state) {
     Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
@@ -846,7 +868,8 @@ function New-ManualScript($o, [string]$format) {
             [void]$cmds.Add(@{ Exe = $exe; FailAt = 2; Args = @($a | ForEach-Object { if ($_ -eq '-p@@ASK@@') { '-p' } else { $_ } }) })
         } else {
             $a = @('-a', '-c', '-f', $target)
-            if ($o.Level -eq 'Store') { $a += '--options', 'zip:compression=store' } elseif ($o.Level -eq 'Ultra') { $a += '--options', 'zip:compression-level=9' }
+            # Store or Normal only (1.8): Ultra is 7-Zip only, so Run now and the script make the same zip on Windows 10, 11 and PE
+            if ($o.Level -eq 'Store') { $a += '--options', 'zip:compression=store' }
             foreach ($s in $o.Sources) {
                 $t = $s.TrimEnd('\')
                 if ([IO.File]::Exists($s)) { $par = [IO.Path]::GetDirectoryName($t); $a += '-C', [IO.Path]::GetDirectoryName($par), ((Split-Path $par -Leaf) + '/' + [IO.Path]::GetFileName($t)) }
@@ -957,8 +980,20 @@ $lblDst.Text = '2. Destination folder'
 $lblDst.Location = '15,245'; $lblDst.AutoSize = $true
 $lblDst.Font = $lblSrc.Font
 
+# 1.8: a folder box takes a folder dragged from Explorer; a dropped file puts in the folder it is in
+function Get-DroppedFolder([string[]]$paths) {
+    $p = @($paths | Where-Object { $_ })[0]; if (-not $p) { return $null }
+    if ([IO.Directory]::Exists($p)) { return $p }
+    if ([IO.File]::Exists($p)) { return [IO.Path]::GetDirectoryName($p) }
+    return $null
+}
+function Enable-FolderDrop($box) {
+    $box.AllowDrop = $true
+    $box.add_DragEnter({ param($s, $e) if ($s.Enabled -and $e.Data.GetDataPresent([Windows.Forms.DataFormats]::FileDrop)) { $e.Effect = 'Copy' } else { $e.Effect = 'None' } })
+    $box.add_DragDrop({ param($s, $e) $d = Get-DroppedFolder @($e.Data.GetData([Windows.Forms.DataFormats]::FileDrop)); if ($d) { $s.Text = $d } })
+}
 $txtDest = New-Object System.Windows.Forms.TextBox
-$txtDest.Location = '15,268'; $txtDest.Size = '400,25'
+$txtDest.Location = '15,268'; $txtDest.Size = '400,25'; Enable-FolderDrop $txtDest
 
 $btnBrowse = New-Object System.Windows.Forms.Button
 $btnBrowse.Text = 'Browse...'; $btnBrowse.Location = '425,266'; $btnBrowse.Size = '110,28'
@@ -1066,7 +1101,7 @@ function New-CopyPanel([string]$tool, $switchList) {
     $l = & $mk 'Label' 'Log' '5,40' $null; $l.Font = $lblSrc.Font
     $u.ChkLog = & $mk 'CheckBox' 'Create a log of every run' '130,38' $null; $u.ChkLog.Checked = $true
     [void](& $mk 'Label' 'Log folder' '5,70' $null)
-    $u.TxtLog = & $mk 'TextBox' '' '130,67' '300,25'
+    $u.TxtLog = & $mk 'TextBox' '' '130,67' '300,25'; Enable-FolderDrop $u.TxtLog
     $u.BtnLog = & $mk 'Button' 'Browse...' '440,65' '100,28'
     $u.LblLogHint = & $mk 'Label' 'Empty = the Logs folder next to the backup' '130,93' '400,18'; $u.LblLogHint.ForeColor = [System.Drawing.Color]::DimGray
     $g2 = New-Object System.Windows.Forms.Panel; $g2.Location = '130,113'; $g2.Size = '420,26'; $p.Controls.Add($g2)
@@ -1096,7 +1131,7 @@ function New-CopyPanel([string]$tool, $switchList) {
     $u.BtnLog.Add_Click({ $fb = New-Object System.Windows.Forms.FolderBrowserDialog; $fb.Description = 'Where the log files go'; $fb.ShowNewFolderButton = $true; if ($fb.ShowDialog() -eq 'OK') { $this.Tag.TxtLog.Text = $fb.SelectedPath }; $fb.Dispose() })
     $hy = if ($tool -eq 'Robocopy') { 171 } else { -1 }
     Add-Help $p 435 4 'Script type' ("PowerShell (.ps1) or a classic batch file (.bat) - both do the same copy. The task on the Schedule Task tab runs a .ps1 with PowerShell and a .bat with cmd.`r`n`r`nThe script is saved next to the backup as BackupScript-$tool.ps1 or .bat.")
-    Add-Help $p 440 36 'Log' ("Writes what $tool did on every run to a .log file. 'Log folder' empty = the Logs folder inside the backup folder.`r`n`r`n" +
+    Add-Help $p 440 36 'Log' ("Writes what $tool did on every run to a .log file. 'Log folder' empty = the Logs folder inside the backup folder. Drag a folder from Explorer onto the box to fill it in.`r`n`r`n" +
         "Append to one log file: every run adds to Backup-$tool.log.`r`nNew log file every run: a new file each time; tick date and / or time to put them in its name (Backup-$tool-2026-11-25_230000.log). With neither ticked, the one log file is replaced every run.")
     if ($hy -gt 0) { Add-Help $p 520 $hy 'Threads' ("One drive at a time: every folder is copied one after the other.`r`n`r`nOne thread per source drive: folders on different drives (or network shares) copy at the same time, one copy per drive, each with its own log (Backup-Robocopy-...-C.log). Faster when the sources are on separate disks; no gain for folders on the same disk.`r`n`r`n" +
         "Threads per copy (/MT): robocopy copies this many files at once inside each copy (1-128, 8 is robocopy's default). 0 = off. Not useful on a single slow USB disk.") }
@@ -1160,7 +1195,7 @@ Add-Help $tabBuild 140 57 'Source folders' ("The folders you want backed up. Cli
     "'Add Network Path' adds a folder (or, for Robocopy and Xcopy, a file) on another PC or NAS: type it as \\server\share\folder. Folders on a mapped drive (Z:) are saved as their \\server\share path, because a scheduled task often cannot see mapped drives. The task runs as you, so you need access to the share.`r`n`r`n" +
     "Each folder becomes one folder pair in the FreeFileSync script: the folder (left side) is mirrored to Current\<folder name> (right side).`r`n`r`n" +
     "Two folders with the same name (for example two users' Documents) get -2, -3 ... so they do not overwrite each other. 'Remove' takes the selected folders off the list.")
-Add-Help $tabBuild 165 242 'Destination folder' ("Where the backup lives. With 'Remember settings' (bottom left) ticked, it is remembered when you close the tool (in BackupScriptBuilder.settings.json next to the script). Usually a folder on an external or second drive, for example H:\, or a network share typed as \\server\share\Backups (a mapped drive is saved as its \\server\share path).`r`n`r`n" +
+Add-Help $tabBuild 165 242 'Destination folder' ("Where the backup lives. With 'Remember settings' (bottom left) ticked, it is remembered when you close the tool (in BackupScriptBuilder.settings.json next to the script). Drag a folder from Explorer onto the box to fill it in. Usually a folder on an external or second drive, for example H:\, or a network share typed as \\server\share\Backups (a mapped drive is saved as its \\server\share path).`r`n`r`n" +
     "The tool creates AutomaticFileBackups inside it (or uses the folder itself when it is already called AutomaticFileBackups) with:`r`n" +
     "  Current - the latest copy of every source folder`r`n  Archive-Deleted - files that were deleted or changed, in time-stamped folders`r`n  Logs - FreeFileSync's log of every run`r`n" +
     "and saves BackupScript.ffs_batch there.`r`n`r`nFor a Robocopy or Xcopy script it creates Current (a copy of every source folder) and Logs, and saves BackupScript-Robocopy / BackupScript-Xcopy (.ps1 or .bat) there; nothing is archived.`r`n`r`nThe destination cannot be inside one of the source folders.")
@@ -1497,13 +1532,27 @@ $mLblSrc = & $mlbl '1. What to back up (folders and files)' '15,10'
 $mLst = New-Object System.Windows.Forms.ListBox; $mLst.Location = '15,33'; $mLst.Size = '400,130'; $mLst.SelectionMode = 'MultiExtended'; $mLst.HorizontalScrollbar = $true
 $mAdd = New-Object System.Windows.Forms.Button; $mAdd.Text = 'Add Files/Folders'; $mAdd.Location = '425,33'; $mAdd.Size = '130,30'
 $mAdd.add_Click({ foreach ($p in (Show-FolderPicker $true)) { $p = ConvertTo-UncPath $p (Get-NetworkDriveMap); if (-not @($mLst.Items | Where-Object { $_ -ieq $p }).Count) { [void]$mLst.Items.Add($p) } } })
+# 1.8: files and folders dragged from Explorer onto the list are added like 'Add Files/Folders' does (mapped drives
+# as \\server\share, never twice); anything that is not there is skipped. Returns how many were added.
+function Add-ManualDropped([string[]]$paths) {
+    $map = Get-NetworkDriveMap; $n = 0
+    foreach ($p in @($paths)) {
+        if (-not $p -or -not (Test-Path -LiteralPath $p)) { continue }
+        $p = ConvertTo-UncPath $p $map
+        if (-not @($mLst.Items | Where-Object { $_ -ieq $p }).Count) { [void]$mLst.Items.Add($p); $n++ }
+    }
+    return $n
+}
+$mLst.AllowDrop = $true
+$mLst.add_DragEnter({ param($s, $e) if ($e.Data.GetDataPresent([Windows.Forms.DataFormats]::FileDrop)) { $e.Effect = 'Copy' } else { $e.Effect = 'None' } })
+$mLst.add_DragDrop({ param($s, $e) [void](Add-ManualDropped @($e.Data.GetData([Windows.Forms.DataFormats]::FileDrop))) })
 $mNet = New-Object System.Windows.Forms.Button; $mNet.Text = 'Add Network Path'; $mNet.Location = '425,70'; $mNet.Size = '130,30'
 $mNet.add_Click({ Add-NetworkPath $mLst $true })
 $mRemove = New-Object System.Windows.Forms.Button; $mRemove.Text = 'Remove'; $mRemove.Location = '425,107'; $mRemove.Size = '130,30'
 $mRemove.add_Click({ foreach ($s in @($mLst.SelectedItems)) { $mLst.Items.Remove($s) } })
 
 $mLblDst = & $mlbl '2. Save to' '15,175'
-$mDest = New-Object System.Windows.Forms.TextBox; $mDest.Location = '15,198'; $mDest.Size = '400,25'
+$mDest = New-Object System.Windows.Forms.TextBox; $mDest.Location = '15,198'; $mDest.Size = '400,25'; Enable-FolderDrop $mDest
 $mBrowse = New-Object System.Windows.Forms.Button; $mBrowse.Text = 'Browse...'; $mBrowse.Location = '425,196'; $mBrowse.Size = '130,28'
 $mBrowse.add_Click({
     $fb = New-Object System.Windows.Forms.FolderBrowserDialog; $fb.Description = 'Where the backup goes (a new Backup-<date> folder or archive is created in it)'; $fb.ShowNewFolderButton = $true
@@ -1527,6 +1576,21 @@ $mGrpEngine.Controls.AddRange(@($mLblEngine, $mRbWin, $mRb7Engine))
 $mLblLevel = New-Object System.Windows.Forms.Label; $mLblLevel.Text = 'Compression:'; $mLblLevel.Location = '15,357'; $mLblLevel.AutoSize = $true
 $mLevel = New-Object System.Windows.Forms.ComboBox; $mLevel.DropDownStyle = 'DropDownList'; $mLevel.Location = '120,354'; $mLevel.Size = '150,25'
 [void]$mLevel.Items.AddRange(@('Store', 'Normal', 'Ultra')); $mLevel.SelectedItem = 'Normal'
+# Ultra is 7-Zip only (1.8): with Windows' own zip it is greyed out in the list and cannot be picked
+$script:UltraOff = $true
+$mLevel.DrawMode = 'OwnerDrawFixed'
+$mLevel.add_DrawItem({
+    param($s, $e)
+    if ($e.Index -lt 0) { return }
+    $t = [string]$s.Items[$e.Index]; $off = $t -eq 'Ultra' -and $script:UltraOff
+    if ($off) { $t = 'Ultra (7-Zip only)' }
+    $e.DrawBackground()
+    $sel = ($e.State -band [Windows.Forms.DrawItemState]::Selected) -ne 0
+    $col = if ($off -or -not $s.Enabled) { [Drawing.SystemColors]::GrayText } elseif ($sel) { [Drawing.SystemColors]::HighlightText } else { [Drawing.SystemColors]::WindowText }
+    [Windows.Forms.TextRenderer]::DrawText($e.Graphics, $t, $s.Font, $e.Bounds, $col, [Windows.Forms.TextFormatFlags]'Left, VerticalCenter, SingleLine')
+    $e.DrawFocusRectangle()
+})
+$mLevel.add_SelectedIndexChanged({ if ($script:UltraOff -and [string]$mLevel.SelectedItem -eq 'Ultra') { $mLevel.SelectedItem = 'Normal' } })
 
 $mLblPw = New-Object System.Windows.Forms.Label; $mLblPw.Text = 'Password (7-Zip):'; $mLblPw.Location = '15,394'; $mLblPw.AutoSize = $true
 $mPw = New-Object System.Windows.Forms.TextBox; $mPw.Location = '140,391'; $mPw.Size = '200,25'; $mPw.UseSystemPasswordChar = $true
@@ -1566,6 +1630,7 @@ function Update-ManualUi {
     if ($mRb7Engine.Checked -and -not $has7) { $mRbWin.Checked = $true }
     $mLevel.Enabled = $isZip -or $is7z
     $uses7 = $is7z -or ($isZip -and $mRb7Engine.Checked)
+    $script:UltraOff = -not $uses7; if ($script:UltraOff -and [string]$mLevel.SelectedItem -eq 'Ultra') { $mLevel.SelectedItem = 'Normal' }; $mLevel.Invalidate()
     foreach ($c in $mLblPw, $mPw, $mLblPw2, $mPw2, $mShowPw) { $c.Enabled = $uses7 }
     $mEncNames.Enabled = $is7z
     $mLblSfx.Enabled = $is7z; $mSfx.Enabled = $is7z; if (-not $is7z) { $mSfx.SelectedIndex = 0 }
@@ -1578,7 +1643,7 @@ function Get-ManualOptions {
     $mode = if ($mRbZip.Checked) { 'Zip' } elseif ($mRb7z.Checked) { '7z' } else { 'Folder' }
     $uses7 = $mode -eq '7z' -or ($mode -eq 'Zip' -and $mRb7Engine.Checked)
     return @{
-        Mode = $mode; Engine = $(if ($mRb7Engine.Checked) { '7zip' } else { 'Windows' }); Level = [string]$mLevel.SelectedItem
+        Mode = $mode; Engine = $(if ($mRb7Engine.Checked) { '7zip' } else { 'Windows' }); Level = $(if (-not $uses7 -and [string]$mLevel.SelectedItem -eq 'Ultra') { 'Normal' } else { [string]$mLevel.SelectedItem })
         Password = $(if ($uses7) { $mPw.Text } else { '' }); EncryptNames = $mEncNames.Checked
         Sfx = @('', 'Windowed', 'Console')[[Math]::Max(0, $mSfx.SelectedIndex)]
         Sources = @($mLst.Items | ForEach-Object { [string]$_ }); Dest = (ConvertTo-UncPath $mDest.Text.Trim().Trim('"').TrimEnd('\') $script:NetMap); SevenZip = $script:SevenZip
@@ -1688,16 +1753,17 @@ $mRecheck7.add_Click({ $script:SevenZip = Find-7Zip; Update-ManualUi })
 $tabManual.Controls.AddRange(@($mLblSrc, $mLst, $mAdd, $mNet, $mRemove, $mLblDst, $mDest, $mBrowse, $mLblType, $mRbFolder, $mRbZip, $mRb7z, $mGrpEngine,
         $mLblLevel, $mLevel, $mLblPw, $mPw, $mLblPw2, $mPw2, $mShowPw, $mEncNames, $mLblSfx, $mSfx, $m7Status, $mStart, $mCancel, $mProgress, $mStatus, $mSave, $mLbl7Get, $mWingetBox, $mInstall7, $mUpdate7, $mRecheck7))
 Update-ManualUi
-Add-Help $tabManual 330 8 'What to back up' ("Folders and single files to back up right now. 'Add Files/Folders' opens the same tree as on the Build Script tab (files are listed too). 'Add Network Path' takes \\server\share\folder or a file on another PC or NAS.`r`n`r`nEach folder keeps its name in the backup; files picked from one folder go into a folder with that folder's name. Empty folders are kept.")
-Add-Help $tabManual 105 173 'Save to' ("Where the backup goes: an external drive, a second drive or a network share (\\server\share\Backups). With 'Remember settings' (bottom left) ticked, it is remembered when you close the tool (in BackupScriptBuilder.settings.json next to the script, so it travels with the folder). A new Backup-<date and time> folder, .zip, .7z or .exe is created there each time, so older backups are never overwritten.")
+Add-Help $tabManual 330 8 'What to back up' ("Folders and single files to back up right now. 'Add Files/Folders' opens the same tree as on the Build Script tab (files are listed too). 'Add Network Path' takes \\server\share\folder or a file on another PC or NAS. You can also drag files and folders from Explorer onto the list.`r`n`r`nEach folder keeps its name in the backup; files picked from one folder go into a folder with that folder's name. Empty folders are kept.")
+Add-Help $tabManual 105 173 'Save to' ("Where the backup goes: an external drive, a second drive or a network share (\\server\share\Backups). With 'Remember settings' (bottom left) ticked, it is remembered when you close the tool (in BackupScriptBuilder.settings.json next to the script, so it travels with the folder). A new Backup-<date and time> folder, .zip, .7z or .exe is created there each time, so older backups are never overwritten. Drag a folder from Explorer onto the box to fill it in (a file puts in its folder).")
 Add-Help $tabManual 135 238 'Back up to' ("A folder: a plain copy (robocopy) you can open and use straight away.`r`n`r`nA zip file: opens on any Windows PC without extra software. 'Windows (built in)' needs nothing installed; '7-Zip' compresses better and can add a password (AES-256).`r`n`r`n" +
     "A 7z file: 7-Zip's own format, the smallest, can hide the file names too, and can be made into a self-extracting .exe. Needs 7-Zip (free, https://www.7-zip.org/).`r`n`r`n" +
-    "Compression: Store = no compression (fastest, for photos and videos that do not shrink), Normal = the usual setting, Ultra = the smallest file (slowest). Windows' own zip has no stronger setting than Normal, so Ultra is the same as Normal there - use 7-Zip for a real Ultra.")
+    "Compression: Store = no compression (fastest, for photos and videos that do not shrink), Normal = the usual setting, Ultra = the smallest file (slowest). Ultra needs 7-Zip: with 'Windows (built in)' it is greyed out, so the zip is made the same way on Windows 10, 11 and PE.`r`n`r`n" +
+    "With 'Remember settings' (bottom left) ticked, the type (folder, zip or 7z) and who makes the zip are remembered when you close the tool. On a PC without 7-Zip a Windows zip is used, and the 7-Zip choice stays remembered.")
 Add-Help $tabManual 430 489 'Self-extracting .exe' ("Makes the 7z backup into a program: double-click it on any Windows PC to unpack it, no 7-Zip needed there. 'Windowed' asks where to unpack; 'console' unpacks into the folder it is in.`r`n`r`n" +
     "Password: with a password the backup cannot be opened without it - there is no way to recover a lost password. 'Also hide the file names' (7z) means even the list of files needs the password. The password is given to 7-Zip on its command line while the backup runs.")
 Add-Help $tabManual 285 711 'Save as Script' ("Saves the backup set up above as a .bat or .ps1 file instead of running it now, to run again later or schedule on the Schedule Task tab. Every run makes a new Backup-<date>_<time>.`r`n`r`n" +
     "A zip made by Windows uses tar.exe (in Windows 10 and 11). The password is never saved in the script: 7-Zip asks for it each time the script runs, so a script with a password is for running by hand, not as a scheduled task.")
-Add-Help $tabManual 140 750 'Get 7-Zip' ("7-Zip is free and open source. The tool looks for it when it starts and shows its version.`r`n`r`n'Install 7-Zip' runs  winget install -e --id 7zip.7zip`r`n'Update 7-Zip' runs  winget upgrade -e --id 7zip.7zip`r`nin a console window (you may be asked to allow it). When winget finishes the tool finds 7-Zip again by itself; 'Check again' looks again after installing or updating it another way.")
+Add-Help $tabManual 140 750 'Get 7-Zip' ("7-Zip is free and open source. The tool looks for it when it starts and shows its version.`r`n`r`nWhere it looks: the Program Files folders, the place 7-Zip's setup records and the PATH. In Windows PE (Hiren's BootCD PE 10 / 11 and others) also the X: and Y: drives, up to 3 folders deep.`r`n`r`n'Install 7-Zip' runs  winget install -e --id 7zip.7zip`r`n'Update 7-Zip' runs  winget upgrade -e --id 7zip.7zip`r`nin a console window (you may be asked to allow it). When winget finishes the tool finds 7-Zip again by itself; 'Check again' looks again after installing or updating it another way.")
 $tabs.TabPages.Add($tabManual)
 
 # ---------- remembered settings (1.6): BackupScriptBuilder.settings.json next to this script ----------
@@ -1715,22 +1781,31 @@ function Read-BsbSettings {
             if ($o -is [PSCustomObject] -and $o.Remember -is [bool] -and $o.Remember) {
                 $s.Remember = $true
                 foreach ($k in 'BuildDest', 'ManualDest') { if ($o.$k -is [string] -and $o.$k) { $s[$k] = $o.$k } }
+                # 1.8: the Manual Backup type and zip engine; an unknown value is dropped
+                if ($o.ManualType -is [string] -and $o.ManualType -in 'Folder', 'Zip', '7z') { $s.ManualType = $o.ManualType }
+                if ($o.ZipEngine -is [string] -and $o.ZipEngine -in 'Windows', '7zip') { $s.ZipEngine = $o.ZipEngine }
             }
         }
     } catch { $s = @{} }
     $s
 }
-# on close: ticked saves the two folders (an empty box keeps the remembered one); unticked deletes the file
+# on close: ticked saves the two folders (an empty box keeps the remembered one) and the Manual Backup type and zip
+# engine (1.8); unticked deletes the file
 function Save-BsbSettings {
     $f = Get-BsbSettingsFile; if (-not $f) { return }
     if (-not $chkRemember.Checked) { try { if ([IO.File]::Exists($f)) { [IO.File]::Delete($f) } } catch {}; return }
     $s = Read-BsbSettings; $s.Remember = $true
     foreach ($k in @(@('BuildDest', $txtDest.Text), @('ManualDest', $mDest.Text))) { $v = ([string]$k[1]).Trim().Trim('"'); if ($v) { $s[$k[0]] = $v } }
+    $type = if ($mRbZip.Checked) { 'Zip' } elseif ($mRb7z.Checked) { '7z' } else { 'Folder' }
+    $eng = if ($mRb7Engine.Checked) { '7zip' } else { 'Windows' }
+    # without 7-Zip the tool fell back to a Windows zip by itself: keep a remembered 7-Zip choice for the next PC
+    if (-not $script:SevenZip) { if ($s.ManualType -eq '7z' -and $type -eq 'Zip') { $type = '7z' }; if ($s.ZipEngine -eq '7zip') { $eng = '7zip' } }
+    $s.ManualType = $type; $s.ZipEngine = $eng
     try { [IO.File]::WriteAllText($f, (New-Object PSObject -Property $s | ConvertTo-Json), (New-Object Text.UTF8Encoding $false)) } catch {}
 }
 $chkRemember = New-Object System.Windows.Forms.CheckBox; $chkRemember.Text = 'Remember settings'; $chkRemember.Dock = 'Left'; $chkRemember.Width = 150
 $chkRemember.Padding = New-Object System.Windows.Forms.Padding(10, 0, 0, 0)
-(New-Object System.Windows.Forms.ToolTip).SetToolTip($chkRemember, 'Off: nothing is saved. On: the Destination folder and Manual Backup Save to folder are kept in BackupScriptBuilder.settings.json next to the script when you close the tool. Untick to delete that file.')
+(New-Object System.Windows.Forms.ToolTip).SetToolTip($chkRemember, 'Off: nothing is saved. On: the Destination folder, the Manual Backup Save to folder and its type (folder, zip or 7z, and the zip engine) are kept in BackupScriptBuilder.settings.json next to the script when you close the tool. Untick to delete that file.')
 $lnkFfs.Dock = 'Fill'; $pnlBottom = New-Object System.Windows.Forms.Panel; $pnlBottom.Dock = 'Bottom'; $pnlBottom.Height = 26
 $form.Controls.Remove($lnkFfs); $pnlBottom.Controls.AddRange(@($lnkFfs, $chkRemember)); $form.Controls.Add($pnlBottom); $tabs.BringToFront()
 try {
@@ -1738,6 +1813,10 @@ try {
     $chkRemember.Checked = [bool]$bsbSettings.Remember
     if ($bsbSettings.BuildDest -and -not $txtDest.Text) { $txtDest.Text = [string]$bsbSettings.BuildDest }
     if ($bsbSettings.ManualDest -and -not $mDest.Text) { $mDest.Text = [string]$bsbSettings.ManualDest }
+    # 1.8: zip or 7z (and the zip engine); anything 7-Zip falls back to a Windows zip when 7-Zip is not found
+    switch ([string]$bsbSettings.ManualType) { 'Zip' { $mRbZip.Checked = $true } '7z' { $mRb7z.Checked = $true } 'Folder' { $mRbFolder.Checked = $true } }
+    if ($bsbSettings.ZipEngine -eq '7zip') { $mRb7Engine.Checked = $true } elseif ($bsbSettings.ZipEngine -eq 'Windows') { $mRbWin.Checked = $true }
+    Update-ManualUi
 } catch { $chkRemember.Checked = $false }
 $form.add_FormClosing({ Save-BsbSettings })
 

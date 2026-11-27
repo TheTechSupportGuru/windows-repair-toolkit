@@ -4,7 +4,7 @@
 #   Invoke-Pester .\tests\BackupScriptBuilder.Tests.ps1
 $bsbFile = Join-Path (Split-Path $PSScriptRoot -Parent) 'tools\BackupScriptBuilder.ps1'
 $bsbAst = [Management.Automation.Language.Parser]::ParseFile($bsbFile, [ref]$null, [ref]$null)
-foreach ($fn in $bsbAst.FindAll({ $args[0] -is [Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -in 'ConvertTo-XmlText', 'Get-PairName', 'Get-DriveKey', 'Get-LogStampFormat', 'Get-UniqueFolders', 'Get-ScriptFromAction', 'Get-ScriptType', 'New-CopyScript', 'Get-PickerFiles', 'Get-SubFolders', 'Test-SkipFolder', 'Test-SystemFolder', 'ConvertTo-UncPath', 'ConvertTo-ProcessArg', 'New-7ZipArgs', 'Invoke-BuiltinZip', 'Invoke-ManualBackup', 'Invoke-ManualCopy', 'Wait-BackupProcess', 'New-ManualScript', 'Find-7Zip' }, $true)) { . ([scriptblock]::Create($fn.Extent.Text)) }
+foreach ($fn in $bsbAst.FindAll({ $args[0] -is [Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -in 'ConvertTo-XmlText', 'Get-PairName', 'Get-DriveKey', 'Get-LogStampFormat', 'Get-UniqueFolders', 'Get-ScriptFromAction', 'Get-ScriptType', 'New-CopyScript', 'Get-PickerFiles', 'Get-SubFolders', 'Test-SkipFolder', 'Test-SystemFolder', 'ConvertTo-UncPath', 'ConvertTo-ProcessArg', 'New-7ZipArgs', 'Invoke-BuiltinZip', 'Invoke-ManualBackup', 'Invoke-ManualCopy', 'Wait-BackupProcess', 'New-ManualScript', 'Find-7Zip', 'Find-7ZipUnder', 'Test-WinPe' }, $true)) { . ([scriptblock]::Create($fn.Extent.Text)) }
 function Join-Out($r) { @($r) -join '|' }
 
 Describe 'Pair names, drive keys, log stamps, XML' {
@@ -156,7 +156,7 @@ Describe 'Manual backup: saved scripts really run (1.3), only into $TestDrive' {
     $z7 = Find-7Zip
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $cases = @(
-        @{ N = 'folder'; Mode = 'Folder' }, @{ N = 'winzip-store'; Mode = 'Zip'; Engine = 'Windows'; Level = 'Store' }, @{ N = 'winzip-ultra'; Mode = 'Zip'; Engine = 'Windows'; Level = 'Ultra' },
+        @{ N = 'folder'; Mode = 'Folder' }, @{ N = 'winzip-store'; Mode = 'Zip'; Engine = 'Windows'; Level = 'Store' }, @{ N = 'winzip-normal'; Mode = 'Zip'; Engine = 'Windows'; Level = 'Normal' },
         @{ N = 'zip7'; Mode = 'Zip'; Engine = '7zip'; Level = 'Normal'; Need7 = $true }, @{ N = '7z'; Mode = '7z'; Level = 'Ultra'; Need7 = $true }, @{ N = 'sfx'; Mode = '7z'; Level = 'Normal'; Sfx = 'Console'; Need7 = $true })
     foreach ($c in $cases) { foreach ($fmt in 'bat', 'ps1') {
         It "$($c.N) as .$fmt makes a backup with the folder, the empty folder and only the picked file" -Skip:($c.Need7 -and -not $z7) {
@@ -176,9 +176,15 @@ Describe 'Manual backup: saved scripts really run (1.3), only into $TestDrive' {
             (@($names | Where-Object { $_ -match 'x\.txt$' }).Count) | Should Be 0
             if ($c.N -eq 'sfx') { $m | Should Match '\.exe$' }
             if ($c.N -eq 'winzip-store') { (Get-Item $m).Length | Should BeGreaterThan 100000 }
-            if ($c.N -eq 'winzip-ultra') { (Get-Item $m).Length | Should BeLessThan 5000 }
+            if ($c.N -eq 'winzip-normal') { (Get-Item $m).Length | Should BeLessThan 5000 }
         }
     } }
+    It 'Windows zip (1.8): Ultra is 7-Zip only, so the script never asks tar for a level; Store stays store' {
+        foreach ($fmt in 'bat', 'ps1') {
+            New-ManualScript @{ Mode = 'Zip'; Engine = 'Windows'; Level = 'Ultra'; Sources = @('C:\a'); Dest = 'D:\b' } $fmt | Should Not Match 'compression-level'
+            New-ManualScript @{ Mode = 'Zip'; Engine = 'Windows'; Level = 'Store'; Sources = @('C:\a'); Dest = 'D:\b' } $fmt | Should Match 'zip:compression=store'
+        }
+    }
     It 'a password is never written into the script; 7-Zip asks for it (-p)' {
         foreach ($fmt in 'bat', 'ps1') {
             $s = New-ManualScript @{ Mode = '7z'; Level = 'Normal'; Password = 'Secret#42'; Sources = @('C:\a'); Dest = 'D:\b'; SevenZip = 'C:\7-Zip\7z.exe' } $fmt
@@ -190,4 +196,50 @@ Describe 'Manual backup: saved scripts really run (1.3), only into $TestDrive' {
         New-ManualScript $o 'bat' | Should Match 'C:\\100%% done'
         New-ManualScript $o 'ps1' | Should Match "D:\\Bob''s"
     }
+}
+Describe 'Finding 7-Zip in Windows PE: X: and Y:, up to 3 folders deep (Backup Script Builder 1.8)' {
+    function New-Fake7z($path) { New-Item -ItemType Directory (Split-Path $path) -Force | Out-Null; 'x' | Set-Content $path }
+    It 'finds 7z.exe in a Hiren''s-style folder (Programs\7-Zip) and at the drive root' {
+        $r = Join-Path $TestDrive 'pe1'; New-Fake7z "$r\Programs\7-Zip\7z.exe"
+        Find-7ZipUnder $r | Should Be "$r\Programs\7-Zip\7z.exe"
+        $r2 = Join-Path $TestDrive 'pe2'; New-Fake7z "$r2\7z.exe"
+        Find-7ZipUnder $r2 | Should Be "$r2\7z.exe"
+    }
+    It 'takes the shallowest one first' {
+        $r = Join-Path $TestDrive 'pe3'; New-Fake7z "$r\a\b\c\7z.exe"; New-Fake7z "$r\z\7z.exe"
+        Find-7ZipUnder $r | Should Be "$r\z\7z.exe"
+    }
+    It 'goes 3 folders deep, not 4' {
+        $r = Join-Path $TestDrive 'pe4'; New-Fake7z "$r\a\b\c\d\7z.exe"
+        Find-7ZipUnder $r | Should Be $null
+        New-Fake7z "$r\a\b\c\7z.exe"
+        Find-7ZipUnder $r | Should Be "$r\a\b\c\7z.exe"
+    }
+    It 'skips Windows, boot and $ folders' {
+        $r = Join-Path $TestDrive 'pe5'
+        foreach ($d in 'Windows', 'Windows\System32', 'Boot', 'EFI', 'sources', '$Recycle.Bin', 'System Volume Information') { New-Fake7z "$r\$d\7z.exe" }
+        Find-7ZipUnder $r | Should Be $null
+    }
+    It 'a missing drive, an empty root or a file as root gives nothing, without an error' {
+        Find-7ZipUnder (Join-Path $TestDrive 'nothere') | Should Be $null
+        Find-7ZipUnder '' | Should Be $null
+        $f = Join-Path $TestDrive 'afile.txt'; 'x' | Set-Content $f
+        Find-7ZipUnder $f | Should Be $null
+    }
+    It 'stops after the folder limit, so a big drive cannot hang the tool' {
+        $r = Join-Path $TestDrive 'pe6'; foreach ($i in 1..9) { New-Item -ItemType Directory "$r\d$i" -Force | Out-Null }; New-Fake7z "$r\zz\7z.exe"
+        Find-7ZipUnder $r 3 5 | Should Be $null
+        Find-7ZipUnder $r 3 50 | Should Be "$r\zz\7z.exe"
+    }
+    It 'Find-7Zip looks on the PE drives only in Windows PE' {
+        $r = Join-Path $TestDrive 'pe7'; New-Fake7z "$r\Program Files\7-Zip\7z.exe"
+        $keep = @{ P = $env:ProgramFiles; X = ${env:ProgramFiles(x86)}; W = $env:ProgramW6432 }
+        try {
+            $env:ProgramFiles = $env:ProgramW6432 = Join-Path $TestDrive 'nopf'; ${env:ProgramFiles(x86)} = Join-Path $TestDrive 'nopf'
+            Mock Get-ItemProperty { }; Mock Get-Command { }
+            Find-7Zip @("$TestDrive\nothere", $r) $true | Should Be "$r\Program Files\7-Zip\7z.exe"
+            Find-7Zip @($r) $false | Should Be $null
+        } finally { $env:ProgramFiles = $keep.P; ${env:ProgramFiles(x86)} = $keep.X; $env:ProgramW6432 = $keep.W }
+    }
+    It 'Test-WinPe is false on a normal Windows' { if ($env:SystemDrive -ne 'X:') { Test-WinPe | Should Be $false } }
 }

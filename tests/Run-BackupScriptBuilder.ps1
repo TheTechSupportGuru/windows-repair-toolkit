@@ -236,6 +236,9 @@ $tests = {
     $tm.add_Tick({
         $tm.Stop(); $d = $script:PickerForm; $tr = $script:PickerTree
         try {
+            # Test Center starts this script minimized, and Windows then shows the first window of the process (this
+            # dialog) minimized too, 0 wide: measure it at its normal size
+            if ($d.WindowState -eq 'Minimized') { $d.WindowState = 'Normal'; [Windows.Forms.Application]::DoEvents() }
             $cw = $d.ClientSize.Width
             $script:PickerChecks.Buttons = @($d.AcceptButton, $d.CancelButton | Where-Object { $_.Visible -and ($_.Parent.Left + $_.Right) -le $cw -and $_.Left -ge 0 }).Count
             $drv = @($tr.Nodes | Where-Object { $_.Tag -and ([string]$_.Tag) -ieq ($env:SystemDrive + '\') })[0]
@@ -336,13 +339,54 @@ $tests = {
     Check 'manual: folder copy has no compression, engine or self-extracting choice' (-not $mLevel.Enabled -and -not $mGrpEngine.Enabled -and -not $mSfx.Enabled)
     $mRbZip.Checked = $true
     Check 'manual: Windows zip offers Store / Normal / Ultra, no password' ($mLevel.Enabled -and $mGrpEngine.Enabled -and $mRbWin.Checked -and -not $mPw.Enabled -and (($mLevel.Items | ForEach-Object { $_ }) -join ',') -eq 'Store,Normal,Ultra')
+    # 1.8: Ultra is 7-Zip only - greyed out for Windows zip and cannot be picked
+    $mLevel.SelectedItem = 'Ultra'
+    Check 'manual: Windows zip: Ultra is greyed out and cannot be picked (goes back to Normal)' ($script:UltraOff -and [string]$mLevel.SelectedItem -eq 'Normal' -and $mLevel.DrawMode -eq 'OwnerDrawFixed')
+    Check 'manual: Windows zip never asks for Ultra' ((Get-ManualOptions).Level -eq 'Normal')
     $script:SevenZip = 'C:\fake\7z.exe'; Update-ManualUi; $mRb7Engine.Checked = $true
+    $mLevel.SelectedItem = 'Ultra'
+    Check 'manual: zip by 7-Zip can pick Ultra' (-not $script:UltraOff -and [string]$mLevel.SelectedItem -eq 'Ultra' -and (Get-ManualOptions).Level -eq 'Ultra')
+    $mRbWin.Checked = $true
+    Check 'manual: switching back to Windows zip turns Ultra into Normal' ($script:UltraOff -and [string]$mLevel.SelectedItem -eq 'Normal')
+    $mRb7Engine.Checked = $true
     Check 'manual: zip by 7-Zip opens the password, not the self-extractor' ($mPw.Enabled -and $mPw2.Enabled -and -not $mSfx.Enabled -and -not $mEncNames.Enabled)
     $mRb7z.Checked = $true
     Check 'manual: 7z opens password, hidden names and self-extracting' ($mPw.Enabled -and $mEncNames.Enabled -and $mSfx.Enabled -and -not $mGrpEngine.Enabled)
     $mSfx.SelectedIndex = 1; $mRbZip.Checked = $true
     Check 'manual: leaving 7z resets self-extracting to No' ($mSfx.SelectedIndex -eq 0)
     $script:SevenZip = $real7; $mRbWin.Checked = $true; Update-ManualUi
+
+    # ---- 1.8: drag and drop from Explorer (the real DragEnter / DragDrop handlers, with an Explorer-style file list) ----
+    $dd = Join-Path $env:TEMP ('bsb-drop-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+    foreach ($x in "$dd\Folder A", "$dd\R&D [1]") { [void](New-Item -ItemType Directory -Force $x) }; 'x' | Set-Content "$dd\Folder A\f.txt"
+    $bf = [Reflection.BindingFlags]'NonPublic, Instance'
+    $fire = { param($ctl, $data) $e = New-Object Windows.Forms.DragEventArgs(([Windows.Forms.IDataObject]$data.psobject.BaseObject), 0, 0, 0, 'Copy', 'None'); $c0 = $ctl.psobject.BaseObject; $a0 = [object[]]@($e.psobject.BaseObject); [void][Windows.Forms.Control].GetMethod('OnDragEnter', $bf).Invoke($c0, $a0); if ($e.Effect -eq 'Copy') { [void][Windows.Forms.Control].GetMethod('OnDragDrop', $bf).Invoke($c0, $a0) }; [string]$e.Effect }
+    $files = { param([string[]]$p) $o = New-Object Windows.Forms.DataObject; $sc = New-Object Collections.Specialized.StringCollection; $sc.AddRange($p); $o.SetFileDropList($sc); $o }
+    $keepItems = @($mLst.Items); $keepMDest = $mDest.Text; $keepDest = $txtDest.Text; $mLst.Items.Clear()
+    $eff = & $fire $mLst (& $files @("$dd\Folder A", "$dd\Folder A\f.txt", "$dd\gone.txt"))
+    Check 'drop (1.8): files and folders dragged onto What to back up are added, a missing one is skipped' ($eff -eq 'Copy' -and $mLst.Items.Count -eq 2 -and $mLst.Items[0] -eq "$dd\Folder A" -and $mLst.Items[1] -eq "$dd\Folder A\f.txt") (($mLst.Items | ForEach-Object { $_ }) -join ' | ')
+    [void](& $fire $mLst (& $files @("$dd\FOLDER A", "$dd\R&D [1]")))
+    Check 'drop (1.8): an item already in the list is not added twice; R&D [1] arrives whole' ($mLst.Items.Count -eq 3 -and $mLst.Items[2] -eq "$dd\R&D [1]")
+    $eff = & $fire $mLst (New-Object Windows.Forms.DataObject([Windows.Forms.DataFormats]::Text, 'C:\x'))
+    Check 'drop (1.8): dragged text (not files) is refused' ($eff -eq 'None' -and $mLst.Items.Count -eq 3)
+    $mDest.Text = ''; [void](& $fire $mDest (& $files @("$dd\R&D [1]")))
+    Check 'drop (1.8): a folder dropped on Save to fills it in' ($mDest.Text -eq "$dd\R&D [1]")
+    [void](& $fire $mDest (& $files @("$dd\Folder A\f.txt", "$dd\R&D [1]")))
+    Check 'drop (1.8): a file dropped on Save to puts in its folder (the first item counts)' ($mDest.Text -eq "$dd\Folder A")
+    [void](& $fire $txtDest (& $files @("$dd\R&D [1]")))
+    Check 'drop (1.8): a folder dropped on the Build Script Destination folder fills it in' ($txtDest.Text -eq "$dd\R&D [1]")
+    [void](& $fire $txtDest (& $files @("$dd\gone")))
+    Check 'drop (1.8): a folder that is not there changes nothing' ($txtDest.Text -eq "$dd\R&D [1]")
+    $all = New-Object Collections.ArrayList; $walk = { param($c) foreach ($k in $c.Controls) { [void]$all.Add($k); & $walk $k } }; & $walk $form
+    $logBoxes = @($all | Where-Object { $_ -is [Windows.Forms.TextBox] -and $_.Location.X -eq 130 -and $_.Location.Y -eq 67 })
+    $okLog = 0; foreach ($lb in $logBoxes) {
+        $keepEn = $lb.Enabled; $lb.Enabled = $false; $offEff = & $fire $lb (& $files @("$dd\Folder A"))
+        $lb.Enabled = $true; [void](& $fire $lb (& $files @("$dd\Folder A")))
+        if ($offEff -eq 'None' -and $lb.Text -eq "$dd\Folder A") { $okLog++ }; $lb.Text = ''; $lb.Enabled = $keepEn }
+    Check 'drop (1.8): the Robocopy and Xcopy Log folder boxes take a dropped folder, not while they are off' ($logBoxes.Count -eq 2 -and $okLog -eq 2) "$okLog of $($logBoxes.Count)"
+    Check 'drop (1.8): every folder box and the list accept drops' ($mLst.AllowDrop -and $mDest.AllowDrop -and $txtDest.AllowDrop)
+    $mLst.Items.Clear(); foreach ($i in $keepItems) { [void]$mLst.Items.Add($i) }; $mDest.Text = $keepMDest; $txtDest.Text = $keepDest
+    Remove-Item -Recurse -Force $dd -ErrorAction SilentlyContinue
 
     $mw = Join-Path $env:TEMP ('bsb-manual-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
     New-Item -ItemType Directory "$mw\src\Docs\Empty", "$mw\src\Pics" -Force | Out-Null
@@ -410,6 +454,22 @@ Check 'manual: a non-ASCII password is refused for a 7-Zip zip, allowed for 7z' 
     $txtDest.Text = ''; Save-BsbSettings
     Check 'settings: an empty box does not wipe the remembered folder' ((Read-BsbSettings).BuildDest -eq 'H:\Backups [PC1]')
     Check 'remember: the saved file says Remember = true' ((Read-BsbSettings).Remember -eq $true)
+    # ---- 1.8: the Manual Backup type (folder / zip / 7z) and the zip engine are remembered ----
+    $keepType = if ($mRbZip.Checked) { $mRbZip } elseif ($mRb7z.Checked) { $mRb7z } else { $mRbFolder }; $keepEng = if ($mRb7Engine.Checked) { $mRb7Engine } else { $mRbWin }; $real7s = $script:SevenZip
+    $script:SevenZip = 'C:\fake\7z.exe'; Update-ManualUi
+    $mRb7z.Checked = $true; Save-BsbSettings
+    Check 'settings (1.8): closing saves the Manual Backup type: 7z' ((Read-BsbSettings).ManualType -eq '7z')
+    $mRbZip.Checked = $true; $mRb7Engine.Checked = $true; Save-BsbSettings; $rs = Read-BsbSettings
+    Check 'settings (1.8): zip, and who makes it (7-Zip), are saved' ($rs.ManualType -eq 'Zip' -and $rs.ZipEngine -eq '7zip')
+    $script:SevenZip = $null; Update-ManualUi; Save-BsbSettings; $rs = Read-BsbSettings
+    Check 'settings (1.8): on a PC without 7-Zip the fallback to a Windows zip keeps the remembered 7-Zip engine' ($mRbWin.Checked -and $rs.ZipEngine -eq '7zip' -and $rs.ManualType -eq 'Zip')
+    $script:SevenZip = 'C:\fake\7z.exe'; Update-ManualUi; $mRb7z.Checked = $true; Save-BsbSettings
+    $script:SevenZip = $null; Update-ManualUi; Save-BsbSettings
+    Check 'settings (1.8): on a PC without 7-Zip a remembered 7z stays 7z (the tab shows zip)' ($mRbZip.Checked -and (Read-BsbSettings).ManualType -eq '7z')
+    $mRbFolder.Checked = $true; Save-BsbSettings
+    Check 'settings (1.8): a folder copy picked by hand is saved' ((Read-BsbSettings).ManualType -eq 'Folder')
+    Check 'settings (1.8): the remembered type and engine are put back on the tab at start' ($script:BsbToolSource.Contains("switch ([string]`$bsbSettings.ManualType) { 'Zip' { `$mRbZip.Checked = `$true } '7z' { `$mRb7z.Checked = `$true }") -and $script:BsbToolSource.Contains("if (`$bsbSettings.ZipEngine -eq '7zip') { `$mRb7Engine.Checked = `$true }"))
+    $script:SevenZip = $real7s; Update-ManualUi; $keepEng.Checked = $true; $keepType.Checked = $true; Update-ManualUi
     $chkRemember.Checked = $false; Save-BsbSettings
     Check 'remember: unticked, closing deletes the settings file' (-not (Test-Path -LiteralPath $sf))
     $bad = @('{not json', '', '[1,2]', 'null', '{"Remember":"yes","BuildDest":"H:\\x"}', '{"BuildDest":"H:\\x","ManualDest":"I:\\y"}')
@@ -417,6 +477,8 @@ Check 'manual: a non-ASCII password is refused for a 7-Zip zip, allowed for 7z' 
     Check 'damaged file: bad JSON, empty, not an object, or no Remember = true -> no memory at all' ($n -eq $bad.Count) "$n of $($bad.Count)"
     [IO.File]::WriteAllText($sf, '{"Remember":true,"BuildDest":7,"ManualDest":"I:\\y"}'); $rs = Read-BsbSettings
     Check 'damaged file: values of the wrong type are dropped, the rest is kept' ($rs.Remember -and $rs.ManualDest -eq 'I:\y' -and -not $rs.ContainsKey('BuildDest'))
+    [IO.File]::WriteAllText($sf, '{"Remember":true,"ManualType":"Rar","ZipEngine":5,"ManualDest":"I:\\y"}'); $rs = Read-BsbSettings
+    Check 'damaged file (1.8): an unknown type or engine is dropped' ($rs.ManualDest -eq 'I:\y' -and -not $rs.ContainsKey('ManualType') -and -not $rs.ContainsKey('ZipEngine'))
     Remove-Item -LiteralPath $sf -Force -ErrorAction SilentlyContinue
     $sv = $env:WRT_SETTINGS_DIR; $env:WRT_SETTINGS_DIR = ''
     Check 'settings: by default the file is next to the script (portable)' ($script:BsbToolSource.Contains('else { $PSScriptRoot }; if ($d) { Join-Path $d ''BackupScriptBuilder.settings.json'' }'))

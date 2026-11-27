@@ -146,6 +146,18 @@ Check 'check: a non-ASCII password is refused for zip but allowed for 7z' (((Tes
     $sj = Get-Content -LiteralPath "$env:WRT_SETTINGS_DIR\7z-Encryptor.settings.json" -Raw | ConvertFrom-Json
     Check 'settings: the email choice is saved in 7z-Encryptor.settings.json' ($sj.EmailMode -eq 'Share')
     Check 'settings: no password is ever saved' (-not ((Get-Content -LiteralPath "$env:WRT_SETTINGS_DIR\7z-Encryptor.settings.json" -Raw) -match 'abc'))
+    # ---- 1.5: 7z or zip is remembered ----
+    $m.Opt.RbZip.Checked = $true
+    Check 'settings (1.5): picking zip is saved right away' ((Get-Content -LiteralPath $sf -Raw | ConvertFrom-Json).Format -eq 'zip')
+    $m.Opt.Rb7z.Checked = $true
+    Check 'settings (1.5): and 7z again' ((Get-Content -LiteralPath $sf -Raw | ConvertFrom-Json).Format -eq '7z')
+    $keepF = $script:Settings.Format
+    foreach ($fv in @(@('zip', $true), @('7z', $false), @('rar', $false))) {
+        $script:Settings.Format = $fv[0]; $fw = New-MainWindow @("$W\src\single file.txt")
+        Check "settings (1.5): a remembered Format '$($fv[0])' opens the window with $(if ($fv[1]) { 'zip' } else { '7z' }) picked" ($script:MainUi.Opt.RbZip.Checked -eq $fv[1] -and $script:MainUi.Opt.Rb7z.Checked -ne $fv[1] -and $script:MainUi.Out.Text -match $(if ($fv[1]) { '\.zip$' } else { '\.7z$' })) $script:MainUi.Out.Text
+        $fw.Dispose()
+    }
+    $script:MainUi = $m; $script:Settings.Format = $keepF; Save-EncSettings
     Check 'email: Outlook and Thunderbird get the file attached, others get the file name' ((Get-MailProgramArgs 'C:\P\OUTLOOK.EXE' 'C:\a b.7z') -eq '/a "C:\a b.7z"' -and (Get-MailProgramArgs 'C:\P\thunderbird.exe' 'C:\a b.7z') -eq '-compose "attachment=''file:///C:/a%20b.7z''"' -and (Get-MailProgramArgs 'C:\P\mail.exe' 'C:\a b.7z') -eq '"C:\a b.7z"')
     Check 'email: a missing file / no program picked gives a message, nothing starts' ((Send-EncryptedFile "$W\nope.7z" 'Classic' '') -match 'not there' -and (Send-EncryptedFile "$W\src\single file.txt" 'Program' '') -match 'Pick the mail program')
     # ---- 1.4: mailto: with a typed address ----
@@ -177,6 +189,19 @@ Check 'check: a non-ASCII password is refused for zip but allowed for 7z' (((Tes
     $own = Get-DroppedItems @("`"$W\tooldir\7z-Encryptor.ps1`"", "$W\tooldir\7Z-ENCRYPTOR.BAT", '')
     $mix = Get-DroppedItems @("$W\tooldir\7z-Encryptor.ps1", "`"$W\src\single file.txt`"")
     Check 'drop: the script dropped on its own launcher starts it with an empty list' ($own.Count -eq 0 -and $mix.Count -eq 1 -and $mix[0] -eq "$W\src\single file.txt")
+    # ---- 1.5: dragging from Explorer onto the list (the real DragEnter / DragDrop handlers) ----
+    [void](New-Item -ItemType File -Force "$W\tooldir\7z-Encryptor.ps1")
+    $bf = [Reflection.BindingFlags]'NonPublic, Instance'
+    $fire = { param($ctl, $data) $e = New-Object Windows.Forms.DragEventArgs(([Windows.Forms.IDataObject]$data.psobject.BaseObject), 0, 0, 0, 'Copy', 'None'); $c0 = $ctl.psobject.BaseObject; $a0 = [object[]]@($e.psobject.BaseObject); [void][Windows.Forms.Control].GetMethod('OnDragEnter', $bf).Invoke($c0, $a0); if ($e.Effect -eq 'Copy') { [void][Windows.Forms.Control].GetMethod('OnDragDrop', $bf).Invoke($c0, $a0) }; [string]$e.Effect }
+    $files = { param([string[]]$p) $o = New-Object Windows.Forms.DataObject; $sc = New-Object Collections.Specialized.StringCollection; $sc.AddRange($p); $o.SetFileDropList($sc); $o }
+    $keepItems = @($m.List.Items); $m.List.Items.Clear(); $m.OutEdited = $false; Update-MainOut
+    $eff = & $fire $m.List (& $files @("$W\src\single file.txt", "$W\src\Folder A", "$W\tooldir\7z-Encryptor.ps1", "$W\src\gone.txt"))
+    Check 'drag (1.5): files and folders dragged onto the list are added; the tool itself and a missing file are not' ($eff -eq 'Copy' -and $m.List.Items.Count -eq 2 -and $m.List.Items[0] -eq "$W\src\single file.txt" -and $m.List.Items[1] -eq "$W\src\Folder A") (($m.List.Items | ForEach-Object { $_ }) -join ' | ')
+    Check 'drag (1.5): Save as follows the dragged items' ($m.Out.Text -like "$W\src\*")
+    [void](& $fire $m.List (& $files @("$W\SRC\SINGLE FILE.TXT")))
+    $eff = & $fire $m.List (New-Object Windows.Forms.DataObject([Windows.Forms.DataFormats]::Text, 'C:\x'))
+    Check 'drag (1.5): an item already in the list is not added twice; dragged text is refused' ($m.List.Items.Count -eq 2 -and $eff -eq 'None')
+    $m.List.Items.Clear(); foreach ($i in $keepItems) { [void]$m.List.Items.Add($i) }; Update-MainOut
     Remove-Variable ScriptDir
     Check 'remember: the window has the Remember settings box, showing the same choice' ($m.Remember.Text -eq 'Remember settings' -and $m.Remember.Checked)
     $m.Remember.Checked = $false

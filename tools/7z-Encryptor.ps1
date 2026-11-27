@@ -1,4 +1,4 @@
-# Version 1.4 (2026-11-26)
+# Version 1.5 (2026-11-26)
 # 7z-Encryptor - encrypts files and folders with 7-Zip: a 7z (AES-256, optionally the file names too) or a zip
 # (standard ZipCrypto or AES-256), with a password you pick. Files dropped on 7z-Encryptor.bat open the same window, already in the list.
 # Windows Repair Toolkit - Copyright (C) 2026 TheTechSupportGuru - SPDX-License-Identifier: GPL-3.0-or-later
@@ -397,14 +397,37 @@ function Show-FolderPicker([bool]$Files = $false) {
 }
 
 
-# ---------- 7-Zip (the same as in Backup Script Builder 1.3) ----------
-function Find-7Zip {
+# ---------- 7-Zip (the same as in Backup Script Builder 1.8) ----------
+# 7z.exe from the usual install folders, the path 7-Zip's setup writes to the registry or the PATH; in Windows PE
+# (Hiren's BootCD PE 10 / 11 and others, 1.5) also X:\ and Y:\, up to 3 folders deep; $null when not found
+function Test-WinPe { return (Test-Path 'HKLM:\SYSTEM\CurrentControlSet\Control\MiniNT') -or ($env:SystemDrive -eq 'X:') }
+# The first 7z.exe in $root or up to $depth folders below it, shallowest first. Skips Windows, boot and system folders,
+# and stops after $max folders so a big drive cannot hang the tool.
+function Find-7ZipUnder([string]$root, [int]$depth = 3, [int]$max = 4000) {
+    if (-not $root -or -not [IO.Directory]::Exists($root)) { return $null }
+    $skip = '^(Windows|Boot|EFI|Recovery|sources|System Volume Information|\$.*)$'
+    $level = @($root); $seen = 0
+    for ($d = 0; $d -le $depth -and $level.Count; $d++) {
+        $next = New-Object System.Collections.Generic.List[string]
+        foreach ($dir in $level) {
+            $f = Join-Path $dir '7z.exe'; if ([IO.File]::Exists($f)) { return $f }
+            if ($d -eq $depth) { continue }
+            try { $subs = [IO.Directory]::GetDirectories($dir) } catch { continue }
+            foreach ($s in $subs) { if ([IO.Path]::GetFileName($s) -notmatch $skip -and ++$seen -le $max) { $next.Add($s) } }
+        }
+        $level = $next.ToArray()
+    }
+    return $null
+}
+function Find-7Zip([string[]]$peRoots = @('X:\', 'Y:\'), [bool]$isPe = (Test-WinPe)) {
     $c = @("$env:ProgramFiles\7-Zip\7z.exe", "${env:ProgramFiles(x86)}\7-Zip\7z.exe", "$env:ProgramW6432\7-Zip\7z.exe")
     foreach ($k in 'HKLM:\SOFTWARE\7-Zip', 'HKCU:\SOFTWARE\7-Zip', 'HKLM:\SOFTWARE\WOW6432Node\7-Zip') {
         $i = Get-ItemProperty $k -ErrorAction SilentlyContinue
         foreach ($v in @($i.Path64, $i.Path)) { if ($v) { $c += (Join-Path $v '7z.exe') } }
     }
+    $c += @(Get-Command 7z.exe -CommandType Application -ErrorAction SilentlyContinue | ForEach-Object { $_.Source })
     foreach ($p in $c) { if ($p -and [IO.File]::Exists($p)) { return $p } }
+    if ($isPe) { foreach ($r in $peRoots) { $f = Find-7ZipUnder $r; if ($f) { return $f } } }
     return $null
 }
 function ConvertTo-ProcessArg([string]$a) {
@@ -486,7 +509,7 @@ function Get-SettingsFile([string]$name) {
 }
 # 1.3: nothing is remembered unless "Remember settings" is ticked (off at first). The file is only used when it says
 # Remember = true; a damaged or odd file (bad JSON, wrong types) means no memory: the tool starts as if it had none.
-$EncSettingTypes = @{ SaveFolder = [string]; EmailMode = [string]; EmailProgram = [string]; MailTo = [string] }
+$EncSettingTypes = @{ SaveFolder = [string]; EmailMode = [string]; EmailProgram = [string]; MailTo = [string]; Format = [string] }
 function Read-Settings([string]$name, [hashtable]$types) {
     $s = @{}
     try {
@@ -512,17 +535,17 @@ function Save-EncSettings { if ($script:Settings.Remember) { Save-Settings '7z-E
 function Set-EncRemember([bool]$on) {
     if ($on) {
         $script:Settings.Remember = $true
-        if ($script:MainUi) { $script:Settings.EmailMode = Get-MainEmailMode; $script:Settings.MailTo = $script:MainUi.MailTo.Text.Trim() }
+        if ($script:MainUi) { $script:Settings.EmailMode = Get-MainEmailMode; $script:Settings.MailTo = $script:MainUi.MailTo.Text.Trim(); $script:Settings.Format = (Get-EncryptChoice $script:MainUi.Opt).Format }
         Save-EncSettings
     } else { $script:Settings.Remember = $false; Remove-Settings '7z-Encryptor' }
 }
 function New-RememberBox($parent, [string]$loc) {
     $c = New-Ctl CheckBox 'Remember settings' $loc '140,24'; $c.Checked = [bool]$script:Settings.Remember
     $c.add_CheckedChanged({ Set-EncRemember $this.Checked }); $parent.Controls.Add($c)
-    $t = New-Object System.Windows.Forms.ToolTip; $t.SetToolTip($c, 'Off: nothing is saved. On: the save folder, email choice and mailto: address are kept in 7z-Encryptor.settings.json next to the script (never a password). Untick to delete that file.')
+    $t = New-Object System.Windows.Forms.ToolTip; $t.SetToolTip($c, 'Off: nothing is saved. On: the save folder, 7z or zip, email choice and mailto: address are kept in 7z-Encryptor.settings.json next to the script (never a password). Untick to delete that file.')
     $pt = [Drawing.Point]$loc
     Add-Help $parent ($pt.X + 145) ($pt.Y) 'Remember settings' ("Off (the default): nothing is written anywhere. Your choices stay in use until you close the tool, then they are forgotten.`r`n`r`n" +
-        "Ticked: the folder of your last encrypted file, the email choice, the chosen mail program and the mailto: address are saved in 7z-Encryptor.settings.json next to the script, right away and whenever they change, so they travel with the folder (USB stick, share). Never a password, never the list of files. Items dropped on 7z-Encryptor.bat are still saved next to the first one.`r`n`r`n" +
+        "Ticked: the folder of your last encrypted file, 7z or zip, the email choice, the chosen mail program and the mailto: address are saved in 7z-Encryptor.settings.json next to the script, right away and whenever they change, so they travel with the folder (USB stick, share). Never a password, never the list of files. Items dropped on 7z-Encryptor.bat are still saved next to the first one.`r`n`r`n" +
         "Unticking it deletes that file. A damaged settings file is ignored and the tool starts with no memory.")
     $c
 }
@@ -662,6 +685,7 @@ function New-Get7Row($parent, [int]$y, $onFound) {
     $r.BtnUp.add_Click({ Start-7ZipWinget $this.Tag 'upgrade' })
     $parent.Controls.AddRange(@($r.Lbl, $r.Box, $r.Btn, $r.BtnUp))
     Add-Help $parent 170 ($y + 1) '7-Zip' ("7-Zip (free, open source) does the encrypting. The tool looks for it when it starts and offers to install it when it is missing.`r`n`r`n" +
+        "Where it looks: the Program Files folders, the place 7-Zip's setup records and the PATH. In Windows PE (Hiren's BootCD PE 10 / 11 and others) also the X: and Y: drives, up to 3 folders deep.`r`n`r`n" +
         "'Install 7-Zip' runs  $WingetCmd`r`n'Update 7-Zip' runs  $WingetUpdateCmd`r`nin a console window (you may be asked to allow it). When winget finishes, the tool finds 7-Zip again by itself.")
     Update-Get7Row $r
     return $r
@@ -732,14 +756,20 @@ function New-MainWindow([string[]]$items = @()) {
     $w.Get7 = New-Get7Row $p 599 { $script:MainUi.Go.Enabled = [bool]$script:SevenZip }
     $w.Remember = New-RememberBox $p '15,632'
     $w.Go.Enabled = [bool]$script:SevenZip
-    Add-Help $p 245 7 'Files and folders' "Tick files and folders in the tree ('Add Files/Folders'), or drop them on 7z-Encryptor.bat to start with them in the list. 'Remove' takes the selected lines out (Ctrl / Shift + click to select several). An item already in the list is not added twice.`r`n`r`nEverything in the list goes into ONE encrypted file; folders keep their name and everything inside them. The originals are not changed or deleted."
+    Add-Help $p 245 7 'Files and folders' "Tick files and folders in the tree ('Add Files/Folders'), drag them from Explorer onto this list, or drop them on 7z-Encryptor.bat to start with them in the list. 'Remove' takes the selected lines out (Ctrl / Shift + click to select several). An item already in the list is not added twice.`r`n`r`nEverything in the list goes into ONE encrypted file; folders keep their name and everything inside them. The originals are not changed or deleted."
     Add-Help $p 105 357 'Save as' "Where the encrypted file goes, named after the first item (or Encrypted-<date> for several items). Items dropped on 7z-Encryptor.bat are saved next to the first one. Otherwise, with 'Remember settings' ticked, the folder of your last encrypted file is remembered (in 7z-Encryptor.settings.json next to the script, so it travels with the folder) and used next time; until then it goes next to the first item. 'Browse...' picks another place or name.`r`n`r`nAn existing file is never overwritten: the name filled in skips taken names ('name (2)'), and a name you type that is taken is refused. It cannot be saved inside a folder that is being encrypted. A share needs the share folder: \\server\share\file.7z."
     Add-Help $p 305 494 'Show in folder / Send by email' ("After a file is encrypted: 'Show in folder' opens its folder with the file selected; 'Send by email' starts a new email with it, the way chosen below.`r`n`r`nEmail with (remembered when 'Remember settings' is ticked):`r`n- Send to > Mail recipient: the classic Windows way, the same as right-click > Send to > Mail recipient. Needs a classic mail program (Outlook classic, Thunderbird, ...). If there is none (for example only the new Outlook or webmail), the Windows Share window opens instead.`r`n- Windows Share: the Windows 10 / 11 Share window (mail apps, nearby sharing, ...).`r`n- Choose program...: a mail program you pick (Outlook and Thunderbird get the file attached; other programs are started with the file name).`r`n- mailto: Windows' own mailto: link. Your default mail program opens a new email to the address typed in the box, with the file name as the subject. Separate several addresses with a semicolon, or leave the box empty. A mailto: link cannot attach files, so the file is also selected in Explorer: drag it into the email.`r`n`r`nSend the password some other way (phone, text message), never in the same email.")
 
     $w.Add.add_Click({ $x = $script:MainUi; foreach ($q in (Show-FolderPicker $true)) { if (-not @($x.List.Items | Where-Object { $_ -ieq $q }).Count) { [void]$x.List.Items.Add($q) } }; Update-MainOut })
     $w.Remove.add_Click({ $x = $script:MainUi; foreach ($s in @($x.List.SelectedItems)) { $x.List.Items.Remove($s) }; Update-MainOut })
+    # 1.5: files and folders dragged from Explorer onto the list are added (never twice, not the tool itself)
+    $w.List.AllowDrop = $true
+    $w.List.add_DragEnter({ param($s, $e) if ($e.Data.GetDataPresent([Windows.Forms.DataFormats]::FileDrop)) { $e.Effect = 'Copy' } else { $e.Effect = 'None' } })
+    $w.List.add_DragDrop({ param($s, $e) [void](Add-MainDropped @($e.Data.GetData([Windows.Forms.DataFormats]::FileDrop))) })
     $w.Out.add_KeyPress({ $script:MainUi.OutEdited = $true })
-    $w.Opt.Rb7z.add_CheckedChanged({ Update-MainOut })
+    # 1.5: 7z or zip is remembered too (with Remember settings ticked)
+    if ([string]$script:Settings.Format -eq 'zip') { $w.Opt.RbZip.Checked = $true }
+    $w.Opt.Rb7z.add_CheckedChanged({ Update-MainOut; if ($script:MainUi) { $script:Settings.Format = (Get-EncryptChoice $script:MainUi.Opt).Format; Save-EncSettings } })
     $w.Browse.add_Click({
         $x = $script:MainUi; $ext = (Get-EncryptChoice $x.Opt).Format
         $sd = New-Object System.Windows.Forms.SaveFileDialog; $sd.Filter = $(if ($ext -eq 'zip') { 'Zip file (*.zip)|*.zip' } else { '7z file (*.7z)|*.7z' }); $sd.OverwritePrompt = $false
@@ -775,6 +805,17 @@ function New-MainWindow([string[]]$items = @()) {
     foreach ($i in @($items)) { if (-not @($w.List.Items | Where-Object { $_ -ieq $i }).Count) { [void]$w.List.Items.Add($i) } }
     Update-MainOut
     return $f
+}
+# Items dragged onto the main window's list: added like 'Add Files/Folders' does; missing ones and the tool's own
+# files are skipped. Returns how many were added.
+function Add-MainDropped([string[]]$paths) {
+    $x = $script:MainUi; $n = 0
+    foreach ($q in (Get-DroppedItems $paths)) {
+        if (-not (Test-Path -LiteralPath $q)) { continue }
+        if (-not @($x.List.Items | Where-Object { $_ -ieq $q }).Count) { [void]$x.List.Items.Add($q); $n++ }
+    }
+    if ($n) { Update-MainOut }
+    return $n
 }
 function Get-MainEmailMode { $x = $script:MainUi; if ($x.RbShare.Checked) { 'Share' } elseif ($x.RbProgram.Checked) { 'Program' } elseif ($x.RbMailto.Checked) { 'Mailto' } else { 'Classic' } }
 # a click on an email option: remember it; "Choose program..." asks for the program (Cancel keeps the old choice)
