@@ -5,7 +5,7 @@
 #   Invoke-Pester .\tests\7zEncryptor.Tests.ps1
 $encFile = Join-Path (Split-Path $PSScriptRoot -Parent) 'tools\7z-Encryptor.ps1'
 $encAst = [Management.Automation.Language.Parser]::ParseFile($encFile, [ref]$null, [ref]$null)
-foreach ($fn in $encAst.FindAll({ $args[0] -is [Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -in 'ConvertTo-ProcessArg', 'New-EncryptArgs', 'Get-ItemName', 'Get-ArchivePath', 'Test-EncryptInput', 'Get-MailtoUri', 'Get-MailProgramArgs', 'Get-DroppedItems', 'Get-SettingsFile', 'Read-Settings', 'Save-Settings', 'Remove-Settings', 'Get-UniqueFolders', 'Find-7Zip', 'Find-7ZipUnder', 'Test-WinPe', 'Get-7ZipWarnings' }, $true)) { . ([scriptblock]::Create($fn.Extent.Text)) }
+foreach ($fn in $encAst.FindAll({ $args[0] -is [Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -in 'ConvertTo-ProcessArg', 'New-EncryptArgs', 'Get-ItemName', 'Get-ArchivePath', 'Test-EncryptInput', 'Get-MailtoUri', 'Get-MailProgramArgs', 'Get-DroppedItems', 'Get-SettingsFile', 'Read-Settings', 'Save-Settings', 'Remove-Settings', 'Get-UniqueFolders', 'Find-7Zip', 'Find-7ZipUnder', 'Test-WinPe', 'Get-7ZipWarnings', 'Get-AutoName', 'Get-FreePath', 'Get-MailClients', 'Get-MailClientInUse', 'Set-MailClient', 'Get-ExeFromCommand', 'Find-MailPrograms' }, $true)) { . ([scriptblock]::Create($fn.Extent.Text)) }
 # the settings value types, read from the script itself so the test follows it
 $typesAst = $encAst.Find({ $args[0] -is [Management.Automation.Language.AssignmentStatementAst] -and $args[0].Left.Extent.Text -eq '$EncSettingTypes' }, $true)
 $EncSettingTypes = & ([scriptblock]::Create($typesAst.Right.Extent.Text))
@@ -205,4 +205,59 @@ Describe '7-Zip warnings in the message (7z-Encryptor 1.6)' {
         $w[5] | Should Be '... and 3 more'
     }
     It 'no warnings: empty' { Get-7ZipWarnings "Everything is Ok`r`n" | Should Be '' }
+}
+
+Describe 'Folder: Named + Date (7z-Encryptor 1.7)' {
+    It 'name plus MM-dd-yy--HH-mm (no seconds) and the format' { Get-AutoName 'Taxes' '7z' ([datetime]'2026-11-27 14:05:09') | Should Be 'Taxes-11-27-26--14-05.7z' }
+    It 'characters Windows does not allow are dropped; empty falls back to Encrypted' {
+        Get-AutoName 'a/b:c*?"<>|' 'zip' ([datetime]'2026-01-02 03:04:05') | Should Be 'abc-01-02-26--03-04.zip'
+        Get-AutoName '  ' '7z' ([datetime]'2026-01-02 03:04:05') | Should Be 'Encrypted-01-02-26--03-04.7z'
+    }
+    It 'midnight and the afternoon use 24-hour time' { Get-AutoName 'a' '7z' ([datetime]'2026-12-31 00:00:59') | Should Be 'a-12-31-26--00-00.7z'; Get-AutoName 'a' '7z' ([datetime]'2026-12-31 23:59:00') | Should Be 'a-12-31-26--23-59.7z' }
+    It 'trailing dots and spaces are trimmed (Windows drops them)' { Get-AutoName ' My file. ' 'zip' ([datetime]'2026-01-02 03:04:05') | Should Be 'My file-01-02-26--03-04.zip' }
+    It 'a name with only bad characters falls back to Encrypted' { Get-AutoName '<>:|' '7z' ([datetime]'2026-01-02 03:04:05') | Should Be 'Encrypted-01-02-26--03-04.7z' }
+    It 'a free path: unchanged when free, then (2), (3) ...' {
+        $p = Join-Path $TestDrive 'x-01.7z'; Get-FreePath $p | Should Be $p
+        'a' | Set-Content $p; Get-FreePath $p | Should Be (Join-Path $TestDrive 'x-01 (2).7z')
+        'a' | Set-Content (Join-Path $TestDrive 'x-01 (2).7z'); Get-FreePath $p | Should Be (Join-Path $TestDrive 'x-01 (3).7z')
+    }
+    It 'a FOLDER with the name counts as taken too' { $p = Join-Path $TestDrive 'd-01.zip'; New-Item -ItemType Directory $p | Out-Null; Get-FreePath $p | Should Be (Join-Path $TestDrive 'd-01 (2).zip') }
+}
+Describe 'Default mail app for Attach (Send to) (7z-Encryptor 1.7)' {
+    $base = 'HKCU:\Software\WrtTest-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+    $lm = "$base\LM"; $cu = "$base\CU"
+    New-Item "$lm\Outlook", "$lm\Mozilla Thunderbird", "$lm\Hotmail", "$cu\Mozilla Thunderbird" -Force | Out-Null
+    Set-Item $lm 'Outlook'
+    try {
+        It 'lists each mail program once, sorted, without Hotmail; a missing root is fine' { (Get-MailClients @($lm, "$base\nope", $cu)) -join '|' | Should Be 'Mozilla Thunderbird|Outlook' }
+        It 'nothing installed gives an empty list' { @(Get-MailClients @("$base\nope")).Count | Should Be 0 }
+        It 'the computer default is used when the user has none' { Get-MailClientInUse @($lm, $cu) | Should Be 'Outlook' }
+        It 'setting it writes the user key (made when missing), and that one wins' {
+            Set-MailClient 'Mozilla Thunderbird' "$base\NEW"; (Get-Item "$base\NEW").GetValue('') | Should Be 'Mozilla Thunderbird'
+            Set-MailClient 'Mozilla Thunderbird' $cu; Get-MailClientInUse @($lm, $cu) | Should Be 'Mozilla Thunderbird'
+        }
+    } finally { Remove-Item $base -Recurse -Force -ErrorAction SilentlyContinue }
+}
+Describe 'Finding mail programs for Choose program: (7z-Encryptor 1.7)' {
+    $exe = { param($p) New-Item -ItemType File -Force $p | Out-Null; $p }
+    It 'the program in a shell command line: quoted, plain, with arguments, with %ProgramFiles%; nothing when there is no .exe' {
+        Get-ExeFromCommand '"C:\P Q\mail.exe" /mailurl:%1' | Should Be 'C:\P Q\mail.exe'
+        Get-ExeFromCommand 'C:\Mail\m.exe -compose' | Should Be 'C:\Mail\m.exe'
+        Get-ExeFromCommand '"%ProgramFiles%\x.exe"' | Should Be "$env:ProgramFiles\x.exe"
+        Get-ExeFromCommand 'rundll32 something' | Should Be ''
+    }
+    It 'finds Outlook classic in Microsoft Office, Thunderbird, the new Outlook and a registered program - each once' {
+        $pf = Join-Path $TestDrive 'pf'; $o = & $exe "$pf\Microsoft Office\root\Office16\OUTLOOK.EXE"; $tb = & $exe "$pf\Mozilla Thunderbird\thunderbird.exe"
+        $wa = Join-Path $TestDrive 'wa'; $olk = & $exe "$wa\olk.exe"; $em = & $exe "$TestDrive\em\MailClient.exe"
+        $base = 'HKCU:\Software\WrtTest-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+        try {
+            New-Item "$base\Mail\eM Client\shell\open\command", "$base\Mail\Mozilla Thunderbird\shell\open\command", "$base\Mail\Broken\shell\open\command" -Force | Out-Null
+            Set-Item "$base\Mail\eM Client\shell\open\command" "`"$em`" /mailurl"; Set-Item "$base\Mail\Mozilla Thunderbird\shell\open\command" "`"$tb`" -mail"; Set-Item "$base\Mail\Broken\shell\open\command" '"C:\nowhere\gone.exe"'
+            $r = @(Find-MailPrograms @($pf, $pf) @("$base\none") @("$base\Mail") $wa)
+            ($r | ForEach-Object { $_.Name }) -join '|' | Should Be 'Outlook (classic)|Thunderbird|Outlook (new)|eM Client'
+            ($r | Where-Object { $_.Name -eq 'Outlook (classic)' }).Path | Should Be $o
+        } finally { Remove-Item $base -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+    It 'Windows PE: no LOCALAPPDATA and no Program Files is fine (defaults used)' { $k = $env:LOCALAPPDATA; try { $env:LOCALAPPDATA = $null; { Find-MailPrograms -appPathRoots @('HKCU:\Software\WrtNope') -clientRoots @('HKCU:\Software\WrtNope') -pfDirs @($null, '') } | Should Not Throw } finally { $env:LOCALAPPDATA = $k } }
+    It 'nothing installed: an empty list, no error' { @(Find-MailPrograms @("$TestDrive\nopf") @("HKCU:\Software\WrtNope") @("HKCU:\Software\WrtNope") "$TestDrive\nowa").Count | Should Be 0 }
 }

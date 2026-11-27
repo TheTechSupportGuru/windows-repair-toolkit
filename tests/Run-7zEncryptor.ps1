@@ -125,7 +125,7 @@ Check 'check: a non-ASCII password is refused for zip but allowed for 7z' (((Tes
     Check 'help: Files and folders names the drop, Remove and one file' ($hb['Files and folders'] -match '7z-Encryptor\.bat' -and $hb['Files and folders'] -match "'Remove'" -and $hb['Files and folders'] -match 'ONE encrypted file')
     Check 'help: Password says case and spaces count, no double quote, zip limits, never saved' ($hb['Password'] -match 'Upper and lower case count' -and $hb['Password'] -match 'space' -and $hb['Password'] -match 'double quote \("\)' -and $hb['Password'] -match 'zip: only English' -and $hb['Password'] -match 'never saved')
     Check 'help: Save as says dropped items, not inside a folder being encrypted, share folder, never overwritten' ($hb['Save as'] -match 'dropped on 7z-Encryptor\.bat' -and $hb['Save as'] -match 'inside a folder that is being encrypted' -and $hb['Save as'] -match '\\\\server\\share\\file\.7z' -and $hb['Save as'] -match 'never overwritten')
-    Check 'help: Send by email explains all four ways, mailto: cannot attach' ($hb['Show in folder / Send by email'] -match 'Send to > Mail recipient' -and $hb['Show in folder / Send by email'] -match 'Windows Share' -and $hb['Show in folder / Send by email'] -match 'Choose program' -and $hb['Show in folder / Send by email'] -match 'mailto: link cannot attach' -and $hb['Show in folder / Send by email'] -notmatch 'attaches it to a new email')
+    Check 'help: Send by email explains the three ways (no Windows Share option), mailto: cannot attach' ($hb['Show in folder / Send by email'] -match 'Send to > Mail recipient' -and $hb['Show in folder / Send by email'] -notmatch '## Windows Share' -and $hb['Show in folder / Send by email'] -match 'Choose program' -and $hb['Show in folder / Send by email'] -match 'mailto: link cannot attach' -and $hb['Show in folder / Send by email'] -notmatch 'attaches it to a new email')
     Check 'help: Remember settings says off by default, what is kept, never a password, untick deletes' ($hb['Remember settings'] -match 'Off \(the default\)' -and $hb['Remember settings'] -match 'mailto: address' -and $hb['Remember settings'] -match 'Never a password' -and $hb['Remember settings'] -match 'Unticking it deletes')
     Check 'help: no text mentions the old small drop window' (-not @($hb.Values | Where-Object { $_ -match 'small window|drop window|quick window' }).Count)
     $rq = @($m.Page.Controls | Where-Object { $_.Text -eq '?' -and $_.Tag[0] -eq 'Remember settings' })[0]
@@ -134,17 +134,17 @@ Check 'check: a non-ASCII password is refused for zip but allowed for 7z' (((Tes
     # ---- 1.2: Show in folder, Send by email (3 ways), remembered settings next to the script ----
     Check 'main: Show in folder and Send by email are off until a file is encrypted' (-not $m.ShowDir.Enabled -and -not $m.Mail.Enabled -and $m.ShowDir.Text -eq 'Show in folder' -and $m.Mail.Text -eq 'Send by email')
     $m.Opt.RbZip.Checked = $true; $m.Opt.Rb7z.Checked = $true
-    Check 'main: three email options, Send to > Mail recipient chosen by default (and not cleared by the 7z / zip choice)' ($m.RbClassic.Checked -and -not $m.RbShare.Checked -and -not $m.RbProgram.Checked -and (Get-MainEmailMode) -eq 'Classic')
+    Check 'main: three email options, Attach (Send to) chosen by default (and not cleared by the 7z / zip choice)' ($m.RbClassic.Checked -and -not $m.RbMailto.Checked -and -not $m.RbProgram.Checked -and (Get-MainEmailMode) -eq 'Classic')
     # ---- 1.3: a Remember settings box, off at first; nothing is written until it is ticked ----
     $sf = "$env:WRT_SETTINGS_DIR\7z-Encryptor.settings.json"
     Check 'remember: a Remember settings box, off at first' ($m.Remember.Text -eq 'Remember settings' -and -not $m.Remember.Checked -and -not $script:Settings.Remember)
-    $m.RbShare.Checked = $true; Set-MainEmailMode $m.RbShare
+    $m.RbMailto.Checked = $true; Set-MainEmailMode $m.RbMailto
     Check 'remember: off, choosing an option writes no settings file' (-not (Test-Path -LiteralPath $sf))
     $m.Remember.Checked = $true
     Check 'remember: ticking it saves what is chosen now' ((Get-Content -LiteralPath $sf -Raw | ConvertFrom-Json).Remember -eq $true)
-    $m.RbShare.Checked = $true; Set-MainEmailMode $m.RbShare
+    $m.RbMailto.Checked = $true; Set-MainEmailMode $m.RbMailto
     $sj = Get-Content -LiteralPath "$env:WRT_SETTINGS_DIR\7z-Encryptor.settings.json" -Raw | ConvertFrom-Json
-    Check 'settings: the email choice is saved in 7z-Encryptor.settings.json' ($sj.EmailMode -eq 'Share')
+    Check 'settings: the email choice is saved in 7z-Encryptor.settings.json' ($sj.EmailMode -eq 'Mailto')
     Check 'settings: no password is ever saved' (-not ((Get-Content -LiteralPath "$env:WRT_SETTINGS_DIR\7z-Encryptor.settings.json" -Raw) -match 'abc'))
     # ---- 1.5: 7z or zip is remembered ----
     $m.Opt.RbZip.Checked = $true
@@ -167,10 +167,12 @@ Check 'check: a non-ASCII password is refused for zip but allowed for 7z' (((Tes
     Check 'mailto: no address / extra link parts are refused' ($null -eq (Get-MailtoUri 'not-an-address' 'f.7z') -and $null -eq (Get-MailtoUri 'a@x.org?cc=c@y.net' 'f.7z') -and $null -eq (Get-MailtoUri 'a@x.org&body=x' 'f.7z') -and $null -eq (Get-MailtoUri '"a"@x.org' 'f.7z'))
     Check 'mailto: a bad address gives a message, nothing starts' ((Send-EncryptedFile "$W\src\single file.txt" 'Mailto' '' ([IntPtr]::Zero) 'nope') -match 'Type an email address')
     Check 'window: a mailto: option with an address box under the other three' ($m.RbMailto.Text -eq 'mailto:' -and $m.MailTo -is [Windows.Forms.TextBox] -and $m.MailTo.Parent -eq $m.MailPanel -and $m.RbMailto.Top -gt $m.RbClassic.Bottom)
+    $m.RbClassic.Checked = $true; Set-MainEmailMode $m.RbClassic
     $m.MailTo.Text = 'a@example.com'
     Check 'window: typing an address picks mailto: and it is remembered (with Remember settings ticked)' ($m.RbMailto.Checked -and (Get-MainEmailMode) -eq 'Mailto' -and (Get-Content -LiteralPath $sf -Raw | ConvertFrom-Json).MailTo -eq 'a@example.com' -and (Get-Content -LiteralPath $sf -Raw | ConvertFrom-Json).EmailMode -eq 'Mailto')
     & $layout 'main window with mailto:' $m.Page 7
-    $m.RbShare.Checked = $true; Set-MainEmailMode $m.RbShare    Check 'email: Send to > Mail recipient is the MAPI call (Simple MAPI MAPISendMail with a dialog)' ([bool]('WrtMapi' -as [type]) -and $script:BsbEncSource -match 'MAPISendMail' -and $script:BsbEncSource -match 'fall back to the Windows Share window')
+    $m.RbMailto.Checked = $true; Set-MainEmailMode $m.RbMailto
+    Check 'email: Send to > Mail recipient is the MAPI call (Simple MAPI MAPISendMail with a dialog)' ([bool]('WrtMapi' -as [type]) -and $script:BsbEncSource -match 'MAPISendMail' -and $script:BsbEncSource -match 'fall back to the Windows Share window')
     $script:Settings.SaveFolder = "$W\out"; $m.OutEdited = $false; Update-MainOut
     Check 'settings: Save as uses the remembered folder of the last encrypted file' ($m.Out.Text -like "$W\out\Folder A.*")
     $script:Settings.SaveFolder = "$W\gone"; Update-MainOut
@@ -198,6 +200,51 @@ Check 'check: a non-ASCII password is refused for zip but allowed for 7z' (((Tes
     $eff = & $fire $m.List (& $files @("$W\src\single file.txt", "$W\src\Folder A", "$W\tooldir\7z-Encryptor.ps1", "$W\src\gone.txt"))
     Check 'drag (1.5): files and folders dragged onto the list are added; the tool itself and a missing file are not' ($eff -eq 'Copy' -and $m.List.Items.Count -eq 2 -and $m.List.Items[0] -eq "$W\src\single file.txt" -and $m.List.Items[1] -eq "$W\src\Folder A") (($m.List.Items | ForEach-Object { $_ }) -join ' | ')
     Check 'drag (1.5): Save as follows the dragged items' ($m.Out.Text -like "$W\src\*")
+    # 1.7: Folder, auto-named - the box holds the folder, File goes back to a full file name
+    $m.RbSaveDir.Checked = $true
+    Check 'save (1.7): Folder, auto-named shows the folder, File shows the file again' ($m.Out.Text -eq "$W\src" -and $(($m.RbSaveFile.Checked = $true); $m.Out.Text -like "$W\src\*.7z"))
+    # ---- 1.7: layout ----
+    $qs = @($m.Page.Controls | Where-Object { $_ -is [Windows.Forms.Button] -and $_.Text -eq '?' })
+    $qOf = { param($title) @($qs | Where-Object { $_.Tag[0] -eq $title })[0] }
+    $nextTo = { param($lbl, $q) ($q.Left -ge $lbl.Right) -and ($q.Left - $lbl.Right -le 10) -and ([Math]::Abs($q.Top - $lbl.Top) -le 4) }
+    Check 'layout (1.7): the ? of sections 1, 2 and 4 sit right after their headings' ((& $nextTo $m.LblSrc (& $qOf 'Files and folders')) -and (& $nextTo $m.LblOpt (& $qOf 'Format')) -and (& $nextTo $m.LblSend (& $qOf 'Show in folder / Send by email')))
+    Check 'layout (1.7): headings read "2. How to Encrypt : Format / File Type" and "5. Settings and Install"' ($m.LblOpt.Text -eq '2. How to Encrypt : Format / File Type' -and $m.LblSet.Text -eq '5. Settings and Install')
+    $lines = @($m.Page.Controls | Where-Object { $_ -is [Windows.Forms.Label] -and $_.BorderStyle -eq 'Fixed3D' -and $_.Height -le 3 } | Sort-Object Top)
+    $heads = @($m.LblOpt, $m.LblOut, $m.LblSend, $m.LblSet)
+    $gaps = @(0..3 | ForEach-Object { $heads[$_].Top - $lines[$_].Top })
+    Check 'layout (1.7): a line above each of sections 2 to 5, the same distance from every heading' ($lines.Count -eq 4 -and @($gaps | Select-Object -Unique).Count -eq 1 -and $gaps[0] -ge 6) (($gaps) -join ',')
+    Check 'layout (1.7): Send by email, then Change Default: with the mailto: and Email buttons on its right, in one row' ($m.LblDefault.Text -eq 'Change Default:' -and $m.MailDefault.Text -eq 'mailto:' -and $m.MailApp.Text -eq 'Email' -and $m.LblDefault.Left -gt $m.Mail.Right -and $m.MailDefault.Left -gt $m.LblDefault.Right -and $m.MailApp.Left -gt $m.MailDefault.Right -and $m.MailDefault.Top -eq $m.Mail.Top -and $m.MailApp.Top -eq $m.Mail.Top)
+    Check 'help (1.7): Send help explains Change Default (mailto: and Email, both ask first)' ($hb['Show in folder / Send by email'] -match '## Change Default' -and $hb['Show in folder / Send by email'] -match 'Attach \(Send to\) uses' -and $hb['Show in folder / Send by email'] -match 'ask first')
+    Check 'layout (1.7): no Windows Share option; Choose program: right after Attach, its list right after it, ending in Other...' (-not $m.ContainsKey('RbShare') -and $m.RbProgram.Text -eq 'Choose program:' -and $m.RbProgram.Left -lt 160 -and $m.MailProg.Left -ge $m.RbProgram.Right -and $m.MailProg.Left - $m.RbProgram.Right -le 8 -and $m.MailProg.DropDownStyle -eq 'DropDownList' -and $m.MailProg.Items[$m.MailProg.Items.Count - 1] -eq 'Other...') "$($m.RbProgram.Right) / $($m.MailProg.Left)"
+    Check 'program (1.7): the list holds what was found on this PC, then Other...' ($m.MailProg.Items.Count -eq $m.MailProgItems.Count + 1)
+    $keepProg = $script:Settings.EmailProgram; $script:Settings.EmailProgram = 'C:\Mail\mymail.exe'; Update-MailProgList $m
+    Check 'program (1.7): a remembered program that was not found is still in the list and selected' ($m.MailProg.SelectedItem -eq 'mymail' -and $m.MailProgItems[$m.MailProg.SelectedIndex].Path -eq 'C:\Mail\mymail.exe')
+    $script:Settings.EmailProgram = $keepProg; Update-MailProgList $m
+    Check 'layout (1.7): Show in folder sits right of Encrypt' ($m.ShowDir.Left -gt $m.Go.Right -and $m.ShowDir.Top -eq $m.Go.Top)
+    Check 'layout (1.7): the password boxes start right after "Type it again:", one under the other' ($m.Opt.Pw.Left -eq $m.Opt.Pw2.Left -and $m.Opt.Pw.Left -ge $m.Opt.LblPw2.Right -and $m.Opt.Pw.Left - $m.Opt.LblPw2.Right -le 8 -and $m.Opt.Pw.Width -ge 300)
+    $maxB = (@($m.Page.Controls) | ForEach-Object { $_.Bottom } | Measure-Object -Maximum).Maximum
+    Check 'layout (1.7): the space under the last row is the same as above the first' (($m.Form.ClientSize.Height - $maxB) -eq 12 -and $m.LblSrc.Top -le 12) "$($m.Form.ClientSize.Height - $maxB)"
+    Check 'layout (1.7): Save as - File, Folder: Named + Date, the name box, then the ?' ($m.RbSaveFile.Text -eq 'File' -and $m.RbSaveDir.Text -eq 'Folder: Named + Date' -and (& $qOf 'Save as').Left -ge $m.SaveName.Right)
+    # ---- 1.7: Send by email is on for mailto: even before anything is encrypted ----
+    $keepLast = $m.LastOut; $m.LastOut = ''; $m.RbClassic.Checked = $true; $offOther = -not $m.Mail.Enabled; $m.RbMailto.Checked = $true; $onMailto = $m.Mail.Enabled; $m.RbClassic.Checked = $true
+    Check 'send (1.7): with nothing encrypted, Send by email is on for mailto: only' ($offOther -and $onMailto -and -not $m.Mail.Enabled)
+    $m.LastOut = $keepLast
+    Check 'send (1.7): no file - mailto: still checks the address; the other ways ask to encrypt first' ((Send-EncryptedFile '' 'Mailto' '' ([IntPtr]::Zero) 'nope') -match 'Type an email address' -and (Send-EncryptedFile '' 'Program' '' ([IntPtr]::Zero)) -match 'Encrypt a file first' -and (Send-EncryptedFile '' 'Classic' '' ([IntPtr]::Zero)) -match 'Encrypt a file first')
+    Check 'send (1.7): mailto: without a file is just the address' ((Get-MailtoUri 'a@x.org' '') -eq 'mailto:a@x.org' -and (Get-MailtoUri '' '') -eq 'mailto:')
+    # ---- 1.7: Folder: Named + Date, encrypted for real (Encrypt clicked twice in the same minute) ----
+    if ($script:SevenZip) {
+        $keepItems2 = @($m.List.Items); $m.List.Items.Clear(); [void]$m.List.Items.Add("$W\src\single file.txt")
+        $m.Opt.Rb7z.Checked = $true; $m.Opt.Pw.Text = 'folder pw'; $m.Opt.Pw2.Text = 'folder pw'
+        $m.RbSaveDir.Checked = $true; $m.SaveName.Text = 'Tax:es*'; $m.Out.Text = "$W\auto out"; $m.OutEdited = $true
+        $goClick = { [Windows.Forms.Control].GetMethod('OnClick', [Reflection.BindingFlags]'NonPublic, Instance').Invoke($m.Go.psobject.BaseObject, [object[]]@([EventArgs]::Empty)) }; & $goClick; & $goClick   # PerformClick does nothing on a hidden window
+        $made = @(Get-ChildItem -LiteralPath "$W\auto out" -File -ErrorAction SilentlyContinue | Sort-Object Name | ForEach-Object { $_.Name })
+        Check 'folder (1.7): Encrypt saves Taxes-MM-dd-yy--HH-mm.7z in the folder (no seconds, bad characters dropped), a second one gets (2)' ($made.Count -eq 2 -and $made[0] -match '^Taxes-\d\d-\d\d-\d\d--\d\d-\d\d( \(2\))?\.7z$' -and $made[1] -match '^Taxes-\d\d-\d\d-\d\d--\d\d-\d\d( \(2\))?\.7z$' -and @($made | Where-Object { $_ -match ' \(2\)\.7z$' }).Count -eq 1) ($made -join ' | ')
+        Check 'folder (1.7): after encrypting, the box still shows the folder' ($m.RbSaveDir.Checked -and $m.Out.Text -eq "$W\auto out")
+        $ok7 = $false; if ($made.Count) { & $script:SevenZip t -p'folder pw' "$W\auto out\$($made[0])" | Out-Null; $ok7 = ($LASTEXITCODE -eq 0) }
+        Check 'folder (1.7): the auto-named file opens with the password' $ok7
+        $m.RbSaveFile.Checked = $true; $m.SaveName.Text = 'Encrypted'; $m.RbSaveFile.Checked = $true
+        $m.List.Items.Clear(); foreach ($i2 in $keepItems2) { [void]$m.List.Items.Add($i2) }; $m.OutEdited = $false; Update-MainOut
+    }
     [void](& $fire $m.List (& $files @("$W\SRC\SINGLE FILE.TXT")))
     $eff = & $fire $m.List (New-Object Windows.Forms.DataObject([Windows.Forms.DataFormats]::Text, 'C:\x'))
     Check 'drag (1.5): an item already in the list is not added twice; dragged text is refused' ($m.List.Items.Count -eq 2 -and $eff -eq 'None')
@@ -213,6 +260,7 @@ Check 'check: a non-ASCII password is refused for zip but allowed for 7z' (((Tes
     Check 'damaged file: bad JSON, empty, not an object, or no Remember = true -> no memory at all' ($n -eq $bad.Count) "$n of $($bad.Count)"
     [IO.File]::WriteAllText($sf, '{"Remember":true,"SaveFolder":5,"QuickNextToItem":"x","EmailMode":["a"],"EmailProgram":"C:\\m.exe"}')
     $rs = Read-Settings '7z-Encryptor' $EncSettingTypes
+    Check 'settings (1.7): Windows Share is no longer a choice; a remembered Share becomes Attach (Send to)' ($EmailModes -notcontains 'Share' -and $script:BsbEncSource -match "if \(\`$EmailModes -notcontains \`$mode\) \{ \`$mode = 'Classic' \}")
     Check 'damaged file: values of the wrong type are dropped, the rest is kept' ($rs.Remember -and $rs.EmailProgram -eq 'C:\m.exe' -and -not $rs.ContainsKey('SaveFolder') -and -not $rs.ContainsKey('QuickNextToItem') -and -not $rs.ContainsKey('EmailMode'))
     [IO.File]::WriteAllText($sf, '{not json'); $keepS = $script:Settings; $script:Settings = Read-Settings '7z-Encryptor' $EncSettingTypes
     $qf3 = New-MainWindow @("$W\src\single file.txt")
