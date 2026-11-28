@@ -38,18 +38,6 @@ Tested on Windows 11: 571 / 571 Pester tests, 134 / 134 Backup Script Builder ch
 </details>
 
 <details>
-<summary><h2 id="beta-diagnostic-tool-downloader">Beta side tool: Diagnostic Tool Downloader 0.1 beta 1</h2></summary>
-
-`DiagDownloader-v0.1-beta.1.zip` (in the latest release, under "Betas and pre-releases"). Not part of WinSuperTool yet, and it does not change the toolkit version ([notes](docs/changes/DiagDownloader-0.1-beta.1.md)).
-
-- Downloads the common diagnostic tools (49 entries) into a folder you pick: tick tools in the window (`DiagDownloader.bat`), or use `Get-DiagTools.ps1` with `-List`, `-Only`, `-OutDir`, `-Force`.
-- Handles direct links, GitHub releases, vendor pages that link to the real file, and Microsoft diagcab / exe pages. Manual-only entries are greyed out; double-click to open their page.
-- **Nothing is run** - downloads only. Check each file yourself before running it. There is no hash check yet.
-- Last full run: 40 OK, 4 manual, 5 failed (Sophos Scan and Clean, HWiNFO, WizTree, OpenNetMeter, Wireshark). Pages that need JavaScript or a sign-in fail.
-
-</details>
-
-<details>
 <summary><h2 id="new-in-2-7">New in 2.7</h2></summary>
 
 **7z-Encryptor 1.7** ([V2.7](docs/changes/V2.7.md), [notes](docs/changes/7z-Encryptor-1.7.md)):

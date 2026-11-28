@@ -39,8 +39,6 @@ $bsb = Get-TagBytes 'tools/BackupScriptBuilder.ps1'
 if ([Text.Encoding]::ASCII.GetString($bsb) -match '# Version ([\d.]+)') { $zips["BackupScriptBuilder-v$($Matches[1])"] = @{ Files = 'tools/BackupScriptBuilder.ps1', 'tools/BackupScriptBuilder.bat'; Start = 'Start BackupScriptBuilder.bat. FreeFileSync jobs need FreeFileSync (https://freefilesync.org/); Robocopy / Xcopy scripts and Manual Backup to a folder or Windows zip need nothing extra; 7z, password and self-extracting backups need 7-Zip.' } }
 $enc7 = Get-TagBytes 'tools/7z-Encryptor.ps1'
 if ([Text.Encoding]::ASCII.GetString($enc7) -match '# Version ([\d.]+)') { $zips["7z-Encryptor-v$($Matches[1])"] = @{ Files = 'tools/7z-Encryptor.ps1', 'tools/7z-Encryptor.bat'; Start = 'Start 7z-Encryptor.bat, or drop files and folders on it. Needs 7-Zip (https://www.7-zip.org/); it offers to install it with winget.' } }
-$dd = Get-TagBytes 'beta/Get-DiagToolsGui.ps1'
-if ([Text.Encoding]::ASCII.GetString($dd) -match '# Version ([\d.]+) beta (\d+)') { $zips["DiagDownloader-v$($Matches[1])-beta.$($Matches[2])"] = @{ Files = 'beta/Get-DiagToolsGui.ps1', 'beta/Get-DiagTools.ps1', 'beta/DiagDownloader.bat'; Start = 'Start DiagDownloader.bat (beta). It downloads the diagnostic tools listed on linktr.ee/stech into a Downloads folder next to the scripts. Needs internet. Nothing is run after download; check each file yourself.' } }
 foreach ($name in $zips.Keys) {
     $z = $zips[$name]; $path = Join-Path $OutDir "$name.zip"; if (Test-Path $path) { Remove-Item $path }
     $folder = $name -replace '-v[\d.]+$', ''
