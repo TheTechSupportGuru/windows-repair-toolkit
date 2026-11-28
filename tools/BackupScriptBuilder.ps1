@@ -1,4 +1,4 @@
-# Version 1.9 (2026-11-26)
+# Version 2.0 (2026-11-27)
 # Backup Script Builder - builds a FreeFileSync batch file (BackupScript.ffs_batch), or a Robocopy / Xcopy script (.ps1 or .bat),
 # and (1.3) makes a manual backup now: to a folder, a zip (Windows or 7-Zip) or a 7z / self-extracting .exe
 # Windows Repair Toolkit - Copyright (C) 2026 TheTechSupportGuru - SPDX-License-Identifier: GPL-3.0-or-later
@@ -954,6 +954,20 @@ $lstSrc = New-Object System.Windows.Forms.ListBox
 $lstSrc.Location = '15,83'; $lstSrc.Size = '400,150'
 $lstSrc.SelectionMode = 'MultiExtended'
 $lstSrc.HorizontalScrollbar = $true
+# 2.0: folders dragged from Explorer are added (files too, except for a FreeFileSync batch, which backs up folders only)
+$lstSrc.AllowDrop = $true
+$lstSrc.add_DragEnter({ param($s, $e) if ($e.Data.GetDataPresent([Windows.Forms.DataFormats]::FileDrop)) { $e.Effect = 'Copy' } else { $e.Effect = 'None' } })
+$lstSrc.add_DragDrop({ param($s, $e) Add-SourceDropped @($e.Data.GetData([Windows.Forms.DataFormats]::FileDrop)) })
+function Add-SourceDropped([string[]]$paths) {
+    $map = Get-NetworkDriveMap; $skipped = 0
+    foreach ($p in @($paths | Where-Object { $_ })) {
+        $isDir = [IO.Directory]::Exists($p)
+        if (-not $isDir -and -not ([IO.File]::Exists($p) -and -not $rbFfs.Checked)) { $skipped++; continue }
+        $p = ConvertTo-UncPath $(if ($isDir) { $p.TrimEnd('\') } else { $p }) $map
+        if (-not @($lstSrc.Items | Where-Object { $_ -ieq $p }).Count) { [void]$lstSrc.Items.Add($p) }
+    }
+    if ($skipped) { [void][System.Windows.Forms.MessageBox]::Show('A FreeFileSync batch backs up folders only, so dropped files were skipped. Pick Robocopy or Xcopy to back up single files.', 'Backup Script Builder', 'OK', 'Information') }
+}
 
 $btnAdd = New-Object System.Windows.Forms.Button
 $btnAdd.Text = 'Add Folders...'; $btnAdd.Location = '425,83'; $btnAdd.Size = '130,30'
