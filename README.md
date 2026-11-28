@@ -33,6 +33,20 @@ Windows marks downloaded files as blocked: right-click the zip > **Properties** 
 - **Backup Script Builder 2.0:** the Source folders list, the Schedule Task script box and the FreeFileSync.exe box ([notes](docs/changes/BackupScriptBuilder-2.0.md)).
 - **7z-Encryptor 1.8:** the Save as box ([notes](docs/changes/7z-Encryptor-1.8.md)).
 
+Tested on Windows 11: 571 / 571 Pester tests, 134 / 134 Backup Script Builder checks, 115 / 115 7z-Encryptor checks. Drops are tested through each box's drop code, not dragged by hand; not yet run in Hiren's PE.
+
+</details>
+
+<details>
+<summary><h2 id="beta-diagnostic-tool-downloader">Beta side tool: Diagnostic Tool Downloader 0.1 beta 1</h2></summary>
+
+`DiagDownloader-v0.1-beta.1.zip` (in the latest release, under "Betas and pre-releases"). Not part of WinSuperTool yet, and it does not change the toolkit version ([notes](docs/changes/DiagDownloader-0.1-beta.1.md)).
+
+- Downloads the common diagnostic tools (49 entries) into a folder you pick: tick tools in the window (`DiagDownloader.bat`), or use `Get-DiagTools.ps1` with `-List`, `-Only`, `-OutDir`, `-Force`.
+- Handles direct links, GitHub releases, vendor pages that link to the real file, and Microsoft diagcab / exe pages. Manual-only entries are greyed out; double-click to open their page.
+- **Nothing is run** - downloads only. Check each file yourself before running it. There is no hash check yet.
+- Last full run: 40 OK, 4 manual, 5 failed (Sophos Scan and Clean, HWiNFO, WizTree, OpenNetMeter, Wireshark). Pages that need JavaScript or a sign-in fail.
+
 </details>
 
 <details>
