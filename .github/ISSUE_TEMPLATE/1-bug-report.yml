@@ -36,7 +36,8 @@ body:
       label: "Tool version"
       description: "The version line is near the top of the script, for example \"# Version 2.0\"."
       options:
-        - "2.6 (latest)"
+        - "2.7 (latest)"
+        - "2.6"
         - "2.5"
         - "2.4"
         - "2.3"
