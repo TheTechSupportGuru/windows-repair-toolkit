@@ -261,6 +261,12 @@ Check 'check: a non-ASCII password is refused for zip but allowed for 7z' (((Tes
     [IO.File]::WriteAllText($sf, '{"Remember":true,"SaveFolder":5,"QuickNextToItem":"x","EmailMode":["a"],"EmailProgram":"C:\\m.exe"}')
     $rs = Read-Settings '7z-Encryptor' $EncSettingTypes
     Check 'settings (1.7): Windows Share is no longer a choice; a remembered Share becomes Attach (Send to)' ($EmailModes -notcontains 'Share' -and $script:BsbEncSource -match "if \(\`$EmailModes -notcontains \`$mode\) \{ \`$mode = 'Classic' \}")
+    # 1.8: the Save as box takes a drop
+    $keepO = $m.Out.Text; $keepE = $m.OutEdited; $m.Opt.Rb7z.Checked = $true
+    $m.RbSaveFile.Checked = $true; $m.Out.Text = 'C:\x\Mine.7z'; Set-OutDropped "$W\src"; $o1 = $m.Out.Text; Set-OutDropped "$W\src\single file.txt"; $o2 = $m.Out.Text; Set-OutDropped 'C:\y\other.zip'; $o3 = $m.Out.Text
+    $m.RbSaveDir.Checked = $true; Set-OutDropped "$W\src\single file.txt"; $o4 = $m.Out.Text
+    Check 'drop (1.8): File mode - a folder keeps the name, a .7z / .zip is taken as is; Folder mode - a file gives its folder' ($m.Out.AllowDrop -and $o1 -eq "$W\src\Mine.7z" -and $o2 -eq "$W\src\Mine.7z" -and $o3 -eq 'C:\y\other.zip' -and $o4 -eq "$W\src") "$o1 | $o2 | $o3 | $o4"
+    $m.RbSaveFile.Checked = $true; $m.Out.Text = $keepO; $m.OutEdited = $keepE
     Check 'damaged file: values of the wrong type are dropped, the rest is kept' ($rs.Remember -and $rs.EmailProgram -eq 'C:\m.exe' -and -not $rs.ContainsKey('SaveFolder') -and -not $rs.ContainsKey('QuickNextToItem') -and -not $rs.ContainsKey('EmailMode'))
     [IO.File]::WriteAllText($sf, '{not json'); $keepS = $script:Settings; $script:Settings = Read-Settings '7z-Encryptor' $EncSettingTypes
     $qf3 = New-MainWindow @("$W\src\single file.txt")

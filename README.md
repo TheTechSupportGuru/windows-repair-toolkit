@@ -5,15 +5,15 @@ A set of PowerShell tools for repairing and troubleshooting Windows 10/11 PCs, i
 > [!WARNING]
 > These scripts were written with AI. They have been tested on Windows 11, Windows 10 64-bit (MBR disk), and Hiren's BootCD PE 10 and 11, all in VMs. They have not been tested on many real PCs. Several tools change the boot configuration (BCD), the registry, services and network settings. **Use at your own risk.** Try them on a test machine first.
 
-**Current version: 2.7** (2026-11-27). Every version is a git tag (`v1.1` to `v2.7`), so `git diff v2.6 v2.7` shows exactly what changed. Licensed under the [GNU GPL v3.0](#license).
+**Current version: 2.8** (2026-11-27). Every version is a git tag (`v1.1` to `v2.8`), so `git diff v2.7 v2.8` shows exactly what changed. Licensed under the [GNU GPL v3.0](#license).
 
 <details open>
 <summary><h2 id="download">Download</h2></summary>
 
 
-Get the tools from the [latest release](../../releases/latest). The main downloads are **WinSuperTool**, **WinSuperTool-NoAI**, **WinFixKit**, **Backup Script Builder** and **7z-Encryptor**, each its own zip with the script, its launcher, a short read-me and the license. The smaller separate tools (WinRepairTool, Collect-Logs, Monitor-Logs, ClaudeLogAnalyzer) are all in **`IndividualTools-v2.7.zip`**, started with its `Run-PS-As-Admin.bat`; each of them is also part of WinSuperTool. **Test Center** (run the tests yourself) is there too. **Source code** contains everything.
+Get the tools from the [latest release](../../releases/latest). The main downloads are **WinSuperTool**, **WinSuperTool-NoAI**, **WinFixKit**, **Backup Script Builder** and **7z-Encryptor**, each its own zip with the script, its launcher, a short read-me and the license. The smaller separate tools (WinRepairTool, Collect-Logs, Monitor-Logs, ClaudeLogAnalyzer) are all in **`IndividualTools-v2.8.zip`**, started with its `Run-PS-As-Admin.bat`; each of them is also part of WinSuperTool. **Test Center** (run the tests yourself) is there too. **Source code** contains everything.
 
-**Don't want AI?** `WinSuperTool-NoAI-v2.7.zip` is WinSuperTool without the AI Analyze tab:
+**Don't want AI?** `WinSuperTool-NoAI-v2.8.zip` is WinSuperTool without the AI Analyze tab:
 - no phone login and no network listener;
 - nothing is ever sent to Claude or Gemini;
 - everything else is the same.
@@ -24,6 +24,18 @@ Windows marks downloaded files as blocked: right-click the zip > **Properties** 
 </details>
 
 <details open>
+<summary><h2 id="new-in-2-8">New in 2.8</h2></summary>
+
+**Drag and drop everywhere** ([V2.8](docs/changes/V2.8.md)): every box that takes a file or folder name also takes one dragged from Explorer.
+
+- **WinSuperTool 2.1:** the Collect Logs folder and the Run a script box.
+- **WinFixKit 2.2:** the Registry changes ISO / image box and the key backup folder.
+- **Backup Script Builder 2.0:** the Source folders list, the Schedule Task script box and the FreeFileSync.exe box ([notes](docs/changes/BackupScriptBuilder-2.0.md)).
+- **7z-Encryptor 1.8:** the Save as box ([notes](docs/changes/7z-Encryptor-1.8.md)).
+
+</details>
+
+<details>
 <summary><h2 id="new-in-2-7">New in 2.7</h2></summary>
 
 **7z-Encryptor 1.7** ([V2.7](docs/changes/V2.7.md), [notes](docs/changes/7z-Encryptor-1.7.md)):
@@ -230,7 +242,7 @@ The registry is backed up before each fix, with one-click restore. Folders are r
 
 ### Individual tools
 
-WinRepairTool, Collect-Logs, Monitor-Logs and ClaudeLogAnalyzer are in `IndividualTools-v2.7.zip`. Each is also part of WinSuperTool, and is kept separate for when you need only one job. Start one by dragging its `.ps1` onto `Run-PS-As-Admin.bat`.
+WinRepairTool, Collect-Logs, Monitor-Logs and ClaudeLogAnalyzer are in `IndividualTools-v2.8.zip`. Each is also part of WinSuperTool, and is kept separate for when you need only one job. Start one by dragging its `.ps1` onto `Run-PS-As-Admin.bat`.
 
 <details>
 <summary>Show the individual tools</summary>
@@ -283,7 +295,7 @@ Download `BackupScriptBuilder-v1.9.zip` from the [latest release](../../releases
 
 ### 7z-Encryptor
 
-`7z-Encryptor.ps1` + `7z-Encryptor.bat`. Encrypts files and folders into one password-protected file with [7-Zip](https://www.7-zip.org/). Version 1.7 ([notes](docs/changes/7z-Encryptor-1.7.md); [1.6](docs/changes/7z-Encryptor-1.6.md), [1.5](docs/changes/7z-Encryptor-1.5.md), [1.4](docs/changes/7z-Encryptor-1.4.md), [1.3](docs/changes/7z-Encryptor-1.3.md), [1.2](docs/changes/7z-Encryptor-1.2.md), [1.1](docs/changes/7z-Encryptor-1.1.md), [1.0](docs/changes/7z-Encryptor-1.0.md)). Download `7z-Encryptor-v1.7.zip` from the [latest release](../../releases/latest).
+`7z-Encryptor.ps1` + `7z-Encryptor.bat`. Encrypts files and folders into one password-protected file with [7-Zip](https://www.7-zip.org/). Version 1.8 ([notes](docs/changes/7z-Encryptor-1.8.md); [1.7](docs/changes/7z-Encryptor-1.7.md), [1.6](docs/changes/7z-Encryptor-1.6.md), [1.5](docs/changes/7z-Encryptor-1.5.md), [1.4](docs/changes/7z-Encryptor-1.4.md), [1.3](docs/changes/7z-Encryptor-1.3.md), [1.2](docs/changes/7z-Encryptor-1.2.md), [1.1](docs/changes/7z-Encryptor-1.1.md), [1.0](docs/changes/7z-Encryptor-1.0.md)). Download `7z-Encryptor-v1.8.zip` from the [latest release](../../releases/latest).
 
 - **Main window** (double-click `7z-Encryptor.bat`): tick files and folders in the same tree as Backup Script Builder, pick the format and a password (typed twice), and where to save. It is filled in next to the first item, or in the folder of your last encrypted file (when Remember settings is ticked).
 - **After encrypting:** **Show in folder**, and **Send by email** with Send to > Mail recipient (classic, falls back to the Windows Share window), Windows Share, a mail program you choose, or **mailto:** with an address you type (your default mail program opens a new email to it; attach the file, which is selected in Explorer, by dragging it in). The choice and the address are remembered when Remember settings is ticked. Send the password some other way, never in the same email.
@@ -328,6 +340,7 @@ Severity: **S1** = can make the PC unbootable, lose data or act on the wrong dis
 | **2.5** | **Backup Script Builder 1.8 / 7z-Encryptor 1.5:** Ultra is 7-Zip only (greyed out for a zip made by Windows, so backing up now and the saved script make the same zip on Windows 10, 11 and PE); in Windows PE, 7-Zip is also found on the X: and Y: drives (Hiren's BootCD PE); Remember settings keeps zip or 7z; drag and drop from Explorer onto the lists and folder boxes. **Test Center 1.0** (out of beta). | [V2.5](docs/changes/V2.5.md) |
 | **2.6** | **Backup Script Builder 1.9:** saved Windows-zip scripts use Windows' own .NET zip (no `tar.exe`, which Windows PE does not have); Schedule Task greyed out in Windows PE. **7z-Encryptor 1.6:** 7-Zip's warnings shown. **All launchers** use PowerShell 7 when there is no Windows PowerShell (Hiren's PE 10). **Test Center 1.1.** | [V2.6](docs/changes/V2.6.md) |
 | **2.7** | **7z-Encryptor 1.7:** mailto: waits for the pick-an-app prompt and works without a file; Change Default: mailto: / Email; Attach (Send to) and Choose program: with a list of found mail programs (no Windows Share option); Save as File or Folder: Named + Date; a cleaner window and simpler help. | [V2.7](docs/changes/V2.7.md) |
+| **2.8** | **Drag and drop** onto every file / folder box: WinSuperTool 2.1 (Collect Logs folder, Run a script), WinFixKit 2.2 (ISO / image, key backup folder), Backup Script Builder 2.0 (Source folders, script, FreeFileSync.exe), 7z-Encryptor 1.8 (Save as). | [V2.8](docs/changes/V2.8.md) |
 
 ### Still open
 
@@ -393,10 +406,10 @@ The other scripts in `tests/` are the admin and windowed test runs used on the V
 
 
 ```
-tools/            the current scripts and launchers (v2.7), incl. the generated no-AI edition
+tools/            the current scripts and launchers (v2.8), incl. the generated no-AI edition
 beta/             no beta script at the moment (WinFixKit beta-automation became part of WinFixKit 2.1)
 build/            Build-NoAIEdition.ps1 (generates the no-AI edition), Promote-Beta.ps1 (makes a beta stable)
-docs/changes/     what each version fixed (V1.2 ... V2.7, the 1.9 betas, Test Center, Backup Script Builder and 7z-Encryptor)
+docs/changes/     what each version fixed (V1.2 ... V2.8, the 1.9 betas, Test Center, Backup Script Builder and 7z-Encryptor)
 docs/testing/     the test plan, results of each phase, and the v1.6 code review
 tests/            Pester unit tests, Test Center (TestCenter.ps1), the test harness and the VM test runs
 LICENSE           GNU General Public License v3.0

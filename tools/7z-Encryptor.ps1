@@ -1,4 +1,4 @@
-# Version 1.7 (2026-11-27)
+# Version 1.8 (2026-11-27)
 # 7z-Encryptor - encrypts files and folders with 7-Zip: a 7z (AES-256, optionally the file names too) or a zip
 # (standard ZipCrypto or AES-256), with a password you pick. Files dropped on 7z-Encryptor.bat open the same window, already in the list.
 # Windows Repair Toolkit - Copyright (C) 2026 TheTechSupportGuru - SPDX-License-Identifier: GPL-3.0-or-later
@@ -707,6 +707,23 @@ function Select-MailProgram($x) {
     } else { $script:Settings.EmailProgram = $x.MailProgItems[$i].Path }
     $x.RbProgram.Checked = $true; Set-MainEmailMode $x.RbProgram
 }
+# a box that takes a path dragged from Explorer (toolkit 2.8); $onDrop gets the first dropped path
+$script:PathDrops = @{}
+function Enable-PathDrop($ctl, [scriptblock]$onDrop) {
+    $script:PathDrops[$ctl] = $onDrop; $ctl.AllowDrop = $true
+    $ctl.add_DragEnter({ param($s, $e) if ($s.Enabled -and $e.Data.GetDataPresent([Windows.Forms.DataFormats]::FileDrop)) { $e.Effect = 'Copy' } else { $e.Effect = 'None' } })
+    $ctl.add_DragDrop({ param($s, $e) $p = @($e.Data.GetData([Windows.Forms.DataFormats]::FileDrop) | Where-Object { $_ })[0]; if ($p) { try { & $script:PathDrops[$s] ([string]$p) } catch {} } })
+}
+function Get-DropFolder([string]$p) { if ([IO.Directory]::Exists($p)) { return $p.TrimEnd('\') } elseif ([IO.File]::Exists($p)) { return [IO.Path]::GetDirectoryName($p) } else { return '' } }
+# the Save as box takes a drop: Folder mode the folder; File mode a .7z / .zip, or a folder plus the name already in the box
+function Set-OutDropped([string]$p) {
+    $x = $script:MainUi; $ext = (Get-EncryptChoice $x.Opt).Format
+    if ($x.RbSaveDir.Checked) { $d = Get-DropFolder $p; if ($d) { $x.Out.Text = $d; $x.OutEdited = $true }; return }
+    if ($p -match '\.(7z|zip)$' -and -not [IO.Directory]::Exists($p)) { $x.Out.Text = $p; $x.OutEdited = $true; return }
+    $d = Get-DropFolder $p; if (-not $d) { return }
+    $leaf = try { Split-Path $x.Out.Text.Trim().Trim('"') -Leaf } catch { '' }; if ($leaf -notmatch '\.(7z|zip)$') { $leaf = "Encrypted.$ext" }
+    $x.Out.Text = Join-Path $d $leaf; $x.OutEdited = $true
+}
 function Show-InFolder([string]$file) { Start-Process explorer.exe "/select,`"$file`"" }
 # Explorer's own Share verb (Windows 10 / 11); $false when this Windows has none
 function Invoke-ShareWindow([string]$file) {
@@ -953,6 +970,7 @@ function New-MainWindow([string[]]$items = @()) {
     $w.List.add_DragEnter({ param($s, $e) if ($e.Data.GetDataPresent([Windows.Forms.DataFormats]::FileDrop)) { $e.Effect = 'Copy' } else { $e.Effect = 'None' } })
     $w.List.add_DragDrop({ param($s, $e) [void](Add-MainDropped @($e.Data.GetData([Windows.Forms.DataFormats]::FileDrop))) })
     $w.Out.add_KeyPress({ $script:MainUi.OutEdited = $true })
+    Enable-PathDrop $w.Out { param($p) Set-OutDropped $p }
     # 1.5: 7z or zip is remembered too (with Remember settings ticked)
     if ([string]$script:Settings.Format -eq 'zip') { $w.Opt.RbZip.Checked = $true }
     $w.Opt.Rb7z.add_CheckedChanged({ Update-MainOut; if ($script:MainUi) { $script:Settings.Format = (Get-EncryptChoice $script:MainUi.Opt).Format; Save-EncSettings } })

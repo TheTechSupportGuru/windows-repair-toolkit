@@ -1,4 +1,4 @@
-# Version 2.1 (2026-11-26). What changed: docs/changes/V2.1.md
+# Version 2.2 (2026-11-27). What changed: docs/changes/V2.8.md
 # WinFixKit + an Automation tab (ported from WinSuperTool) and a Registry changes tab. Both new tabs are labelled beta.
 # RULE: Automation changes are made in WinSuperTool FIRST and then ported here - never the other way round.
 #       The ported code is the AUTOMATION region near the end of this file; see CONTRIBUTING.md.
@@ -3567,7 +3567,7 @@ function Show-RegChanges($rows) {
     $top.Controls.AddRange(@($lf, $tf, $bAll, $bNone, $bDet, $qh))
     $bot = New-Object Windows.Forms.Panel; $bot.Size = New-Object Drawing.Size($f.ClientSize.Width, 84); $bot.Dock = 'Bottom'
     $lb = New-Object Windows.Forms.Label; $lb.Text = 'Back up the original keys to:'; $lb.Location = '8,12'; $lb.AutoSize = $true
-    $tb = New-Object Windows.Forms.TextBox; $tb.Location = '190,9'; $tb.Width = 560; $tb.Text = $script:RegKeyDir; $tb.Anchor = 'Top,Left,Right'
+    $tb = New-Object Windows.Forms.TextBox; $tb.Location = '190,9'; $tb.Width = 560; $tb.Text = $script:RegKeyDir; $tb.Anchor = 'Top,Left,Right'; Enable-PathDrop $tb { param($p) $d = Get-DropFolder $p; if ($d) { $script:Rc.Tb.Text = $d } }
     $bb = New-Object Windows.Forms.Button; $bb.Text = 'Browse...'; $bb.Location = '760,7'; $bb.Size = '90,28'; $bb.Anchor = 'Top,Right'
     $bh = New-Object Windows.Forms.Button; $bh.Text = '?'; $bh.Location = '855,7'; $bh.Size = '30,28'; $bh.Anchor = 'Top,Right'
     $bh.Add_Click({ Show-Help 'Backup folder' ("Before a value is reverted, its whole key is exported to this folder as a .reg file (double-click it later to put the key back), and a summary of what was reverted is saved here.`r`n`r`nEvery revert is also backed up the usual WinFixKit way, so it appears in the Registry Backups tab with one-click restore. Default: WinFixKit's RegistryBackups\Keys folder.") })
@@ -3683,9 +3683,23 @@ $move = { param($d) $i = $clbRegSrc.SelectedIndex; $j = $i + $d; if ($i -lt 0 -o
     $it = $clbRegSrc.Items[$i]; $ck = $clbRegSrc.GetItemChecked($i); $clbRegSrc.Items.RemoveAt($i); $clbRegSrc.Items.Insert($j, $it); $clbRegSrc.SetItemChecked($j, $ck); $clbRegSrc.SelectedIndex = $j; Save-RegSources }
 $btnRegUp.Add_Click({ & $move -1 }); $btnRegDown.Add_Click({ & $move 1 })
 $btnRegReset.Add_Click({ Save-RegSourceState @('shadow', 'backups', 'iso', 'defaults') @('shadow', 'backups', 'iso', 'defaults'); Update-RegSourceList })
+# a box that takes a path dragged from Explorer (toolkit 2.8); $onDrop gets the first dropped path
+$script:PathDrops = @{}
+function Enable-PathDrop($ctl, [scriptblock]$onDrop) {
+    $script:PathDrops[$ctl] = $onDrop; $ctl.AllowDrop = $true
+    $ctl.add_DragEnter({ param($s, $e) if ($s.Enabled -and $e.Data.GetDataPresent([Windows.Forms.DataFormats]::FileDrop)) { $e.Effect = 'Copy' } else { $e.Effect = 'None' } })
+    $ctl.add_DragDrop({ param($s, $e) $p = @($e.Data.GetData([Windows.Forms.DataFormats]::FileDrop) | Where-Object { $_ })[0]; if ($p) { try { & $script:PathDrops[$s] ([string]$p) } catch {} } })
+}
+function Get-DropFolder([string]$p) { if ([IO.Directory]::Exists($p)) { return $p.TrimEnd('\') } elseif ([IO.File]::Exists($p)) { return [IO.Path]::GetDirectoryName($p) } else { return '' } }
 $btnRegIso.Add_Click({
     $d = New-Object Windows.Forms.OpenFileDialog; $d.Filter = 'Windows ISO or image (*.iso;*.wim;*.esd)|*.iso;*.wim;*.esd'
     if ($d.ShowDialog() -ne 'OK') { return }
+    Set-RegIso $d.FileName
+})
+Enable-PathDrop $txtRegIso { param($p) if ($p -match '\.(iso|wim|esd)$' -and [IO.File]::Exists($p)) { Set-RegIso $p } }
+# 2.8: the ISO / image to compare with (from Browse... or dropped on the box)
+function Set-RegIso([string]$path) {
+    $d = @{ FileName = $path }
     if (-not (Test-Admin)) { [void][Windows.Forms.MessageBox]::Show('Reading a Windows ISO needs administrator rights. Use "Relaunch as Administrator".', 'Registry changes', 'OK', 'Warning'); return }
     $script:Form.Cursor = 'WaitCursor'; $lblRegStatus.Text = 'Reading the editions in the image...'; [Windows.Forms.Application]::DoEvents()
     try {
@@ -3700,7 +3714,7 @@ $btnRegIso.Add_Click({
         Update-RegSourceList
     } catch { $lblRegStatus.Text = 'Could not read the image: ' + $_.Exception.Message }
     finally { $script:Form.Cursor = 'Default' }
-})
+}
 $btnRegStop.Add_Click({ $script:RegCancel = $true })
 $btnRegScan.Add_Click({
     $areas = @($clbRegAreas.CheckedItems); if (-not $areas.Count) { [void][Windows.Forms.MessageBox]::Show('Tick at least one area to scan.', 'Registry changes', 'OK', 'Information'); return }

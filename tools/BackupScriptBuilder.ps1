@@ -1479,6 +1479,16 @@ $btnScript.add_Click({
     $ofd.Dispose()
 })
 
+# a box that takes a path dragged from Explorer (toolkit 2.8); $onDrop gets the first dropped path
+$script:PathDrops = @{}
+function Enable-PathDrop($ctl, [scriptblock]$onDrop) {
+    $script:PathDrops[$ctl] = $onDrop; $ctl.AllowDrop = $true
+    $ctl.add_DragEnter({ param($s, $e) if ($s.Enabled -and $e.Data.GetDataPresent([Windows.Forms.DataFormats]::FileDrop)) { $e.Effect = 'Copy' } else { $e.Effect = 'None' } })
+    $ctl.add_DragDrop({ param($s, $e) $p = @($e.Data.GetData([Windows.Forms.DataFormats]::FileDrop) | Where-Object { $_ })[0]; if ($p) { try { & $script:PathDrops[$s] ([string]$p) } catch {} } })
+}
+function Get-DropFolder([string]$p) { if ([IO.Directory]::Exists($p)) { return $p.TrimEnd('\') } elseif ([IO.File]::Exists($p)) { return [IO.Path]::GetDirectoryName($p) } else { return '' } }
+Enable-PathDrop $cboScript { param($p) if ([IO.File]::Exists($p)) { Add-ScriptChoice $p; $cboScript.Text = $p } }
+Enable-PathDrop $txtExe { param($p) if ($p -match '\.exe$' -and [IO.File]::Exists($p)) { $txtExe.Text = $p } }
 $btnExe.add_Click({
     $ofd = New-Object System.Windows.Forms.OpenFileDialog
     $ofd.Filter = 'FreeFileSync.exe|FreeFileSync.exe|Programs (*.exe)|*.exe'

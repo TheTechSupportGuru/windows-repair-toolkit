@@ -1,5 +1,5 @@
 #requires -Version 5.1
-# Version 2.0 (2026-11-26). What changed: docs/changes/V2.0.md
+# Version 2.1 (2026-11-27). What changed: docs/changes/V2.8.md
 # NO-AI EDITION - generated from WinSuperTool.ps1 by build/Build-NoAIEdition.ps1; do not edit by hand.
 # The AI Analyze tab, the phone QR login, the "Send key logs to AI" button and all code that talks to an AI service
 # or listens on the network are left out. Everything else is identical to WinSuperTool.ps1 of the same version.
@@ -2804,6 +2804,7 @@ function Show-ScriptRunner {
         $d.Filter = 'PowerShell scripts (*.ps1)|*.ps1|All files (*.*)|*.*'
         if ($d.ShowDialog() -eq 'OK') { $script:SrPath.Text = $d.FileName }
     })
+    Enable-PathDrop $script:SrPath { param($p) if ([IO.File]::Exists($p)) { $script:SrPath.Text = $p } }
     $btnGo.Add_Click({ Safe {
         $p = [Environment]::ExpandEnvironmentVariables($script:SrPath.Text.Trim().Trim('"').Trim("'").Trim())
         if (-not $p) { Msg 'Paste or browse to a .ps1 file first.' 'Run script' 'Warning'; return }
@@ -2875,7 +2876,16 @@ $txtLog.Font = New-Object Drawing.Font('Consolas', 8.5); $txtLog.Anchor = 'Botto
 
 # ---------- 1. Collect Logs ----------
 [void](New-Ctl 'Label' $tpCol 10 11 90 20 'Output folder:')
+# a box that takes a path dragged from Explorer (toolkit 2.8); $onDrop gets the first dropped path
+$script:PathDrops = @{}
+function Enable-PathDrop($ctl, [scriptblock]$onDrop) {
+    $script:PathDrops[$ctl] = $onDrop; $ctl.AllowDrop = $true
+    $ctl.add_DragEnter({ param($s, $e) if ($s.Enabled -and $e.Data.GetDataPresent([Windows.Forms.DataFormats]::FileDrop)) { $e.Effect = 'Copy' } else { $e.Effect = 'None' } })
+    $ctl.add_DragDrop({ param($s, $e) $p = @($e.Data.GetData([Windows.Forms.DataFormats]::FileDrop) | Where-Object { $_ })[0]; if ($p) { try { & $script:PathDrops[$s] ([string]$p) } catch {} } })
+}
+function Get-DropFolder([string]$p) { if ([IO.Directory]::Exists($p)) { return $p.TrimEnd('\') } elseif ([IO.File]::Exists($p)) { return [IO.Path]::GetDirectoryName($p) } else { return '' } }
 $txtColOut     = New-Ctl 'TextBox' $tpCol 100 8 560 24
+Enable-PathDrop $txtColOut { param($p) $d = Get-DropFolder $p; if ($d) { $txtColOut.Text = Join-Path $d 'logs' } }
 $btnColBrowse  = New-Ctl 'Button' $tpCol 666 7 80 26 'Browse...'
 $btnColDefault = New-Ctl 'Button' $tpCol 750 7 70 26 'Default'
 Add-Help $tpCol 824 8 'Collect logs' ("Tick what you want and press Collect selected. Everything lands in the output folder, one subfolder per category, plus _collection_summary.txt.${NL}${NL}Default output: the signed-in user's Desktop\logs (OneDrive-redirected desktops included). In WinPE the default is WinSuperTool-Data\logs next to this script, so the logs survive a reboot.${NL}${NL}Offline installs: pick the install in Target Windows. Files are copied from its disk, event logs are copied as .evtx files, and DISM /image builds the package and driver lists. Items that need the running Windows (reliability history, systeminfo, hotfixes) are skipped with a note.${NL}${NL}Files Windows holds open are copied with a shared-read fallback; anything that still fails is listed as FAILED.")

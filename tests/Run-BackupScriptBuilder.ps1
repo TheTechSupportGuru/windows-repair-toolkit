@@ -486,6 +486,15 @@ Check 'manual: a non-ASCII password is refused for a 7-Zip zip, allowed for 7z' 
     Remove-Item -LiteralPath $sf -Force -ErrorAction SilentlyContinue
     $sv = $env:WRT_SETTINGS_DIR; $env:WRT_SETTINGS_DIR = ''
     Check 'settings: by default the file is next to the script (portable)' ($script:BsbToolSource.Contains('else { $PSScriptRoot }; if ($d) { Join-Path $d ''BackupScriptBuilder.settings.json'' }'))
+    # 2.0 / 2.8: drag and drop onto the source list and the path boxes
+    $dd = Join-Path $env:TEMP ('bsbdrop-' + [guid]::NewGuid().ToString('N').Substring(0, 6)); New-Item -ItemType Directory "$dd\A" -Force | Out-Null; 'x' | Set-Content "$dd\f.txt"; 'x' | Set-Content "$dd\job.ps1"; 'x' | Set-Content "$dd\FreeFileSync.exe"
+    $keepSrc = @($lstSrc.Items); $lstSrc.Items.Clear(); $rbRobo.Checked = $true
+    Add-SourceDropped @("$dd\A", "$dd\A\", "$dd\f.txt")
+    Check 'drop (2.0): folders and files dropped on Source folders are added once' ($lstSrc.AllowDrop -and $lstSrc.Items.Count -eq 2 -and $lstSrc.Items[0] -eq "$dd\A") (@($lstSrc.Items) -join ' | ')
+    $lstSrc.Items.Clear(); foreach ($k in $keepSrc) { [void]$lstSrc.Items.Add($k) }; $rbFfs.Checked = $true
+    & $script:PathDrops[$cboScript] "$dd\job.ps1"; & $script:PathDrops[$txtExe] "$dd\f.txt"; $exeBad = $txtExe.Text; & $script:PathDrops[$txtExe] "$dd\FreeFileSync.exe"
+    Check 'drop (2.8): the script box and the FreeFileSync.exe box take a dropped file (an .exe only for FreeFileSync.exe)' ($cboScript.AllowDrop -and $cboScript.Text -eq "$dd\job.ps1" -and $exeBad -ne "$dd\f.txt" -and $txtExe.Text -eq "$dd\FreeFileSync.exe")
+    Remove-Item $dd -Recurse -Force -ErrorAction SilentlyContinue
     $env:WRT_SETTINGS_DIR = $sv
 }
 
