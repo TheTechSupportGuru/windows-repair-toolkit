@@ -591,6 +591,8 @@ The note used to sit at the top of this page, where it did not belong. It is mov
 
 **Gobble gobble gobble gobble gobble.** 2.6 shipped with the PE fixes, and the turkey finally learned to run without tar. The VMs were asked to regress Hiren's PE and gobbled in its place.
 
+**Black Friday. Cha-ching.** 2.8 shipped on the day the shops open, with a drop target on every box that takes a name. The turkey has been dragged out of the oven and is now a file. The VMs were asked to test it by dragging things and gobbled back, once per drop.
+
 <details>
 <summary></summary>
 
